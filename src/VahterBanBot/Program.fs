@@ -75,7 +75,19 @@ app.UseGiraffe(webApp)
 let server = app.RunAsync()
 
 let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
-telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), "Bot started").Wait()
 
-app.Logger.LogInformation("Bot started")
+let startLogMsg =
+    let sb = System.Text.StringBuilder()
+    %sb.AppendLine("Bot started with following configuration")
+    %sb.AppendLine("AllowedUsers:")
+    for KeyValue(username, userId) in botConf.AllowedUsers do
+        %sb.AppendLine($"  {username} ({userId})")
+    %sb.AppendLine("ChatsToMonitor:")
+    for KeyValue(username, chatId) in botConf.ChatsToMonitor do
+        %sb.AppendLine($"  {username} ({chatId})")
+    sb.ToString()
+
+app.Logger.LogInformation startLogMsg
+telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
+
 server.Wait()
