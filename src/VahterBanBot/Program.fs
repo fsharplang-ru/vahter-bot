@@ -8,6 +8,8 @@ open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open VahterBanBot.Utils
 
+type Root = class end
+
 [<CLIMutable>]
 type BotConfiguration =
     { BotToken: string
@@ -37,6 +39,8 @@ let builder = WebApplication.CreateBuilder()
     .AddTypedClient(fun httpClient sp ->
         let options = TelegramBotClientOptions(botConf.BotToken)
         TelegramBotClient(options, httpClient) :> ITelegramBotClient)
+
+%builder.Logging.AddConsole()
 
 match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING" with
 | null -> ()
@@ -71,7 +75,7 @@ let server = app.RunAsync()
 let telegramClient = builder.Services.BuildServiceProvider().GetRequiredService<ITelegramBotClient>()
 telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), "Bot started").Wait()
 
-let topLogger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger>()
+let topLogger = builder.Services.BuildServiceProvider().GetService<ILogger<Root>>()
 topLogger.LogInformation("Bot started")
 
 server.Wait()
