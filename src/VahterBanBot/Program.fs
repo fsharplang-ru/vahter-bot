@@ -2,26 +2,26 @@
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
+open Microsoft.FSharp.Core
+open Newtonsoft.Json
 open Telegram.Bot
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open VahterBanBot.Utils
+open VahterBanBot.Bot
+open VahterBanBot.Types
 
 type Root = class end
-
-[<CLIMutable>]
-type BotConfiguration =
-    { BotToken: string
-      Route: string
-      SecretToken: string
-      LogsChannelId: int64 }
 
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
-      LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64 }
+      LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
+      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<int64[]> |> Set.ofArray
+      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<int64[]> |> Set.ofArray
+      ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -53,29 +53,29 @@ match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING"
             ()
         )
     )
-
-let app = builder.Build()
-
+    
 let webApp = choose [
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
         use scope = ctx.RequestServices.CreateScope()
-        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>();
-        
-        if update.Message <> null then
-            let! _ = telegramClient.SendTextMessageAsync(ChatId(update.Message.Chat.Id), $"Received {update.Message.Text}") in ()
-        
+        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+        let logger = ctx.GetLogger<Root>()
+        try
+            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
+        with e ->
+            logger.LogError(e, "Unexpected error while processing update")
         return! Successful.OK() next ctx
     })
-    GET >=> route "/" >=> text "Hello World! Check CD"
+    // need for Azure health checks on / route
+    GET >=> route "/" >=> text "OK"
 ]
+
+let app = builder.Build()
 
 app.UseGiraffe(webApp)
 let server = app.RunAsync()
 
-let telegramClient = builder.Services.BuildServiceProvider().GetRequiredService<ITelegramBotClient>()
+let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
 telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), "Bot started").Wait()
 
-let topLogger = builder.Services.BuildServiceProvider().GetService<ILogger<Root>>()
-topLogger.LogInformation("Bot started")
-
+app.Logger.LogInformation("Bot started")
 server.Wait()
