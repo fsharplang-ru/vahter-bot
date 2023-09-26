@@ -59,7 +59,7 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // ban user in each chat
             try
-                do! botClient.BanChatMemberAsync(ChatId chatUserName, targetUserId, DateTime.UtcNow.AddMonths 13)
+                do! botClient.BanChatMemberAsync(ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -127,3 +127,4 @@ let onUpdate
         let! _ = botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong")
         ()
 }
+
