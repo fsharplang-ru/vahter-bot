@@ -50,7 +50,7 @@ let webApp = choose [
         
         return! Successful.OK() next ctx
     })
-    GET >=> route "/" >=> text "Hello World!"
+    GET >=> route "/" >=> text "Hello World! Check CD"
 ]
 
 app.UseGiraffe(webApp)
