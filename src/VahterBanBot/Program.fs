@@ -1,25 +1,25 @@
-﻿open System
-open System.Threading.Tasks
-open Microsoft.AspNetCore.Builder
+﻿open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
-open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Telegram.Bot
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open VahterBanBot.Utils
+open Microsoft.Extensions.Configuration
 
 [<CLIMutable>]
 type BotConfiguration =
     { BotToken: string
       Route: string
-      SecretToken: string }
+      SecretToken: string
+      LogsChannelId: int64 }
 
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
-      SecretToken = getEnv "BOT_AUTH_TOKEN" }
+      SecretToken = getEnv "BOT_AUTH_TOKEN"
+      LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64 }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -38,6 +38,15 @@ let builder = WebApplication.CreateBuilder()
         let options = TelegramBotClientOptions(botConf.BotToken)
         TelegramBotClient(options, httpClient) :> ITelegramBotClient)
 
+%builder.Logging.AddApplicationInsights(
+    configureTelemetryConfiguration = (fun config ->
+        config.ConnectionString <- builder.Configuration.GetConnectionString("APPLICATIONINSIGHTS_CONNECTION_STRING")
+    ),
+    configureApplicationInsightsLoggerOptions = (fun config ->
+        ()
+    )
+)
+
 let app = builder.Build()
 
 let webApp = choose [
@@ -54,4 +63,12 @@ let webApp = choose [
 ]
 
 app.UseGiraffe(webApp)
-app.Run()
+let server = app.RunAsync()
+
+let telegramClient = builder.Services.BuildServiceProvider().GetRequiredService<ITelegramBotClient>()
+telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), "Bot started").Wait()
+
+let topLogger = builder.Services.BuildServiceProvider().GetRequiredService<ILogger>()
+topLogger.LogInformation("Bot started")
+
+server.Wait()
