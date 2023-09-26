@@ -1,4 +1,5 @@
-﻿open Microsoft.AspNetCore.Builder
+﻿open System
+open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
 open Telegram.Bot
@@ -6,7 +7,6 @@ open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open VahterBanBot.Utils
-open Microsoft.Extensions.Configuration
 
 [<CLIMutable>]
 type BotConfiguration =
@@ -38,14 +38,17 @@ let builder = WebApplication.CreateBuilder()
         let options = TelegramBotClientOptions(botConf.BotToken)
         TelegramBotClient(options, httpClient) :> ITelegramBotClient)
 
-%builder.Logging.AddApplicationInsights(
-    configureTelemetryConfiguration = (fun config ->
-        config.ConnectionString <- builder.Configuration.GetConnectionString("APPLICATIONINSIGHTS_CONNECTION_STRING")
-    ),
-    configureApplicationInsightsLoggerOptions = (fun config ->
-        ()
+match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING" with
+| null -> ()
+| appInsightKey ->
+    %builder.Logging.AddApplicationInsights(
+        configureTelemetryConfiguration = (fun config ->
+            config.ConnectionString <- appInsightKey
+        ),
+        configureApplicationInsightsLoggerOptions = (fun config ->
+            ()
+        )
     )
-)
 
 let app = builder.Build()
 
