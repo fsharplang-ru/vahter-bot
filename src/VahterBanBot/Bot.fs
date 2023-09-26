@@ -35,16 +35,22 @@ let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: IL
     let fromUsername = message.From.Username
     let targetUserId = message.ReplyToMessage.From.Id
     let targetUsername = message.ReplyToMessage.From.Username
+    let chatId = message.Chat.Id
+    let chatUsername = message.Chat.Username
     
     // check that user is allowed to ban others
-    if isMessageFromAdmin botConfig message && isMessageFromAllowedChats botConfig message then
+    if isMessageFromAdmin botConfig message then
+        if not(isMessageFromAllowedChats botConfig message) then
+            logger.LogWarning $"User {fromUsername} {fromUserId} tried to ban user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
+            false
         // check that user is not trying to ban other admins
-        if isBannedPersonAdmin botConfig message then
-            logger.LogWarning $"User {fromUsername} {fromUserId} tried to ban admin {targetUsername} {targetUserId}"
+        elif isBannedPersonAdmin botConfig message then
+            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
             false
         else
             true
     else
+        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
         false
     
 let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
