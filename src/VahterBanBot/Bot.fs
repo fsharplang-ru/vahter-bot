@@ -94,9 +94,13 @@ let onUpdate
     (logger: ILogger)
     (message: Message) = task {
 
+    if message.Chat <> null && message.From <> null then
+        logger.LogDebug $"Received message from chat {message.Chat.Username} ({message.Chat.Id}) from user {message.From.Username} ({message.From.Id})"
+        
     if isNull message || isNull message.From then
         logger.LogWarning "Received update without message"
         
+
     // check if message comes from channel, we should delete it immediately
     elif botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
         
