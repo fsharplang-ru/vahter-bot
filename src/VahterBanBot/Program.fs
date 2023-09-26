@@ -19,8 +19,8 @@ let botConf =
       Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
       LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
-      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<int64[]> |> Set.ofArray
-      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<int64[]> |> Set.ofArray
+      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<_>
+      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =

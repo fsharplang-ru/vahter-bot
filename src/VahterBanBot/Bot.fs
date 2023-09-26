@@ -21,11 +21,14 @@ let isBanOnReplyMessage (message: Message) =
     message.Text = "/ban" &&
     message.ReplyToMessage <> null
     
+let isMessageFromAllowedChats (botConfig: BotConfiguration) (message: Message) =
+    botConfig.ChatsToMonitor.ContainsKey message.Chat.Username
+    
 let isMessageFromAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.Contains message.From.Id
+    botConfig.AllowedUsers.ContainsKey message.From.Username
 
 let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.Contains message.ReplyToMessage.From.Id
+    botConfig.AllowedUsers.ContainsKey message.ReplyToMessage.From.Username
     
 let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
     let fromUserId = message.From.Id
@@ -34,7 +37,7 @@ let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: IL
     let targetUsername = message.ReplyToMessage.From.Username
     
     // check that user is allowed to ban others
-    if isMessageFromAdmin botConfig message then
+    if isMessageFromAdmin botConfig message && isMessageFromAllowedChats botConfig message then
         // check that user is not trying to ban other admins
         if isBannedPersonAdmin botConfig message then
             logger.LogWarning $"User {fromUsername} {fromUserId} tried to ban admin {targetUsername} {targetUserId}"
@@ -47,18 +50,22 @@ let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: IL
 let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
     let banTasks =
         botConfig.ChatsToMonitor
-        |> Seq.map (fun chatId -> task {
+        |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // ban user in each chat
             try
-                do! botClient.BanChatMemberAsync (ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
-                return Ok chatId
+                do! botClient.BanChatMemberAsync(ChatId chatUserName, targetUserId, DateTime.UtcNow.AddMonths 13)
+                return Ok(chatUserName, chatId) 
             with e ->
-                return Error (chatId, e)
+                return Error (chatUserName, chatId, e)
         })
     return! Task.WhenAll banTasks
 }
 
-let aggregateBanResultInLogMsg (logger: ILogger) (message: Message) (banResults: Result<int64, int64 * exn> []) =
+let aggregateBanResultInLogMsg
+    (logger: ILogger)
+    (message: Message)
+    (banResults: Result<string * int64, string * int64 * exn> []) =
+
     let targetUserId = message.ReplyToMessage.From.Id
     let targetUsername = message.ReplyToMessage.From.Username
     let logMsgBuilder = StringBuilder()
@@ -67,11 +74,11 @@ let aggregateBanResultInLogMsg (logger: ILogger) (message: Message) (banResults:
     (logMsgBuilder, banResults)
     ||> Array.fold (fun (sb: StringBuilder) result ->
         match result with
-        | Ok chatId ->
-            sb.AppendLine($"{chatId} - OK")
-        | Error (chatId, e) ->
-            logger.LogError($"Failed to ban user {targetUsername} ({targetUserId}) in chat {chatId}", e)
-            sb.AppendLine($"{chatId} - FAILED. {e.Message}")
+        | Ok (chatUsername, chatId) ->
+            sb.AppendLine($"{chatUsername} ({chatId}) - OK")
+        | Error (chatUsername, chatId, e) ->
+            logger.LogError($"Failed to ban user {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId})", e)
+            sb.AppendLine($"{chatUsername} ({chatId}) - FAILED. {e.Message}")
     )
     |> string
 
