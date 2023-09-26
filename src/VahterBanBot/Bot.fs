@@ -22,13 +22,13 @@ let isBanOnReplyMessage (message: Message) =
     message.ReplyToMessage <> null
     
 let isMessageFromAllowedChats (botConfig: BotConfiguration) (message: Message) =
-    botConfig.ChatsToMonitor.ContainsKey message.Chat.Username
+    botConfig.ChatsToMonitor.ContainsValue message.Chat.Id
     
 let isMessageFromAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.ContainsKey message.From.Username
+    botConfig.AllowedUsers.ContainsValue message.From.Id
 
 let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.ContainsKey message.ReplyToMessage.From.Username
+    botConfig.AllowedUsers.ContainsValue message.ReplyToMessage.From.Id
     
 let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
     let fromUserId = message.From.Id
