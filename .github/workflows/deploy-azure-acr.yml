@@ -24,12 +24,19 @@ jobs:
     - name: Apply migrations
       run: >-
         docker run --rm
-        --volume ${{ github.workspace }}/migrations:/src/migrations:ro
+        --volume ${{ github.workspace }}/src/migrations:/flyway/sql:ro
+        --volume ${{ github.workspace }}/reports:/flyway/reports
         "${{ env.DOCKER_IMAGE }}"
         -url="${{ secrets.DB_PROD_URL }}"
         -user="${{ secrets.DB_PROD_USERNAME }}"
         -password="${{ secrets.DB_PROD_PASSWORD }}" 
         migrate -schemas="${{ env.SCHEMAS }}"
+
+    - name: Upload Flyway report
+      uses: actions/upload-artifact@v3
+      with:
+        name: Database Report
+        path: reports/
 
     - name: 'Docker Login'
       uses: azure/docker-login@v1
