@@ -112,19 +112,28 @@ let onUpdate
     // and check that user is allowed to ban others
     elif isBanOnReplyMessage message && isBanAuthorized botConfig message logger then
 
+        // delete command message
+        let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        // delete message that was replied to
+        let deleteReplyTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
+        
         // try ban user in all monitored chats
         let! banResults = banInAllChats botConfig botClient message.ReplyToMessage.From.Id
         
         // produce aggregated log message
         let logMsg = aggregateBanResultInLogMsg logger message banResults
-            
+
         // log both to logger and to logs channel
         let! _ = botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg)
         logger.LogInformation logMsg
         
+        do! deleteCmdTask
+        do! deleteReplyTask
+        
     // ping command for testing that bot works and you can talk to it
     elif isPingCommand message && isMessageFromAdmin botConfig message then
+        // delete command message
+        let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
         let! _ = botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong")
-        ()
+        do! deleteCmdTask
 }
-
