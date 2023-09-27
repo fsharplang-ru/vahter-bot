@@ -1,0 +1,7 @@
+flyway.locations=filesystem:./src/migrations
+flyway.url=jdbc:postgresql://localhost:5433/vahter_bot_ban
+flyway.schemas=public
+flyway.user=vahter_bot_ban_service
+flyway.password=vahter_bot_ban_service
+flyway.baselineOnMigrate=true
+flyway.baselineVersion=0

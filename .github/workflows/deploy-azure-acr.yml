@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  SQLFLUFF_DIALECT: postgres
+  DOCKER_IMAGE: redgate/flyway
+  SCHEMAS: public
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,7 +20,17 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v2
- 
+
+    - name: Apply migrations
+      run: >-
+        docker run --rm
+        --volume ${{ github.workspace }}/migrations:/src/migrations:ro
+        "${{ env.DOCKER_IMAGE }}"
+        -url="${{ secrets.DB_PROD_URL }}"
+        -user="${{ secrets.DB_PROD_USERNAME }}"
+        -password="${{ secrets.DB_PROD_PASSWORD }}" 
+        migrate -schemas="${{ env.SCHEMAS }}"
+
     - name: 'Docker Login'
       uses: azure/docker-login@v1
       with:

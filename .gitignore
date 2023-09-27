@@ -2,3 +2,4 @@
 **/bin
 .idea
 .env
+flyway.conf
