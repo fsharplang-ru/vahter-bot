@@ -8,11 +8,14 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
+open VahterBanBot
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
 
 type Root = class end
+
+Dapper.FSharp.PostgreSQL.OptionTypes.register()
 
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
@@ -55,18 +58,34 @@ match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING"
     )
     
 let webApp = choose [
-    POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
-        use scope = ctx.RequestServices.CreateScope()
-        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-        let logger = ctx.GetLogger<Root>()
-        try
-            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
-        with e ->
-            logger.LogError(e, "Unexpected error while processing update")
-        return! Successful.OK() next ctx
-    })
     // need for Azure health checks on / route
     GET >=> route "/" >=> text "OK"
+    
+    requiresApiKey >=> choose [
+        POST >=> route botConf.Route >=> bindJson<Update> (fun update next ctx -> task {
+            use scope = ctx.RequestServices.CreateScope()
+            let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+            let logger = ctx.GetLogger<Root>()
+            try
+                do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
+            with e ->
+                logger.LogError(e, "Unexpected error while processing update")
+            return! Successful.OK() next ctx
+        })
+
+        GET >=> routef "/user/%d" (fun id next ctx -> task {
+            let logger = ctx.GetLogger<Root>()
+            try
+                let! upsertedUser =
+                    User.newUser id
+                    |> DB.upsertUser
+            
+                return! json upsertedUser next ctx
+            with e ->
+                logger.LogError(e, "Unexpected error while processing user")
+                return! ServerErrors.INTERNAL_ERROR() next ctx
+        })
+    ]
 ]
 
 let app = builder.Build()
