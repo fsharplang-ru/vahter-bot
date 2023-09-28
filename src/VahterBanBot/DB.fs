@@ -23,34 +23,29 @@ ON CONFLICT (id) DO UPDATE
                 WHEN EXCLUDED.username != "user".username THEN COALESCE(EXCLUDED.username, "user".username) 
                 ELSE "user".username
                 END,
-        updated_at =
-            CASE
-                WHEN EXCLUDED.updated_at != "user".updated_at THEN EXCLUDED.username
-                ELSE "user".updated_at
-                END,
         ban_reason =
             CASE
-                WHEN EXCLUDED.ban_reason != "user".ban_reason THEN EXCLUDED.ban_reason
+                WHEN EXCLUDED.ban_reason != "user".ban_reason THEN COALESCE(EXCLUDED.ban_reason, "user".ban_reason)
                 ELSE "user".ban_reason
                 END,
         banned_at = 
             CASE
-                WHEN EXCLUDED.banned_at != "user".banned_at THEN EXCLUDED.ban_reason
+                WHEN EXCLUDED.banned_at != "user".banned_at THEN COALESCE(EXCLUDED.banned_at, "user".banned_at)
                 ELSE "user".banned_at
                 END,
         banned_by =
             CASE
-                WHEN EXCLUDED.banned_by != "user".banned_by THEN EXCLUDED.ban_reason
+                WHEN EXCLUDED.banned_by != "user".banned_by THEN COALESCE(EXCLUDED.banned_by, "user".banned_by)
                 ELSE "user".banned_by
                 END,
         created_at =
             CASE
-                WHEN EXCLUDED.created_at != "user".created_at THEN EXCLUDED.ban_reason
+                WHEN EXCLUDED.created_at != "user".created_at THEN EXCLUDED.created_at
                 ELSE "user".created_at
                 END,
         updated_at =
             CASE
-                WHEN EXCLUDED.updated_at != "user".updated_at THEN EXCLUDED.ban_reason
+                WHEN EXCLUDED.updated_at != "user".updated_at THEN EXCLUDED.updated_at
                 ELSE "user".updated_at
                 END
 RETURNING *;
