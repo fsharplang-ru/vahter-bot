@@ -39,16 +39,7 @@ ON CONFLICT (id) DO UPDATE
                 WHEN EXCLUDED.banned_by != "user".banned_by THEN COALESCE(EXCLUDED.banned_by, "user".banned_by)
                 ELSE "user".banned_by
                 END,
-        created_at =
-            CASE
-                WHEN EXCLUDED.created_at != "user".created_at THEN EXCLUDED.created_at
-                ELSE "user".created_at
-                END,
-        updated_at =
-            CASE
-                WHEN EXCLUDED.updated_at != "user".updated_at THEN EXCLUDED.updated_at
-                ELSE "user".updated_at
-                END
+        updated_at = GREATEST(EXCLUDED.updated_at, "user".updated_at)
 RETURNING *;
 """
 
