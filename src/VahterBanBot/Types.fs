@@ -45,6 +45,7 @@ type DbUser =
 module DbUser =
     let banUser vahter reason (user: DbUser) = user.Ban(vahter, ?reason = reason)
 
+[<CLIMutable>]
 type DbMessage =
     { Chat_Id: int64
       Message_Id: int
