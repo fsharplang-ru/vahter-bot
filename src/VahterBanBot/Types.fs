@@ -13,6 +13,7 @@ type BotConfiguration =
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool }
 
+[<CLIMutable>]
 type User =
     { Id: int64
       Username: string option
