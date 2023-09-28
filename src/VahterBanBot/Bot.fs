@@ -79,17 +79,17 @@ let aggregateBanResultInLogMsg
     let targetUserId = message.ReplyToMessage.From.Id
     let targetUsername = message.ReplyToMessage.From.Username
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.AppendLine($"Vahter {vahterUsername}({vahterUserId}) banned {targetUsername} ({targetUserId})")
+    %logMsgBuilder.AppendLine($"Vahter {prependUsername vahterUsername}({vahterUserId}) banned {prependUsername targetUsername} ({targetUserId})")
     %logMsgBuilder.AppendLine($"Deleted {deletedUserMessages} messages in chats:")
 
     (logMsgBuilder, banResults)
     ||> Array.fold (fun (sb: StringBuilder) result ->
         match result with
         | Ok (chatUsername, chatId) ->
-            sb.AppendLine($"{chatUsername} ({chatId}) - OK")
+            sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - OK")
         | Error (chatUsername, chatId, e) ->
-            logger.LogError($"Failed to ban user {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId})", e)
-            sb.AppendLine($"{chatUsername} ({chatId}) - FAILED. {e.Message}")
+            logger.LogError($"Failed to ban user {prependUsername targetUsername} ({targetUserId}) in chat {prependUsername chatUsername} ({chatId})", e)
+            sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - FAILED. {e.Message}")
     )
     |> string
 

@@ -83,8 +83,6 @@ let server = app.RunAsync()
 let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
 
 let startLogMsg =
-    let prependUsername (s: string) =
-        if s.StartsWith("@") then s else "@" + s
     let sb = System.Text.StringBuilder()
     %sb.AppendLine("Bot started with following configuration")
     %sb.AppendLine("AllowedUsers:")

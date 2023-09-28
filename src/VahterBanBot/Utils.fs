@@ -15,3 +15,10 @@ let getEnv name =
 let getEnvOr name defaultValue =
     let value = Environment.GetEnvironmentVariable name
     if value = null then defaultValue else value
+
+let prependUsername (s: string) =
+    if isNull s then
+        null
+    elif s.StartsWith "@" then
+        s
+    else "@" + s
