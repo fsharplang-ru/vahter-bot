@@ -70,12 +70,17 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
 let aggregateBanResultInLogMsg
     (logger: ILogger)
     (message: Message)
+    (deletedUserMessages: int)
     (banResults: Result<string * int64, string * int64 * exn> []) =
 
+    let vahterUserId = message.From.Id
+    let vahterUsername = message.From.Username
+    
     let targetUserId = message.ReplyToMessage.From.Id
     let targetUsername = message.ReplyToMessage.From.Username
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.AppendLine($"Result of ban {targetUsername} ({targetUserId}) in chats:")
+    %logMsgBuilder.AppendLine($"Vahter {vahterUsername}({vahterUserId}) banned {targetUsername} ({targetUserId})")
+    %logMsgBuilder.AppendLine($"Deleted {deletedUserMessages} messages in chats:")
 
     (logMsgBuilder, banResults)
     ||> Array.fold (fun (sb: StringBuilder) result ->
@@ -94,11 +99,18 @@ let onUpdate
     (logger: ILogger)
     (message: Message) = task {
 
+    // early return if if we can't process it
     if isNull message || isNull message.From then
         logger.LogWarning "Received update without message"
+    else
+
+    // upserting user to DB
+    let! _ =
+        DbUser.newUser message.From
+        |> DB.upsertUser
 
     // check if message comes from channel, we should delete it immediately
-    elif botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
+    if botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
         
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
         let probablyChannelName =
@@ -116,17 +128,41 @@ let onUpdate
         let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
         // delete message that was replied to
         let deleteReplyTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
+        // update user in DB
+        let banUserInDb =
+            message.ReplyToMessage.From
+            |> DbUser.newUser
+            |> DbUser.banUser message.From.Id (Option.ofObj message.Text)
+            |> DB.upsertUser
+            
+        let deletedUserMessagesTask = task {
+            let fromUserId = message.ReplyToMessage.From.Id
+            
+            // delete all recorded messages from user in all chats
+            let! allUserMessages = DB.getUserMessages fromUserId
+            for msg in allUserMessages do
+                // try to delete each message separately
+                try
+                    do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
+                with e ->
+                    logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
+                
+            // delete recorded messages from DB
+            return! DB.deleteUserMessages fromUserId
+        }
         
         // try ban user in all monitored chats
         let! banResults = banInAllChats botConfig botClient message.ReplyToMessage.From.Id
+        let! deletedUserMessages = deletedUserMessagesTask
         
         // produce aggregated log message
-        let logMsg = aggregateBanResultInLogMsg logger message banResults
+        let logMsg = aggregateBanResultInLogMsg logger message deletedUserMessages banResults 
 
         // log both to logger and to logs channel
         let! _ = botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg)
         logger.LogInformation logMsg
         
+        let! _ = banUserInDb
         do! deleteCmdTask
         do! deleteReplyTask
         
@@ -136,4 +172,12 @@ let onUpdate
         let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
         let! _ = botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong")
         do! deleteCmdTask
+        
+    // if message is not a command, just save it ID to DB
+    else
+        let! _ =
+            message
+            |> DbMessage.newMessage
+            |> DB.insertMessage
+        ()
 }

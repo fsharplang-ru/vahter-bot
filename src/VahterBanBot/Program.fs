@@ -72,19 +72,6 @@ let webApp = choose [
                 logger.LogError(e, "Unexpected error while processing update")
             return! Successful.OK() next ctx
         })
-
-        GET >=> routef "/user/%d" (fun id next ctx -> task {
-            let logger = ctx.GetLogger<Root>()
-            try
-                let! upsertedUser =
-                    User.newUser id
-                    |> DB.upsertUser
-            
-                return! json upsertedUser next ctx
-            with e ->
-                logger.LogError(e, "Unexpected error while processing user")
-                return! ServerErrors.INTERNAL_ERROR() next ctx
-        })
     ]
 ]
 
