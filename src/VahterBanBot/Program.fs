@@ -8,7 +8,7 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
-open VahterBanBot
+open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
@@ -38,6 +38,7 @@ let builder = WebApplication.CreateBuilder()
 %builder.Services
     .AddSingleton(botConf)
     .AddGiraffe()
+    .AddHostedService<CleanupService>()
     .AddHttpClient("telegram_bot_client")
     .AddTypedClient(fun httpClient sp ->
         let options = TelegramBotClientOptions(botConf.BotToken)

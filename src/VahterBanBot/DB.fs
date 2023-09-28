@@ -1,5 +1,6 @@
 ﻿module VahterBanBot.DB
 
+open System
 open System.Threading.Tasks
 open Npgsql
 open VahterBanBot.Types
@@ -120,5 +121,21 @@ let deleteUserMessages (userId: int64): Task<int> =
                 sql,
                 {| userId = userId |}
             )
+        return messagesDeleted
+    }
+
+let cleanupOldMessages (howOld: TimeSpan): Task<int> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+        
+        //language=postgresql
+        let sql = "DELETE FROM message WHERE created_at < @thatOld"
+        
+        let! messagesDeleted =
+            conn.ExecuteAsync(
+                sql,
+                {| thatOld = DateTime.UtcNow.Subtract howOld |}
+            )
+        
         return messagesDeleted
     }

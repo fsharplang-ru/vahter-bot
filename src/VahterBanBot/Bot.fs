@@ -132,7 +132,7 @@ let onUpdate
         let banUserInDb =
             message.ReplyToMessage.From
             |> DbUser.newUser
-            |> DbUser.banUser message.From.Id (Option.ofObj message.Text)
+            |> DbUser.banUser message.From.Id (Option.ofObj message.ReplyToMessage.Text)
             |> DB.upsertUser
             
         let deletedUserMessagesTask = task {

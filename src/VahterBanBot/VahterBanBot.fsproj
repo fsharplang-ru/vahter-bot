@@ -10,6 +10,7 @@
     <Compile Include="Types.fs" />
     <Compile Include="DB.fs" />
     <Compile Include="Bot.fs" />
+    <Compile Include="Cleanup.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
