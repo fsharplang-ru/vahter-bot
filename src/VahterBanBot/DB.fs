@@ -19,30 +19,10 @@ let upsertUser (user: DbUser): Task<DbUser> =
 INSERT INTO "user" (id, username, ban_reason, banned_at, banned_by, created_at, updated_at)
 VALUES (@id, @username, @banReason, @bannedAt, @bannedBy, @createdAt, @updatedAt)
 ON CONFLICT (id) DO UPDATE
-    SET username   =
-            CASE
-                WHEN EXCLUDED.username IS DISTINCT FROM "user".username
-                    THEN COALESCE(EXCLUDED.username, "user".username)
-                ELSE "user".username
-                END,
-        ban_reason =
-            CASE
-                WHEN EXCLUDED.ban_reason IS DISTINCT FROM "user".ban_reason
-                    THEN COALESCE(EXCLUDED.ban_reason, "user".ban_reason)
-                ELSE "user".ban_reason
-                END,
-        banned_at  =
-            CASE
-                WHEN EXCLUDED.banned_at IS DISTINCT FROM "user".banned_at
-                    THEN COALESCE(EXCLUDED.banned_at, "user".banned_at)
-                ELSE "user".banned_at
-                END,
-        banned_by  =
-            CASE
-                WHEN EXCLUDED.banned_by IS DISTINCT FROM "user".banned_by
-                    THEN COALESCE(EXCLUDED.banned_by, "user".banned_by)
-                ELSE "user".banned_by
-                END,
+    SET username   = COALESCE("user".username, EXCLUDED.username),
+        ban_reason = COALESCE("user".ban_reason, EXCLUDED.ban_reason),
+        banned_at  = COALESCE("user".banned_at, EXCLUDED.banned_at),
+        banned_by  = COALESCE("user".banned_by, EXCLUDED.banned_by),
         updated_at = GREATEST(EXCLUDED.updated_at, "user".updated_at)
 RETURNING *;
 """
