@@ -17,17 +17,17 @@ type BotConfiguration =
 type User =
     { Id: int64
       Username: string option
-      BannedBy: int64 option
-      BannedAt: DateTime option
-      BanReason: string option
-      UpdatedAt: DateTime
-      CreatedAt: DateTime }
+      Banned_By: int64 option
+      Banned_At: DateTime option
+      Ban_Reason: string option
+      Updated_At: DateTime
+      Created_At: DateTime }
 
     static member newUser(id, ?username: string) =
         { Id = id
           Username = username
-          BannedBy = None
-          BannedAt = None
-          BanReason = None
-          UpdatedAt = DateTime.UtcNow
-          CreatedAt = DateTime.UtcNow }
+          Banned_By = None
+          Banned_At = None
+          Ban_Reason = None
+          Updated_At = DateTime.UtcNow
+          Created_At = DateTime.UtcNow }
