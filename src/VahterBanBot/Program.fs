@@ -1,4 +1,4 @@
-﻿open System
+﻿open System.Collections.Generic
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
@@ -12,6 +12,11 @@ open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
+open OpenTelemetry.Trace
+open OpenTelemetry.Metrics
+open OpenTelemetry.Resources
+open Npgsql
+open Azure.Monitor.OpenTelemetry.AspNetCore
 
 type Root = class end
 
@@ -44,11 +49,39 @@ let builder = WebApplication.CreateBuilder()
         let options = TelegramBotClientOptions(botConf.BotToken)
         TelegramBotClient(options, httpClient) :> ITelegramBotClient)
 
-%builder.Logging.AddConsole()
+let otelBuilder =
+    builder.Services
+        .AddOpenTelemetry()
+        .WithTracing(fun builder ->
+            %builder
+                .AddHttpClientInstrumentation()
+                .AddAspNetCoreInstrumentation()
+                .AddNpgsql()
+                .ConfigureResource(fun res ->
+                    %res.AddAttributes [
+                        KeyValuePair("service.name", "vahter-ban-bot")
+                    ]
+                )
+            getEnvWith "OTEL_EXPORTER_ZIPKIN_ENDPOINT" (fun _ ->
+                %builder.AddZipkinExporter()
+            )
+            getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
+                if otelConsole then %builder.AddConsoleExporter()
+            )
+        )
+        .WithMetrics(fun builder ->
+            %builder
+                .AddHttpClientInstrumentation()
+                .AddAspNetCoreInstrumentation()
+            getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
+                if otelConsole then %builder.AddConsoleExporter()
+            )
+        )
 
-match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING" with
-| null -> ()
-| appInsightKey ->
+getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
+    %otelBuilder.UseAzureMonitor(fun options ->
+        options.ConnectionString <- appInsightKey
+    )
     %builder.Logging.AddApplicationInsights(
         configureTelemetryConfiguration = (fun config ->
             config.ConnectionString <- appInsightKey
@@ -57,6 +90,9 @@ match Environment.GetEnvironmentVariable "APPLICATIONINSIGHTS_CONNECTION_STRING"
             ()
         )
     )
+)
+
+%builder.Logging.AddConsole()
     
 let webApp = choose [
     // need for Azure health checks on / route
