@@ -28,11 +28,8 @@ let prependUsername (s: string) =
         s
     else "@" + s
 
-let pluralize (n: float) (s: string) =
-    if n < 2.0 then
-        ""
-    else
-        "s"
+let pluralize n =
+    if n < 2.0 then "" else "s"
 
 let timeSpanAsHumanReadable (ts: TimeSpan) =
     let totalSeconds = ts.TotalSeconds
