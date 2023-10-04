@@ -1,5 +1,6 @@
 ﻿module VahterBanBot.Cleanup
 
+open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
@@ -27,9 +28,13 @@ type CleanupService(
     
     let cleanup _ = task {
         let! cleanupMsgs = DB.cleanupOldMessages cleanupOldLimit
+        let! vahterStats = DB.getVahterStats (Some cleanupInterval)
         
-        let msg = $"Cleaned up {cleanupMsgs} messages"
+        let sb = StringBuilder()
+        %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable cleanupOldLimit}"
+        %sb.AppendLine(string vahterStats)
         
+        let msg = sb.ToString()
         let! _ = telegramClient.SendTextMessageAsync(
             ChatId(botConf.LogsChannelId),
             msg
@@ -39,7 +44,8 @@ type CleanupService(
     
     interface IHostedService with
         member this.StartAsync(cancellationToken) =
-            timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, cleanupInterval)
+            if not botConf.IgnoreSideEffects then
+                timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, cleanupInterval)
             Task.CompletedTask
 
         member this.StopAsync(cancellationToken) =

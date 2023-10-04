@@ -1,4 +1,5 @@
-﻿open System.Collections.Generic
+﻿open System
+open System.Collections.Generic
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
@@ -8,6 +9,7 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
+open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
@@ -29,7 +31,8 @@ let botConf =
       LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<_>
       AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
-      ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse }
+      ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
+      IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -128,9 +131,14 @@ let startLogMsg =
     %sb.AppendLine("ChatsToMonitor:")
     for KeyValue(username, chatId) in botConf.ChatsToMonitor do
         %sb.AppendLine($"  {prependUsername username} ({chatId})")
+
+    let totalStats = (DB.getVahterStats None).Result
+    %sb.AppendLine (string totalStats)
+
     sb.ToString()
 
 app.Logger.LogInformation startLogMsg
-telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
+if not botConf.IgnoreSideEffects then
+    telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
 
 server.Wait()

@@ -114,3 +114,24 @@ let cleanupOldMessages (howOld: TimeSpan): Task<int> =
         
         return messagesDeleted
     }
+
+let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT vahter.username                                                      AS vahter
+     , COUNT(*)                                                             AS killCountTotal
+     , COUNT(*) FILTER (WHERE u.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
+FROM "user" u
+         JOIN "user" vahter ON vahter.id = u.banned_by
+WHERE u.banned_by IS NOT NULL
+GROUP BY u.banned_by, vahter.username
+ORDER BY killCountTotal DESC
+            """
+
+        let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
+        return { interval = banInterval; stats = Array.ofSeq stats }
+    }

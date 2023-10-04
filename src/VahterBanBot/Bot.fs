@@ -81,7 +81,7 @@ let aggregateBanResultInLogMsg
     let targetUserId = message.ReplyToMessage.From.Id
     let targetUsername = message.ReplyToMessage.From.Username
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) banned {prependUsername targetUsername} ({targetUserId}) in chat ${chatName}({chatId})")
+    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) banned {prependUsername targetUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
     
     // we don't want to spam logs channel if all is good
     let allChatsOk = banResults |> Array.forall Result.isOk

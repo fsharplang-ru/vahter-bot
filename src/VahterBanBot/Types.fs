@@ -2,6 +2,8 @@
 
 open System
 open System.Collections.Generic
+open System.Text
+open Utils
 
 [<CLIMutable>]
 type BotConfiguration =
@@ -11,7 +13,8 @@ type BotConfiguration =
       LogsChannelId: int64
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
-      ShouldDeleteChannelMessages: bool }
+      ShouldDeleteChannelMessages: bool
+      IgnoreSideEffects: bool }
 
 [<CLIMutable>]
 type DbUser =
@@ -56,3 +59,37 @@ type DbMessage =
           Message_Id = message.MessageId
           User_Id = message.From.Id
           Created_At = DateTime.UtcNow }
+
+[<CLIMutable>]
+type VahterStat =
+    { Vahter: string
+      KillCountTotal: int
+      KillCountInterval: int }
+
+type VahterStats =
+    { stats: VahterStat array
+      interval: TimeSpan option }
+    override this.ToString() =
+        let sb = StringBuilder()
+        if this.stats.Length > 0 then
+            if this.interval.IsSome then
+                let intervalKills =
+                    this.stats
+                    |> Array.filter (fun x -> x.KillCountInterval > 0)
+                    
+                if intervalKills.Length > 0 then
+                    %sb.AppendLine $"Vahter stats for the last {timeSpanAsHumanReadable this.interval.Value}"
+                    
+                    intervalKills
+                    |> Array.sortByDescending (fun x -> x.KillCountInterval)
+                    |> Array.iteri (fun i stat ->
+                        %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountInterval}")
+                else
+                    %sb.AppendLine $"No one was killed in the last {timeSpanAsHumanReadable this.interval.Value}"
+                
+            %sb.AppendLine "Vahter stats all time"
+            this.stats
+            |> Array.sortByDescending (fun x -> x.KillCountTotal)
+            |> Array.iteri (fun i stat ->
+                %sb.AppendLine $"%d{i+1} {stat.Vahter} - {stat.KillCountTotal}")
+        sb.ToString()
