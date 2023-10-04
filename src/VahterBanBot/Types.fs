@@ -91,5 +91,5 @@ type VahterStats =
             this.stats
             |> Array.sortByDescending (fun x -> x.KillCountTotal)
             |> Array.iteri (fun i stat ->
-                %sb.AppendLine $"%d{i+1} {stat.Vahter} - {stat.KillCountTotal}")
+                %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountTotal}")
         sb.ToString()
