@@ -78,7 +78,7 @@ type VahterStats =
                     |> Array.filter (fun x -> x.KillCountInterval > 0)
                     
                 if intervalKills.Length > 0 then
-                    %sb.AppendLine $"Vahter stats for the last {timeSpanAsHumanReadable this.interval.Value}"
+                    %sb.AppendLine $"Vahter stats for the last {timeSpanAsHumanReadable this.interval.Value}:"
                     
                     intervalKills
                     |> Array.sortByDescending (fun x -> x.KillCountInterval)
@@ -87,7 +87,7 @@ type VahterStats =
                 else
                     %sb.AppendLine $"No one was killed in the last {timeSpanAsHumanReadable this.interval.Value}"
                 
-            %sb.AppendLine "Vahter stats all time"
+            %sb.AppendLine "Vahter stats all time:"
             this.stats
             |> Array.sortByDescending (fun x -> x.KillCountTotal)
             |> Array.iteri (fun i stat ->

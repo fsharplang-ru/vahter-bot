@@ -31,10 +31,10 @@ let prependUsername (s: string) =
 let timeSpanAsHumanReadable (ts: TimeSpan) =
     let totalSeconds = ts.TotalSeconds
     if totalSeconds < 60.0 then
-        $"%.1f{totalSeconds} seconds"
+        $"%.0f{totalSeconds} seconds"
     elif totalSeconds < 3600.0 then
-        $"%.1f{ts.TotalMinutes} minutes"
+        $"%.0f{ts.TotalMinutes} minutes"
     elif totalSeconds < 86400.0 then
-        $"%.1f{ts.TotalHours} hours"
+        $"%.0f{ts.TotalHours} hours"
     else
-        $"%.1f{ts.TotalDays} days"
+        $"%.0f{ts.TotalDays} days"
