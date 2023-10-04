@@ -28,16 +28,19 @@ let prependUsername (s: string) =
         s
     else "@" + s
 
-let pluralize n =
-    if n < 2.0 then "" else "s"
+let pluralize n s =
+    if n < 2.0 then
+        $"%.0f{n} {s}"
+    else
+        $"%.0f{n} {s}s"
 
 let timeSpanAsHumanReadable (ts: TimeSpan) =
     let totalSeconds = ts.TotalSeconds
     if totalSeconds < 60.0 then
-        $"%.0f{totalSeconds} second{pluralize totalSeconds}"
+        pluralize totalSeconds "second"
     elif totalSeconds < 3600.0 then
-        $"%.0f{ts.TotalMinutes} minute{pluralize ts.TotalMinutes}"
+        pluralize ts.TotalMinutes "minute"
     elif totalSeconds < 86400.0 then
-        $"%.0f{ts.TotalHours} hour{pluralize ts.TotalHours}"
+        pluralize ts.TotalHours "hour"
     else
-        $"%.0f{ts.TotalDays} day{pluralize ts.TotalDays}"
+        pluralize ts.TotalDays "day"
