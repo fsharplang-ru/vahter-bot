@@ -30,7 +30,7 @@ let prependUsername (s: string) =
 
 let pluralize n s =
     if n < 2.0 then
-        $"%.0f{n} {s}"
+        s
     else
         $"%.0f{n} {s}s"
 
