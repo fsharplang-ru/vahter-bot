@@ -1,4 +1,4 @@
-﻿FROM mcr.microsoft.com/dotnet/sdk:7.0.401-jammy as build-env
+﻿FROM mcr.microsoft.com/dotnet/sdk:7.0.402-jammy as build-env
 WORKDIR /src/VahterBanBot
 COPY src/VahterBanBot/VahterBanBot.fsproj .
 RUN dotnet restore

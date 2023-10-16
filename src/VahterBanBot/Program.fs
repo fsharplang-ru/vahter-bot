@@ -65,6 +65,7 @@ let otelBuilder =
                         KeyValuePair("service.name", "vahter-ban-bot")
                     ]
                 )
+                .AddSource(botActivity.Name)
             getEnvWith "OTEL_EXPORTER_ZIPKIN_ENDPOINT" (fun _ ->
                 %builder.AddZipkinExporter()
             )

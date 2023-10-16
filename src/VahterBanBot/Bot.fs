@@ -1,6 +1,7 @@
 ﻿module VahterBanBot.Bot
 
 open System
+open System.Diagnostics
 open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
@@ -8,6 +9,8 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
+
+let botActivity = new ActivitySource("VahterBanBot")
 
 let isChannelMessage (message: Message) =
     message.From.IsBot &&
@@ -105,6 +108,61 @@ let aggregateBanResultInLogMsg
         )
         |> string
 
+let banOnReply
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger) = task {
+    use banOnReplyActivity = botActivity.StartActivity("banOnReply")
+    %banOnReplyActivity
+        .SetTag("chatId", message.Chat.Id)
+        .SetTag("chatUsername", message.Chat.Username)
+        .SetTag("vahterId", message.From.Id)
+        .SetTag("vahterUsername", message.From.Username)
+
+    // delete command message
+    let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+    // delete message that was replied to
+    let deleteReplyTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
+    // update user in DB
+    let banUserInDb =
+        message.ReplyToMessage.From
+        |> DbUser.newUser
+        |> DbUser.banUser message.From.Id (Option.ofObj message.ReplyToMessage.Text)
+        |> DB.upsertUser
+        
+    let deletedUserMessagesTask = task {
+        let fromUserId = message.ReplyToMessage.From.Id
+        
+        // delete all recorded messages from user in all chats
+        let! allUserMessages = DB.getUserMessages fromUserId
+        for msg in allUserMessages do
+            // try to delete each message separately
+            try
+                do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
+            with e ->
+                logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
+            
+        // delete recorded messages from DB
+        return! DB.deleteUserMessages fromUserId
+    }
+    
+    // try ban user in all monitored chats
+    let! banResults = banInAllChats botConfig botClient message.ReplyToMessage.From.Id
+    let! deletedUserMessages = deletedUserMessagesTask
+    
+    // produce aggregated log message
+    let logMsg = aggregateBanResultInLogMsg logger message deletedUserMessages banResults 
+
+    // log both to logger and to logs channel
+    let! _ = botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg)
+    logger.LogInformation logMsg
+    
+    let! _ = banUserInDb
+    do! deleteCmdTask
+    do! deleteReplyTask
+}
+
 let onUpdate
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -135,54 +193,7 @@ let onUpdate
     // check if message is a known command
     // and check that user is allowed to ban others
     elif isBanOnReplyMessage message && isBanAuthorized botConfig message logger then
-        // we are creating a task here, to work around F# compiler bug
-        // https://www.github.com/dotnet/fsharp/issues/16068
-        // otherwise we would get a warning about "This state machine is not statically compilable blah blah"
-        // it happens because task builder has too many bindings inside if branch
-        return! task {
-
-            // delete command message
-            let deleteCmdTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            // delete message that was replied to
-            let deleteReplyTask = botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
-            // update user in DB
-            let banUserInDb =
-                message.ReplyToMessage.From
-                |> DbUser.newUser
-                |> DbUser.banUser message.From.Id (Option.ofObj message.ReplyToMessage.Text)
-                |> DB.upsertUser
-                
-            let deletedUserMessagesTask = task {
-                let fromUserId = message.ReplyToMessage.From.Id
-                
-                // delete all recorded messages from user in all chats
-                let! allUserMessages = DB.getUserMessages fromUserId
-                for msg in allUserMessages do
-                    // try to delete each message separately
-                    try
-                        do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
-                    with e ->
-                        logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
-                    
-                // delete recorded messages from DB
-                return! DB.deleteUserMessages fromUserId
-            }
-            
-            // try ban user in all monitored chats
-            let! banResults = banInAllChats botConfig botClient message.ReplyToMessage.From.Id
-            let! deletedUserMessages = deletedUserMessagesTask
-            
-            // produce aggregated log message
-            let logMsg = aggregateBanResultInLogMsg logger message deletedUserMessages banResults 
-
-            // log both to logger and to logs channel
-            let! _ = botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg)
-            logger.LogInformation logMsg
-            
-            let! _ = banUserInDb
-            do! deleteCmdTask
-            do! deleteReplyTask
-        }
+        do! banOnReply botClient botConfig message logger
         
     // ping command for testing that bot works and you can talk to it
     elif isPingCommand message && isMessageFromAdmin botConfig message then
