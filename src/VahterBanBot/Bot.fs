@@ -145,13 +145,18 @@ let banOnReply
         
     let deletedUserMessagesTask = task {
         let fromUserId = message.ReplyToMessage.From.Id
+        let! allUserMessages = DB.getUserMessages fromUserId
         
         // delete all recorded messages from user in all chats
-        let! allUserMessages = DB.getUserMessages fromUserId
-        for msg in allUserMessages do
-            // try to delete each message separately
-            do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e))
+        let! _ =
+            allUserMessages
+            |> Seq.map (fun msg -> task {
+                try
+                    do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
+                with e ->
+                    logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
+            })
+            |> Task.WhenAll
 
         // delete recorded messages from DB
         return! DB.deleteUserMessages fromUserId
