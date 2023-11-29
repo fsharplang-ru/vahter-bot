@@ -35,20 +35,20 @@ type CleanupService(
         %sb.AppendLine(string vahterStats)
         
         let msg = sb.ToString()
-        let! _ = telegramClient.SendTextMessageAsync(
-            ChatId(botConf.LogsChannelId),
-            msg
-        )
+        do! telegramClient.SendTextMessageAsync(
+                ChatId(botConf.LogsChannelId),
+                msg
+            ) |> taskIgnore
         logger.LogInformation msg
     }
     
     interface IHostedService with
-        member this.StartAsync(cancellationToken) =
+        member this.StartAsync _ =
             if not botConf.IgnoreSideEffects then
                 timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, cleanupInterval)
             Task.CompletedTask
 
-        member this.StopAsync(cancellationToken) =
+        member this.StopAsync _ =
             match timer with
             | null -> Task.CompletedTask
             | timer -> timer.DisposeAsync().AsTask()

@@ -32,6 +32,10 @@ let isMessageFromAdmin (botConfig: BotConfiguration) (message: Message) =
 
 let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
     botConfig.AllowedUsers.ContainsValue message.ReplyToMessage.From.Id
+
+let isKnownCommand (message: Message) =
+    isPingCommand message ||
+    isBanOnReplyMessage message
     
 let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
     let fromUserId = message.From.Id
@@ -126,11 +130,6 @@ let banOnReply
         .SetTag("vahterId", message.From.Id)
         .SetTag("vahterUsername", message.From.Username)
 
-    // delete command message
-    let deleteCmdTask =
-        botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete command message {message.MessageId} from chat {message.Chat.Id}", e))
-
     // delete message that was replied to
     let deleteReplyTask =
         botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
@@ -148,7 +147,7 @@ let banOnReply
         let! allUserMessages = DB.getUserMessages fromUserId
         
         // delete all recorded messages from user in all chats
-        let! _ =
+        do!
             allUserMessages
             |> Seq.map (fun msg -> task {
                 try
@@ -157,6 +156,7 @@ let banOnReply
                     logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
             })
             |> Task.WhenAll
+            |> taskIgnore
 
         // delete recorded messages from DB
         return! DB.deleteUserMessages fromUserId
@@ -170,11 +170,10 @@ let banOnReply
     let logMsg = aggregateBanResultInLogMsg logger message deletedUserMessages banResults 
 
     // log both to logger and to logs channel
-    let! _ = botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg)
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
     
-    let! _ = banUserInDb
-    do! deleteCmdTask
+    do! banUserInDb.Ignore()
     do! deleteReplyTask
 }
 
@@ -190,7 +189,7 @@ let onUpdate
     else
 
     // upserting user to DB
-    let! _ =
+    let upsertUserTask =
         DbUser.newUser message.From
         |> DB.upsertUser
 
@@ -206,25 +205,28 @@ let onUpdate
                 "[unknown]"
         logger.LogInformation $"Deleted message from channel {probablyChannelName}"
 
-    // check if message is a known command
-    // and check that user is allowed to ban others
-    elif isBanOnReplyMessage message && isBanAuthorized botConfig message logger then
-        do! banOnReply botClient botConfig message logger
-        
-    // ping command for testing that bot works and you can talk to it
-    elif isPingCommand message && isMessageFromAdmin botConfig message then
+    // check if message is a known command from authorized user
+    elif isKnownCommand message && isMessageFromAdmin botConfig message then
         // delete command message
         let deleteCmdTask =
             botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
-        let! _ = botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong")
+
+        // check that user is allowed to ban others
+        if isBanOnReplyMessage message && isBanAuthorized botConfig message logger then
+            do! banOnReply botClient botConfig message logger
+
+        // ping command for testing that bot works and you can talk to it
+        elif isPingCommand message then
+            do! botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong") |> taskIgnore
         do! deleteCmdTask
-        
-    // if message is not a command, just save it ID to DB
+
+    // if message is not a command from authorized user, just save it ID to DB
     else
-        let! _ =
+        do!
             message
             |> DbMessage.newMessage
             |> DB.insertMessage
-        ()
+            |> taskIgnore
+    do! taskIgnore upsertUserTask 
 }

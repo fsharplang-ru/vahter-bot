@@ -1,6 +1,7 @@
 ﻿module VahterBanBot.Utils
 
 open System
+open System.Threading.Tasks
 
 let inline (~%) x = ignore x
 
@@ -44,3 +45,8 @@ let timeSpanAsHumanReadable (ts: TimeSpan) =
         pluralize ts.TotalHours "hour"
     else
         pluralize ts.TotalDays "day"
+
+type Task<'x> with
+    member this.Ignore() = task { let! _ = this in () }
+
+let inline taskIgnore (t: Task<'x>) = t.Ignore()
