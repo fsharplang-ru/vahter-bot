@@ -154,12 +154,19 @@ let banOnReply
     %banOnReplyActivity
         .SetTag("vahterId", message.From.Id)
         .SetTag("vahterUsername", message.From.Username)
+        .SetTag("targetId", message.ReplyToMessage.From.Id)
+        .SetTag("targetUsername", message.ReplyToMessage.From.Username)
 
     // delete message that was replied to
-    let deleteReplyTask =
-        botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
-        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
-
+    let deleteReplyTask = task {
+        use _ =
+            botActivity
+                .StartActivity("deleteReplyMsg")
+                .SetTag("msgId", message.ReplyToMessage.MessageId)
+                .SetTag("chatId", message.Chat.Id)
+        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
+            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
+    }
     // update user in DB
     let banUserInDb =
         message.ReplyToMessage.From
@@ -177,6 +184,11 @@ let banOnReply
             allUserMessages
             |> Seq.map (fun msg -> task {
                 try
+                    use _ =
+                        botActivity
+                            .StartActivity("deleteMsg")
+                            .SetTag("msgId", msg.Message_Id)
+                            .SetTag("chatId", msg.Chat_Id)
                     do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
                 with e ->
                     logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
@@ -232,10 +244,15 @@ let onUpdate
     elif isKnownCommand message && isMessageFromAdmin botConfig message then
         use _ = botActivity.StartActivity("adminCommand")
         // delete command message
-        let deleteCmdTask =
-            botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
-
+        let deleteCmdTask = task {
+            use _ = 
+                botActivity
+                    .StartActivity("deleteCmdMsg")
+                    .SetTag("msgId", message.MessageId)
+                    .SetTag("chatId", message.Chat.Id)
+            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
+        }
         // check that user is allowed to ban others
         if isBanOnReplyCommand message && isBanAuthorized botConfig message logger then
             do! banOnReply botClient botConfig message logger
@@ -248,6 +265,9 @@ let onUpdate
     // if message is not a command from authorized user, just save it ID to DB
     else
         use _ = botActivity.StartActivity("justMessage")
+        %banOnReplyActivity
+            .SetTag("userId", message.From.Id)
+            .SetTag("userUsername", message.From.Username)
         do!
             message
             |> DbMessage.newMessage
