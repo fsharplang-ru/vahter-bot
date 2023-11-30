@@ -86,7 +86,7 @@ let deleteMsgs (msg: DbMessage[]): Task<int> =
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "DELETE FROM message WHERE message_id IN @msgIds"
+        let sql = "DELETE FROM message WHERE message_id = ANY(@msgIds)"
         return! conn.ExecuteAsync(sql, {| msgIds = msgIds |})
     }
 
