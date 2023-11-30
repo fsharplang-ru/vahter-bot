@@ -76,27 +76,18 @@ let getUserMessages (userId: int64): Task<DbMessage array> =
         //language=postgresql
         let sql = "SELECT * FROM message WHERE user_id = @userId"
             
-        let! messages =
-            conn.QueryAsync<DbMessage>(
-                sql,
-                {| userId = userId |}
-            )
+        let! messages = conn.QueryAsync<DbMessage>(sql, {| userId = userId |})
         return Array.ofSeq messages
     }
 
-let deleteUserMessages (userId: int64): Task<int> =
+let deleteMsgs (msg: DbMessage[]): Task<int> =
     task {
+        let msgIds = msg |> Array.map (fun m -> m.Message_Id)
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "DELETE FROM message WHERE user_id = @userId"
-            
-        let! messagesDeleted =
-            conn.ExecuteAsync(
-                sql,
-                {| userId = userId |}
-            )
-        return messagesDeleted
+        let sql = "DELETE FROM message WHERE message_id IN @msgIds"
+        return! conn.ExecuteAsync(sql, {| msgIds = msgIds |})
     }
 
 let cleanupOldMessages (howOld: TimeSpan): Task<int> =
@@ -105,14 +96,7 @@ let cleanupOldMessages (howOld: TimeSpan): Task<int> =
         
         //language=postgresql
         let sql = "DELETE FROM message WHERE created_at < @thatOld"
-        
-        let! messagesDeleted =
-            conn.ExecuteAsync(
-                sql,
-                {| thatOld = DateTime.UtcNow.Subtract howOld |}
-            )
-        
-        return messagesDeleted
+        return! conn.ExecuteAsync(sql, {| thatOld = DateTime.UtcNow.Subtract howOld |})
     }
 
 let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =

@@ -20,10 +20,13 @@ let isChannelMessage (message: Message) =
 let isPingCommand (message: Message) =
     message.Text = "/ban ping"
 
-let isBanOnReplyMessage (message: Message) =
-    message.Text = "/ban" &&
+let isBanCommand (message: Message) =
+    message.Text = "/ban"
+
+let isBanOnReplyCommand (message: Message) =
+    isBanCommand message &&
     message.ReplyToMessage <> null
-    
+
 let isMessageFromAllowedChats (botConfig: BotConfiguration) (message: Message) =
     botConfig.ChatsToMonitor.ContainsValue message.Chat.Id
     
@@ -35,8 +38,8 @@ let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
 
 let isKnownCommand (message: Message) =
     isPingCommand message ||
-    isBanOnReplyMessage message
-    
+    isBanCommand message
+
 let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
     let fromUserId = message.From.Id
     let fromUsername = message.From.Username
@@ -118,6 +121,30 @@ let aggregateBanResultInLogMsg
         )
         |> string
 
+let ping
+    (botClient: ITelegramBotClient)
+    (message: Message) = task {
+    use _ = botActivity.StartActivity("ping")
+    do! botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong") |> taskIgnore
+}
+
+let deleteChannelMessage
+    (botClient: ITelegramBotClient)
+    (message: Message)
+    (logger: ILogger) = task {
+    use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
+    do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+
+    let probablyChannelName =
+        if message.SenderChat <> null then
+            message.SenderChat.Title
+        else
+            "[unknown]"
+    %banOnReplyActivity.SetTag("channelName", probablyChannelName)
+    logger.LogInformation $"Deleted message from channel {probablyChannelName}"
+}
+
 let banOnReply
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -125,8 +152,6 @@ let banOnReply
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("banOnReply")
     %banOnReplyActivity
-        .SetTag("chatId", message.Chat.Id)
-        .SetTag("chatUsername", message.Chat.Username)
         .SetTag("vahterId", message.From.Id)
         .SetTag("vahterUsername", message.From.Username)
 
@@ -141,10 +166,11 @@ let banOnReply
         |> DbUser.newUser
         |> DbUser.banUser message.From.Id (Option.ofObj message.ReplyToMessage.Text)
         |> DB.upsertUser
-        
+
     let deletedUserMessagesTask = task {
         let fromUserId = message.ReplyToMessage.From.Id
         let! allUserMessages = DB.getUserMessages fromUserId
+        logger.LogInformation($"Deleting {allUserMessages.Length} messages from user {fromUserId}")
         
         // delete all recorded messages from user in all chats
         do!
@@ -159,7 +185,7 @@ let banOnReply
             |> taskIgnore
 
         // delete recorded messages from DB
-        return! DB.deleteUserMessages fromUserId
+        return! DB.deleteMsgs allUserMessages
     }
     
     // try ban user in all monitored chats
@@ -182,6 +208,11 @@ let onUpdate
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (message: Message) = task {
+    
+    use banOnReplyActivity = botActivity.StartActivity("onUpdate")
+    %banOnReplyActivity
+        .SetTag("chatId", message.Chat.Id)
+        .SetTag("chatUsername", message.Chat.Username)
 
     // early return if if we can't process it
     if isNull message || isNull message.From then
@@ -195,34 +226,28 @@ let onUpdate
 
     // check if message comes from channel, we should delete it immediately
     if botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
-
-        let probablyChannelName =
-            if message.SenderChat <> null then
-                message.SenderChat.Title
-            else
-                "[unknown]"
-        logger.LogInformation $"Deleted message from channel {probablyChannelName}"
+        do! deleteChannelMessage botClient message logger
 
     // check if message is a known command from authorized user
     elif isKnownCommand message && isMessageFromAdmin botConfig message then
+        use _ = botActivity.StartActivity("adminCommand")
         // delete command message
         let deleteCmdTask =
             botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
 
         // check that user is allowed to ban others
-        if isBanOnReplyMessage message && isBanAuthorized botConfig message logger then
+        if isBanOnReplyCommand message && isBanAuthorized botConfig message logger then
             do! banOnReply botClient botConfig message logger
 
         // ping command for testing that bot works and you can talk to it
         elif isPingCommand message then
-            do! botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong") |> taskIgnore
+            do! ping botClient message
         do! deleteCmdTask
 
     // if message is not a command from authorized user, just save it ID to DB
     else
+        use _ = botActivity.StartActivity("justMessage")
         do!
             message
             |> DbMessage.newMessage
