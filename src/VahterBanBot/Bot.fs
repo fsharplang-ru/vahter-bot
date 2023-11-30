@@ -233,9 +233,10 @@ let onUpdate
     else
 
     // upserting user to DB
-    let upsertUserTask =
+    let! _ =
         DbUser.newUser message.From
         |> DB.upsertUser
+        |> taskIgnore
 
     // check if message comes from channel, we should delete it immediately
     if botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
@@ -276,5 +277,4 @@ let onUpdate
             |> DbMessage.newMessage
             |> DB.insertMessage
             |> taskIgnore
-    do! taskIgnore upsertUserTask 
 }
