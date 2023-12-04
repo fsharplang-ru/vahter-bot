@@ -119,3 +119,13 @@ ORDER BY killCountTotal DESC
         let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
         return { interval = banInterval; stats = Array.ofSeq stats }
     }
+
+let getUserById (userId: int64): Task<DbUser option> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT * FROM \"user\" WHERE id = @userId"
+        let! users = conn.QueryAsync<DbUser>(sql, {| userId = userId |})
+        return users |> Seq.tryHead
+    }

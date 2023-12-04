@@ -22,6 +22,9 @@ let isPingCommand (message: Message) =
 
 let isBanCommand (message: Message) =
     message.Text = "/ban"
+    
+let isUnbanCommand (message: Message) =
+    message.Text = "/unban"
 
 let isBanOnReplyCommand (message: Message) =
     isBanCommand message &&
@@ -38,7 +41,8 @@ let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
 
 let isKnownCommand (message: Message) =
     isPingCommand message ||
-    isBanCommand message
+    isBanCommand message ||
+    isUnbanCommand message
 
 let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
     let fromUserId = message.From.Id
@@ -51,16 +55,16 @@ let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: IL
     // check that user is allowed to ban others
     if isMessageFromAdmin botConfig message then
         if not(isMessageFromAllowedChats botConfig message) then
-            logger.LogWarning $"User {fromUsername} {fromUserId} tried to ban user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
+            logger.LogWarning $"User {fromUsername} {fromUserId} tried to (un)ban user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
             false
         // check that user is not trying to ban other admins
         elif isBannedPersonAdmin botConfig message then
-            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
+            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to (un)ban admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
             false
         else
             true
     else
-        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
+        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to (un)ban user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
         false
     
 let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
@@ -77,49 +81,84 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
     return! Task.WhenAll banTasks
 }
 
+let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
+    let banTasks =
+        botConfig.ChatsToMonitor
+        |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
+            // unban user in each chat
+            try
+                do! botClient.UnbanChatMemberAsync(ChatId chatId, targetUserId, true)
+                return Ok(chatUserName, chatId) 
+            with e ->
+                return Error (chatUserName, chatId, e)
+        })
+    return! Task.WhenAll banTasks
+}
+
 let safeTaskAwait onError (task: Task) =
     task.ContinueWith(fun (t: Task) ->
         if t.IsFaulted then
             onError t.Exception
     )
 
-let aggregateBanResultInLogMsg
-    (logger: ILogger)
+let aggregateResultInLogMsg
+    (isBan: bool)
     (message: Message)
-    (deletedUserMessages: int)
-    (banResults: Result<string * int64, string * int64 * exn> []) =
+    (targetUserId: int64)
+    (targetUserName: string option)
+    (logger: ILogger)
+    (deletedUserMessages: int) // 0 for unban
+    (results: Result<string * int64, string * int64 * exn> []) =
+
+    let resultType = if isBan then "ban" else "unban"
+    let sanitizedUsername =
+        targetUserName
+        |> Option.map prependUsername
+        |> Option.defaultValue "{NO_USERNAME}"
 
     let vahterUserId = message.From.Id
     let vahterUsername = message.From.Username
     let chatName = message.Chat.Username
     let chatId = message.Chat.Id
     
-    let targetUserId = message.ReplyToMessage.From.Id
-    let targetUsername = message.ReplyToMessage.From.Username
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) banned {prependUsername targetUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
+    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
     
     // we don't want to spam logs channel if all is good
-    let allChatsOk = banResults |> Array.forall Result.isOk
+    let allChatsOk = results |> Array.forall Result.isOk
     if allChatsOk then
         %logMsgBuilder.AppendLine " in all chats"
-        logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages"
-        |> string
+        if isBan then
+            %logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages"
     else
-        
-        %logMsgBuilder.AppendLine ""
-        %logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages in chats:"
+        if isBan then
+            %logMsgBuilder.AppendLine ""
+            %logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages in chats:"
 
-        (logMsgBuilder, banResults)
+        (logMsgBuilder, results)
         ||> Array.fold (fun (sb: StringBuilder) result ->
             match result with
             | Ok (chatUsername, chatId) ->
                 sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - OK")
             | Error (chatUsername, chatId, e) ->
-                logger.LogError($"Failed to ban user {prependUsername targetUsername} ({targetUserId}) in chat {prependUsername chatUsername} ({chatId})", e)
+                logger.LogError($"Failed to {resultType} user {sanitizedUsername} ({targetUserId}) in chat {prependUsername chatUsername} ({chatId})", e)
                 sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - FAILED. {e.Message}")
-        )
-        |> string
+        ) |> ignore
+    string logMsgBuilder
+
+let aggregateBanResultInLogMsg message =
+    aggregateResultInLogMsg
+        true
+        message
+        message.ReplyToMessage.From.Id
+        (Some message.ReplyToMessage.From.Username)
+
+let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
+    aggregateResultInLogMsg
+        false
+        message
+        targetUserId
+        targetUsername
 
 let ping
     (botClient: ITelegramBotClient)
@@ -206,7 +245,7 @@ let banOnReply
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg logger message deletedUserMessages banResults 
+    let logMsg = aggregateBanResultInLogMsg message logger deletedUserMessages banResults 
 
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
@@ -214,6 +253,45 @@ let banOnReply
     
     do! banUserInDb.Ignore()
     do! deleteReplyTask
+}
+
+let unban
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger) = task {
+    use banOnReplyActivity = botActivity.StartActivity("unban")
+    %banOnReplyActivity
+        .SetTag("vahterId", message.From.Id)
+        .SetTag("vahterUsername", message.From.Username)
+    let targetUserId = message.Text.Split(" ")[1] |> int64
+    %banOnReplyActivity.SetTag("targetId", targetUserId)
+
+    let! user = DB.getUserById targetUserId
+    let unbanUserTask = task {
+        if user.IsSome then
+            %banOnReplyActivity.SetTag("targetUsername", user.Value.Username)
+            let! unbannedUser =
+                user.Value
+                |> DbUser.unban
+                |> DB.upsertUser
+            return Some unbannedUser
+        else
+            return None
+    }
+    let targetUsername = user |> Option.bind (fun u -> u.Username)
+
+    // try unban user in all monitored chats
+    let! unbanResults = unbanInAllChats botConfig botClient targetUserId
+    
+    // produce aggregated log message
+    let logMsg = aggregateUnbanResultInLogMsg message targetUserId targetUsername logger 0 unbanResults
+
+    // log both to logger and to logs channel
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    logger.LogInformation logMsg
+    
+    do! unbanUserTask.Ignore()
 }
 
 let onUpdate
@@ -256,9 +334,11 @@ let onUpdate
             do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
-        // check that user is allowed to ban others
+        // check that user is allowed to (un)ban others
         if isBanOnReplyCommand message && isBanAuthorized botConfig message logger then
             do! banOnReply botClient botConfig message logger
+        elif isUnbanCommand message && isBanAuthorized botConfig message logger then
+            do! unban botClient botConfig message logger
 
         // ping command for testing that bot works and you can talk to it
         elif isPingCommand message then

@@ -44,9 +44,16 @@ type DbUser =
             Banned_At = Some DateTime.UtcNow
             Ban_Reason = reason
             Updated_At = DateTime.UtcNow }
+    member this.Unban() =
+        { this with
+            Banned_By = None
+            Banned_At = None
+            Ban_Reason = None
+            Updated_At = DateTime.UtcNow }
 
 module DbUser =
     let banUser vahter reason (user: DbUser) = user.Ban(vahter, ?reason = reason)
+    let unban (user: DbUser) = user.Unban()
 
 [<CLIMutable>]
 type DbMessage =
