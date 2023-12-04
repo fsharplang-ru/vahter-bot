@@ -64,7 +64,7 @@ let isBanAuthorized
             logger.LogWarning $"User {fromUsername} {fromUserId} tried to {banType} user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
             false
         // check that user is not trying to ban other admins
-        elif isBannedPersonAdmin botConfig message then
+        elif isBan && isBannedPersonAdmin botConfig message then
             logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to {banType} admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
             false
         else
