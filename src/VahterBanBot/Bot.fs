@@ -44,27 +44,33 @@ let isKnownCommand (message: Message) =
     isBanCommand message ||
     isUnbanCommand message
 
-let isBanAuthorized (botConfig: BotConfiguration) (message: Message) (logger: ILogger) =
+let isBanAuthorized
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger)
+    (targetUserId: int64)
+    (targetUsername: string option)
+    (isBan: bool)
+    =
+    let banType = if isBan then "ban" else "unban"
     let fromUserId = message.From.Id
     let fromUsername = message.From.Username
-    let targetUserId = message.ReplyToMessage.From.Id
-    let targetUsername = message.ReplyToMessage.From.Username
     let chatId = message.Chat.Id
     let chatUsername = message.Chat.Username
     
     // check that user is allowed to ban others
     if isMessageFromAdmin botConfig message then
         if not(isMessageFromAllowedChats botConfig message) then
-            logger.LogWarning $"User {fromUsername} {fromUserId} tried to (un)ban user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
+            logger.LogWarning $"User {fromUsername} {fromUserId} tried to {banType} user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
             false
         // check that user is not trying to ban other admins
         elif isBannedPersonAdmin botConfig message then
-            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to (un)ban admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
+            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to {banType} admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
             false
         else
             true
     else
-        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to (un)ban user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
+        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to {banType} user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
         false
     
 let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
@@ -259,13 +265,13 @@ let unban
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
-    (logger: ILogger) = task {
+    (logger: ILogger)
+    (targetUserId: int64) = task {
     use banOnReplyActivity = botActivity.StartActivity("unban")
     %banOnReplyActivity
         .SetTag("vahterId", message.From.Id)
         .SetTag("vahterUsername", message.From.Username)
-    let targetUserId = message.Text.Split(" ")[1] |> int64
-    %banOnReplyActivity.SetTag("targetId", targetUserId)
+        .SetTag("targetId", targetUserId)
 
     let! user = DB.getUserById targetUserId
     let unbanUserTask = task {
@@ -335,10 +341,31 @@ let onUpdate
                 |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
         // check that user is allowed to (un)ban others
-        if isBanOnReplyCommand message && isBanAuthorized botConfig message logger then
-            do! banOnReply botClient botConfig message logger
-        elif isUnbanCommand message && isBanAuthorized botConfig message logger then
-            do! unban botClient botConfig message logger
+        if isBanOnReplyCommand message then
+            let targetUserId = message.ReplyToMessage.From.Id
+            let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    targetUsername
+                    true
+            if authed then
+                do! banOnReply botClient botConfig message logger
+        elif isUnbanCommand message then
+            let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    None
+                    false
+            if authed then
+                do! unban botClient botConfig message logger targetUserId
 
         // ping command for testing that bot works and you can talk to it
         elif isPingCommand message then
