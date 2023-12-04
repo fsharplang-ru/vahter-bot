@@ -24,7 +24,7 @@ let isBanCommand (message: Message) =
     message.Text = "/ban"
     
 let isUnbanCommand (message: Message) =
-    message.Text = "/unban"
+    message.Text.StartsWith "/unban "
 
 let isBanOnReplyCommand (message: Message) =
     isBanCommand message &&
