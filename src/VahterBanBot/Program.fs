@@ -99,21 +99,19 @@ getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
 %builder.Logging.AddConsole()
     
 let webApp = choose [
-    // need for Azure health checks on / route
-    GET >=> route "/" >=> text "OK"
-    
-    requiresApiKey >=> choose [
-        POST >=> route botConf.Route >=> bindJson<Update> (fun update next ctx -> task {
-            use scope = ctx.RequestServices.CreateScope()
-            let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-            let logger = ctx.GetLogger<Root>()
-            try
-                do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
-            with e ->
-                logger.LogError(e, "Unexpected error while processing update")
-            return! Successful.OK() next ctx
-        })
-    ]
+    // need for Azure health checks on any route
+    GET >=> text "OK"
+
+    POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
+        use scope = ctx.RequestServices.CreateScope()
+        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+        let logger = ctx.GetLogger<Root>()
+        try
+            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
+         with e ->
+            logger.LogError(e, "Unexpected error while processing update")
+        return! Successful.OK() next ctx
+    })
 ]
 
 let app = builder.Build()
