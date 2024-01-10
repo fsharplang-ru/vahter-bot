@@ -201,10 +201,11 @@ let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
 
 let softBanResultInLogMsg (message: Message) (duration: int) =
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.Append $"Vahter @{message.From.Username}({message.From.Id}) "
-    %logMsgBuilder.Append $"softbanned @{message.ReplyToMessage.From.Username}({message.ReplyToMessage.From.Id}) "
-    %logMsgBuilder.Append $"in @{message.Chat.Username}({message.Chat.Id}) "
-    %logMsgBuilder.Append $"until {DateTime.Now.AddHours duration}"
+    let untilDate = (DateTime.Now.AddHours duration).ToString "dd.MM.yyyy HH:mm"
+    %logMsgBuilder.Append $"Vahter {prependUsername message.From.Username}({message.From.Id}) "
+    %logMsgBuilder.Append $"softbanned {prependUsername message.ReplyToMessage.From.Username}({message.ReplyToMessage.From.Id}) "
+    %logMsgBuilder.Append $"in {prependUsername message.Chat.Username}({message.Chat.Id}) "
+    %logMsgBuilder.Append $"until {untilDate}"
     string logMsgBuilder
 
 
