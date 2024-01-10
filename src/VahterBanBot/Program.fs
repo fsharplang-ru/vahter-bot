@@ -151,7 +151,7 @@ if botConf.UsePolling then
         new IUpdateHandler with
           member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
             task {
-                if not (isNull update.Message) && update.Message.Type = MessageType.Text then
+                if update.Message <> null && update.Message.Type = MessageType.Text then
                     let ctx = app.Services.CreateScope()
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()

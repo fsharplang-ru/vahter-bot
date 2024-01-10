@@ -26,6 +26,13 @@ let isBanCommand (message: Message) =
 let isUnbanCommand (message: Message) =
     message.Text.StartsWith "/unban "
 
+let isSoftBanCommand (message: Message) =
+    message.Text.StartsWith "/sban"
+
+let isSoftBanOnReplyCommand (message: Message) =
+    isSoftBanCommand message &&
+    message.ReplyToMessage <> null
+
 let isBanOnReplyCommand (message: Message) =
     isBanCommand message &&
     message.ReplyToMessage <> null
@@ -42,7 +49,8 @@ let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
 let isKnownCommand (message: Message) =
     isPingCommand message ||
     isBanCommand message ||
-    isUnbanCommand message
+    isUnbanCommand message ||
+    isSoftBanCommand message
 
 let isBanAuthorized
     (botConfig: BotConfiguration)
@@ -85,6 +93,31 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
                 return Error (chatUserName, chatId, e)
         })
     return! Task.WhenAll banTasks
+}
+
+let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId (duration: int) = task {
+    let permissions = ChatPermissions(
+        CanSendMessages = false,
+        CanSendAudios = false,
+        CanSendDocuments = false,
+        CanSendPhotos = false,
+        CanSendVideos = false,
+        CanSendVideoNotes = false,
+        CanSendVoiceNotes = false,
+        CanSendPolls = false,
+        CanSendOtherMessages = false,
+        CanAddWebPagePreviews = false,
+        CanChangeInfo = false,
+        CanInviteUsers = false,
+        CanPinMessages = false,
+        CanManageTopics = false
+        )
+    let untilDate = DateTime.Now.AddHours duration
+    try 
+        do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, Nullable(), untilDate)
+        return Ok(chatId, targetUserId)
+    with e ->
+        return Error(chatId, targetUserId, e)
 }
 
 let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
@@ -165,6 +198,15 @@ let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
         message
         targetUserId
         targetUsername
+
+let softBanResultInLogMsg (message: Message) (duration: int) =
+    let logMsgBuilder = StringBuilder()
+    %logMsgBuilder.Append $"Vahter @{message.From.Username}({message.From.Id}) "
+    %logMsgBuilder.Append $"softbanned @{message.ReplyToMessage.From.Username}({message.ReplyToMessage.From.Id}) "
+    %logMsgBuilder.Append $"in @{message.Chat.Username}({message.Chat.Id}) "
+    %logMsgBuilder.Append $"until {DateTime.Now.AddHours duration}"
+    string logMsgBuilder
+
 
 let ping
     (botClient: ITelegramBotClient)
@@ -259,6 +301,45 @@ let banOnReply
     
     do! banUserInDb.Ignore()
     do! deleteReplyTask
+}
+
+let softBanOnReply
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger) = task {
+        use banOnReplyActivity = botActivity.StartActivity("softBanOnReply")
+        %banOnReplyActivity
+            .SetTag("vahterId", message.From.Id)
+            .SetTag("vahterUsername", message.From.Username)
+            .SetTag("targetId", message.ReplyToMessage.From.Id)
+            .SetTag("targetUsername", message.ReplyToMessage.From.Username)
+        
+        let deleteReplyTask = task {
+            use _ =
+                botActivity
+                    .StartActivity("deleteReplyMsg")
+                    .SetTag("msgId", message.ReplyToMessage.MessageId)
+                    .SetTag("chatId", message.Chat.Id)
+                    .SetTag("chatUsername", message.Chat.Username)
+            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
+                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
+        }
+        
+        let maybeDurationString = message.Text.Split " " |> Seq.last
+        // use last value as soft ban duration
+        let duration =
+            match Int32.TryParse maybeDurationString with
+            | true, x -> x
+            | _ -> 24 // 1 day should be enough
+
+        let logText = softBanResultInLogMsg message duration
+        
+        do! softBanInChat botClient (ChatId message.Chat.Id) message.ReplyToMessage.From.Id duration |> taskIgnore
+        do! deleteReplyTask
+        
+        do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logText) |> taskIgnore
+        logger.LogInformation logText
 }
 
 let unban
@@ -366,7 +447,19 @@ let onUpdate
                     false
             if authed then
                 do! unban botClient botConfig message logger targetUserId
-
+        elif isSoftBanOnReplyCommand message then
+            let targetUserId = message.ReplyToMessage.From.Id
+            let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    targetUsername
+                    true
+            if authed then
+                do! softBanOnReply botClient botConfig message logger
         // ping command for testing that bot works and you can talk to it
         elif isPingCommand message then
             do! ping botClient message
