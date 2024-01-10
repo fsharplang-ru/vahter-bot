@@ -14,7 +14,8 @@ type BotConfiguration =
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool
-      IgnoreSideEffects: bool }
+      IgnoreSideEffects: bool
+      UsePolling: bool }
 
 [<CLIMutable>]
 type DbUser =

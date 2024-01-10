@@ -1,14 +1,18 @@
 ﻿open System
 open System.Collections.Generic
+open System.Threading
+open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open Newtonsoft.Json
 open Telegram.Bot
+open Telegram.Bot.Polling
 open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
+open Telegram.Bot.Types.Enums
 open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.Utils
@@ -32,7 +36,8 @@ let botConf =
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<_>
       AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
-      IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse }
+      IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
+      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -139,5 +144,22 @@ let startLogMsg =
 app.Logger.LogInformation startLogMsg
 if not botConf.IgnoreSideEffects then
     telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
+
+// Dev mode only
+if botConf.UsePolling then
+    let pollingHandler = {
+        new IUpdateHandler with
+          member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
+            task {
+                if not (isNull update.Message) && update.Message.Type = MessageType.Text then
+                    let ctx = app.Services.CreateScope()
+                    let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
+                    let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+                    do! onUpdate client botConf logger update.Message
+            }
+          member x.HandlePollingErrorAsync (botClient: ITelegramBotClient, ex: Exception, cancellationToken: CancellationToken) =
+              Task.CompletedTask
+    }
+    telegramClient.StartReceiving(pollingHandler, null, CancellationToken.None)
 
 server.Wait()
