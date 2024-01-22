@@ -389,14 +389,15 @@ let onUpdate
     (message: Message) = task {
     
     use banOnReplyActivity = botActivity.StartActivity("onUpdate")
-    %banOnReplyActivity
-        .SetTag("chatId", message.Chat.Id)
-        .SetTag("chatUsername", message.Chat.Username)
 
     // early return if if we can't process it
     if isNull message || isNull message.From then
         logger.LogWarning "Received update without message"
     else
+
+    %banOnReplyActivity
+        .SetTag("chatId", message.Chat.Id)
+        .SetTag("chatUsername", message.Chat.Username)
 
     // upserting user to DB
     let! _ =
