@@ -47,10 +47,11 @@ let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
     botConfig.AllowedUsers.ContainsValue message.ReplyToMessage.From.Id
 
 let isKnownCommand (message: Message) =
-    isPingCommand message ||
-    isBanCommand message ||
-    isUnbanCommand message ||
-    isSoftBanCommand message
+    message.Text <> null &&
+    (isPingCommand message ||
+     isBanCommand message ||
+     isUnbanCommand message ||
+     isSoftBanCommand message)
 
 let isBanAuthorized
     (botConfig: BotConfiguration)
