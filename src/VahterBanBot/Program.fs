@@ -10,7 +10,7 @@ open Newtonsoft.Json
 open Telegram.Bot
 open Telegram.Bot.Polling
 open Telegram.Bot.Types
-open Oxpecker
+open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open Telegram.Bot.Types.Enums
 open VahterBanBot
@@ -50,7 +50,7 @@ let requiresApiKey = authorizeRequest validateApiKey accessDenied
 let builder = WebApplication.CreateBuilder()
 %builder.Services
     .AddSingleton(botConf)
-    .AddOxpecker()
+    .AddGiraffe()
     .AddHostedService<CleanupService>()
     .AddHttpClient("telegram_bot_client")
     .AddTypedClient(fun httpClient sp ->
@@ -102,11 +102,12 @@ getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
 )
 
 %builder.Logging.AddConsole()
-
-let webApp = [
+    
+let webApp = choose [
     // need for Azure health checks on any route
-    GET [ route "{**x}" <| text "OK" ]
-    POST [ route botConf.Route (requiresApiKey >=> bindJson<Update> (fun update ctx -> task {
+    GET >=> text "OK"
+
+    POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
         use scope = ctx.RequestServices.CreateScope()
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
         let logger = ctx.GetLogger<Root>()
@@ -114,12 +115,13 @@ let webApp = [
             do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
          with e ->
             logger.LogError(e, "Unexpected error while processing update")
-    }))]
+        return! Successful.OK() next ctx
+    })
 ]
 
 let app = builder.Build()
-%app.UseRouting().UseOxpecker webApp
 
+app.UseGiraffe(webApp)
 let server = app.RunAsync()
 
 let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
