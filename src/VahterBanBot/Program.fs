@@ -108,13 +108,21 @@ let webApp = choose [
     GET >=> text "OK"
 
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
+        use banOnReplyActivity = botActivity.StartActivity("postUpdate")
+        let updateBodyJson =
+            try JsonConvert.SerializeObject update
+            with e -> e.Message
+        banOnReplyActivity.SetCustomProperty("updateBodyObject", update)
+        banOnReplyActivity.SetCustomProperty("updateBodyJson", updateBodyJson)
+        
         use scope = ctx.RequestServices.CreateScope()
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
         let logger = ctx.GetLogger<Root>()
         try
             do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
-         with e ->
-            logger.LogError(e, "Unexpected error while processing update")
+        with e ->
+            logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
+
         return! Successful.OK() next ctx
     })
 ]
@@ -126,7 +134,7 @@ let server = app.RunAsync()
 
 let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
 
-let startLogMsg =
+let getStartLogMsg() =
     let sb = System.Text.StringBuilder()
     %sb.AppendLine("Bot started with following configuration")
     %sb.AppendLine("AllowedUsers:")
@@ -141,8 +149,9 @@ let startLogMsg =
 
     sb.ToString()
 
-app.Logger.LogInformation startLogMsg
 if not botConf.IgnoreSideEffects then
+    let startLogMsg = getStartLogMsg()
+    app.Logger.LogInformation startLogMsg
     telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
 
 // Dev mode only
