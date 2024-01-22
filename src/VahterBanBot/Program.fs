@@ -118,8 +118,8 @@ let webApp = [
 ]
 
 let app = builder.Build()
+%app.UseRouting().UseOxpecker webApp
 
-%app.UseOxpecker webApp
 let server = app.RunAsync()
 
 let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
