@@ -108,10 +108,15 @@ let webApp = choose [
     GET >=> text "OK"
 
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
-        use banOnReplyActivity = botActivity.StartActivity("postUpdate")
         let updateBodyJson =
             try JsonConvert.SerializeObject update
             with e -> e.Message
+        use banOnReplyActivity =
+            botActivity
+              .StartActivity("postUpdate")
+              .SetTag("updateBodyObject", update)
+              .SetTag("updateBodyJson", updateBodyJson)
+        
         banOnReplyActivity.SetCustomProperty("updateBodyObject", update)
         banOnReplyActivity.SetCustomProperty("updateBodyJson", updateBodyJson)
         
