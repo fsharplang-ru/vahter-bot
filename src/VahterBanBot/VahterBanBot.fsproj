@@ -19,7 +19,7 @@
     <PackageReference Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.0.0-beta.7" />
     <PackageReference Include="Dapper" Version="2.0.151" />
     <PackageReference Include="Dapper.FSharp" Version="4.7.0" />
-    <PackageReference Include="Giraffe" Version="6.2.0" />
+    <PackageReference Include="Oxpecker" Version="0.4.0" />
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.21.0" />
     <PackageReference Include="Microsoft.ApplicationInsights.PerfCounterCollector" Version="2.21.0" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="7.0.11" />
