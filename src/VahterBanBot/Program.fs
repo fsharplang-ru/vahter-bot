@@ -111,22 +111,21 @@ let webApp = choose [
         let updateBodyJson =
             try JsonConvert.SerializeObject update
             with e -> e.Message
-        use banOnReplyActivity =
+        use topActivity =
             botActivity
               .StartActivity("postUpdate")
               .SetTag("updateBodyObject", update)
               .SetTag("updateBodyJson", updateBodyJson)
-        
-        banOnReplyActivity.SetCustomProperty("updateBodyObject", update)
-        banOnReplyActivity.SetCustomProperty("updateBodyJson", updateBodyJson)
-        
+
         use scope = ctx.RequestServices.CreateScope()
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
         let logger = ctx.GetLogger<Root>()
         try
             do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") update.Message
+            %topActivity.SetTag("update-error", false)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
+            %topActivity.SetTag("update-error", true)
 
         return! Successful.OK() next ctx
     })
