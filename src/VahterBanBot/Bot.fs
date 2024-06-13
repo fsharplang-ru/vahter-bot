@@ -489,17 +489,17 @@ let onUpdate
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        if message.Text <> null then
-            let spamScore = calcSpamScore message.Text
+        let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
         
-            if spamScore >= 100 then
-                do! warnSpamDetection botClient botConfig message logger spamScore
+        if spamScore >= 100 then
+            do! warnSpamDetection botClient botConfig message logger spamScore    
         
         use _ =
             botActivity
                 .StartActivity("justMessage")
                 .SetTag("fromUserId", message.From.Id)
                 .SetTag("fromUsername", message.From.Username)
+                .SetTag("spamScore", spamScore)
         do!
             message
             |> DbMessage.newMessage
