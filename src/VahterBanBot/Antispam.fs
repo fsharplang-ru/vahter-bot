@@ -25,6 +25,7 @@ let phrases = [
     10, [ "обучение"; "бесплатное" ]
     10, [ "бесплатное"; "обучение" ]
     7, [ "удаленная"; "работа" ]
+    7, [ "удаленный"; "заработок" ]
     7, [ "удаленную"; "работу" ]
     3, [ "в"; "лс" ]
     3, [ "в"; "личку" ]
@@ -42,6 +43,8 @@ let countPhrases (wl: string list) =
                 countPhrase (List.skip ps.Length ws) (totalScore + score) phrase
             else
                 countPhrase ws totalScore phrase
+        | _ :: ws ->
+            countPhrase ws totalScore phrase
         | _ -> totalScore
                 
     List.sumBy (countPhrase wl 0) phrases
