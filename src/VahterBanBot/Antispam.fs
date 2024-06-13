@@ -76,8 +76,9 @@ let distillWords (str: string) =
         let isCyr = c >= 'а' && c <= 'я' // who cares about Ё
         let isDigit = c >= '0' && c <= '9'
         let isDollar = c = '$' // useful
+        let isAnySpace = Char.IsWhiteSpace(c)
         
-        isLat || isCyr || isDigit || isDollar
+        isLat || isCyr || isDigit || isDollar || isAnySpace
     
     let filteredStr = String.filter isCyrLatAlphaChar (str.ToLower())
     
