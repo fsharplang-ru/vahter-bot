@@ -489,10 +489,11 @@ let onUpdate
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        let spamScore = calcSpamScore message.Text
+        if message.Text <> null then
+            let spamScore = calcSpamScore message.Text
         
-        if spamScore >= 100 then
-            do! warnSpamDetection botClient botConfig message logger spamScore
+            if spamScore >= 100 then
+                do! warnSpamDetection botClient botConfig message logger spamScore
         
         use _ =
             botActivity
