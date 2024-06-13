@@ -395,7 +395,7 @@ let warnSpamDetection
         .SetTag("targetId", message.ReplyToMessage.From.Id)
         .SetTag("targetUsername", message.ReplyToMessage.From.Username)
 
-    let logMsg = $"Detected spam (score: {score}) in {message.Chat.Id} from {message.From.Id} ({message.From.Username}) with text:\n{message.Text}"
+    let logMsg = $"Detected spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"
     
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
