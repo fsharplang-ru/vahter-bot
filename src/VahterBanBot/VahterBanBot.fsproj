@@ -10,6 +10,7 @@
     <Compile Include="Utils.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="DB.fs" />
+    <Compile Include="Antispam.fs" />
     <Compile Include="Bot.fs" />
     <Compile Include="Cleanup.fs" />
     <Compile Include="Program.fs" />

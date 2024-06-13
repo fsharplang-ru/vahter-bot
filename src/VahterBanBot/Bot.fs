@@ -9,6 +9,7 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open VahterBanBot.Antispam
 
 let botActivity = new ActivitySource("VahterBanBot")
 
@@ -383,6 +384,24 @@ let unban
     do! unbanUserTask.Ignore()
 }
 
+let warnSpamDetection
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger)
+    score = task {
+    use banOnReplyActivity = botActivity.StartActivity("warnSpamDetection")
+    %banOnReplyActivity
+        .SetTag("targetId", message.ReplyToMessage.From.Id)
+        .SetTag("targetUsername", message.ReplyToMessage.From.Username)
+
+    let logMsg = $"Detected spam (score: {score}) in {message.Chat.Id} from {message.From.Id} ({message.From.Username}) with text:\n{message.Text}"
+    
+    // log both to logger and to logs channel
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    logger.LogInformation logMsg
+}
+
 let onUpdate
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -470,6 +489,11 @@ let onUpdate
 
     // if message is not a command from authorized user, just save it ID to DB
     else
+        let spamScore = calcSpamScore message.Text
+        
+        if spamScore >= 100 then
+            do! warnSpamDetection botClient botConfig message logger spamScore
+        
         use _ =
             botActivity
                 .StartActivity("justMessage")
