@@ -87,7 +87,7 @@ let countEmojiLikeCharacters str =
     let mutable emojis = 0
     
     let countEmoji (c: char) =
-        if c >= char 0xD800 then emojis <- emojis + 1
+        if c >= char 0xDD00 then emojis <- emojis + 1
     
     String.iter countEmoji str
     
