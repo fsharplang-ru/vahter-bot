@@ -390,7 +390,11 @@ let warnSpamDetection
     (message: Message)
     (logger: ILogger)
     score = task {
-    use _ = botActivity.StartActivity("warnSpamDetection")
+    use banOnReplyActivity = botActivity.StartActivity("warnSpamDetection")
+    %banOnReplyActivity
+        .SetTag("spammerId", message.From.Id)
+        .SetTag("spammerUsername", message.From.Username)
+
     let logMsg = $"Detected spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"
     
     // log both to logger and to logs channel
