@@ -14,7 +14,7 @@ env:
   SCHEMAS: public
 
 jobs:
-  build:
+  cd:
     runs-on: ubuntu-latest
 
     steps:

@@ -3,7 +3,7 @@ name: Test results
 on:
   # Run this workflow after the CI/CD workflow completes
   workflow_run:
-    workflows: [CI, CD]
+    workflows: [ci, cd]
     types:
       - completed
 
