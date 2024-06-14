@@ -5,3 +5,4 @@
 flyway.conf
 *sln.DotSettings.user
 TestResults
+*.trx

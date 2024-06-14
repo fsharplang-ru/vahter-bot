@@ -26,7 +26,7 @@ jobs:
       with:
         global-json-file: global.json
     - name: Tests
-      run: dotnet test -c Release --logger trx --results-directory TestResults
+      run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx"
 
     # upload test results
     - name: Upload dotnet test results
@@ -37,10 +37,11 @@ jobs:
       # Use always() to always run this step to publish test results when there are test failures
       if: ${{ always() }}
       
-    # report test results
-    - uses: dorny/test-reporter@v1
+      # report test results
+    - name: Report test results
+      uses: dorny/test-reporter@v1
       with:
-        artifact: TestResults
+        artifact: test-results
         name: .NET Tests
         path: '*.trx'
         reporter: dotnet-trx
