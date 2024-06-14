@@ -1,4 +1,4 @@
-name: Build and test
+name: CI
 
 on:
   pull_request:
@@ -23,8 +23,8 @@ jobs:
     - name: Upload dotnet test results
       uses: actions/upload-artifact@v4
       with:
-        name: dotnet-results
-        path: TestResults
+        name: test-results
+        path: "**/*.trx"
       # Use always() to always run this step to publish test results when there are test failures
       if: ${{ always() }}
 

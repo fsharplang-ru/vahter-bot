@@ -1,4 +1,4 @@
-name: Build and deploy a container to an Azure Container Registry
+name: CD
 
 on:
   push:
