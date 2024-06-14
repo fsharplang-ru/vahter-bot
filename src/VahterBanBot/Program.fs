@@ -1,4 +1,6 @@
-﻿open System
+﻿#nowarn "44" // open telemetry is going crazy with warnings
+
+open System
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
