@@ -82,6 +82,10 @@ type VahterTestContainers() =
             .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
             .WithEnvironment("USE_POLLING", "false")
             .WithEnvironment("DATABASE_URL", internalConnectionString)
+            // .net 8.0 upgrade has a breaking change
+            // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
+            // Azure default port for containers is 80, se we need explicitly set it
+            .WithEnvironment("ASPNETCORE_HTTP_PORTS", "80")
             .DependsOn(flywayContainer)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
             .Build()
