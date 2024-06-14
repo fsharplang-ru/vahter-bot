@@ -8,18 +8,23 @@ open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
 open Newtonsoft.Json
+open Npgsql
 open Telegram.Bot.Types
 open Testcontainers.PostgreSql
+open VahterBanBot.Tests.TgMessageUtils
 open Xunit
+open Dapper
 
 type VahterTestContainers() =
     let solutionDir = CommonDirectoryPath.GetSolutionDirectory()
     let dbAlias = "vahter-db"
+    let internalConnectionString = $"Server={dbAlias};Database=vahter_bot_ban;Port=5432;User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
     let pgImage = "postgres:15.6" // same as in Azure
     
     // will be filled in IAsyncLifetime.InitializeAsync
     let mutable uri: Uri = null
     let mutable httpClient: HttpClient = null
+    let mutable publicConnectionString: string = null
     
     // base image for the app, we'll build exactly how we build it in Azure
     let image =
@@ -76,7 +81,7 @@ type VahterTestContainers() =
             .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
             .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
             .WithEnvironment("USE_POLLING", "false")
-            .WithEnvironment("DATABASE_URL", $"Server={dbAlias};Database=vahter_bot_ban;Port=5432;User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;")
+            .WithEnvironment("DATABASE_URL", internalConnectionString)
             .DependsOn(flywayContainer)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
             .Build()
@@ -90,6 +95,7 @@ type VahterTestContainers() =
             // wait for both to finish
             do! imageTask
             do! dbTask
+            publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
             
             // initialize DB with the schema, database and a DB user
             let script = File.ReadAllText(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/init.sql")
@@ -134,4 +140,23 @@ type VahterTestContainers() =
         let content = new StringContent(json, Encoding.UTF8, "application/json")
         let! resp = httpClient.PostAsync("/bot", content)
         return resp
+    }
+
+    member _.AdminUsers = [
+        Tg.user(id = 34, username = "vahter_1")
+        Tg.user(id = 69, username = "vahter_2")
+    ]
+
+    member _.LogChat = Tg.chat(id = -123, username = "logs")
+    member _.ChatsToMonitor = [
+        Tg.chat(id = -666, username = "pro.hell")
+        Tg.chat(id = -42, username = "dotnetru")
+    ]
+
+    member _.MessageExist(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM message WHERE chat_id = @chatId AND message_id = @messageId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count = 1
     }

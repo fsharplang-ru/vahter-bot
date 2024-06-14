@@ -9,8 +9,10 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="TgMessageUtils.fs" />
         <Compile Include="ContainerTestBase.fs" />
-        <Compile Include="Tests.fs"/>
+        <Compile Include="BaseTests.fs" />
+        <Compile Include="PingTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
