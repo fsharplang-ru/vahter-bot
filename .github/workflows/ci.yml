@@ -27,12 +27,3 @@ jobs:
         path: "**/*.trx"
       # Use always() to always run this step to publish test results when there are test failures
       if: ${{ always() }}
-
-    # report test results
-    - name: Report test results
-      uses: dorny/test-reporter@v1
-      with:
-        name: Test results
-        path: "**/*.trx"
-        reporter: dotnet-trx
-        fail-on-error: true

@@ -27,24 +27,15 @@ jobs:
         global-json-file: global.json
     - name: Tests
       run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx"
-
+      
     # upload test results
     - name: Upload dotnet test results
       uses: actions/upload-artifact@v4
       with:
-        name: dotnet-results
-        path: TestResults
+        name: test-results
+        path: "**/*.trx"
       # Use always() to always run this step to publish test results when there are test failures
       if: ${{ always() }}
-      
-      # report test results
-    - name: Report test results
-      uses: dorny/test-reporter@v1
-      with:
-        name: Test results
-        path: "**/*.trx"
-        reporter: dotnet-trx
-        fail-on-error: true
 
     # if tests are ok, deploy to production
     - name: Apply migrations to production DB
