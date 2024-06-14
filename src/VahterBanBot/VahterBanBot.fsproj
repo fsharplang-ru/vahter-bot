@@ -13,6 +13,7 @@
     <Compile Include="Antispam.fs" />
     <Compile Include="Bot.fs" />
     <Compile Include="Cleanup.fs" />
+    <Compile Include="StartupMessage.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

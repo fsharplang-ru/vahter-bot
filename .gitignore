@@ -3,3 +3,6 @@
 .idea
 .env
 flyway.conf
+*sln.DotSettings.user
+TestResults
+*.trx

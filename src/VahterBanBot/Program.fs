@@ -13,7 +13,6 @@ open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open Telegram.Bot.Types.Enums
-open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
@@ -136,30 +135,9 @@ let app = builder.Build()
 app.UseGiraffe(webApp)
 let server = app.RunAsync()
 
-let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
-
-let getStartLogMsg() =
-    let sb = System.Text.StringBuilder()
-    %sb.AppendLine("Bot started with following configuration")
-    %sb.AppendLine("AllowedUsers:")
-    for KeyValue(username, userId) in botConf.AllowedUsers do
-        %sb.AppendLine($"  {prependUsername username} ({userId})")
-    %sb.AppendLine("ChatsToMonitor:")
-    for KeyValue(username, chatId) in botConf.ChatsToMonitor do
-        %sb.AppendLine($"  {prependUsername username} ({chatId})")
-
-    let totalStats = (DB.getVahterStats None).Result
-    %sb.AppendLine (string totalStats)
-
-    sb.ToString()
-
-if not botConf.IgnoreSideEffects then
-    let startLogMsg = getStartLogMsg()
-    app.Logger.LogInformation startLogMsg
-    telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg).Wait()
-
 // Dev mode only
 if botConf.UsePolling then
+    let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
     let pollingHandler = {
         new IUpdateHandler with
           member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
