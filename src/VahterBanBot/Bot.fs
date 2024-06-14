@@ -402,104 +402,6 @@ let warnSpamDetection
     logger.LogInformation logMsg
 }
 
-let justMessage
-    (botClient: ITelegramBotClient)
-    (botConfig: BotConfiguration)
-    (logger: ILogger)
-    (message: Message) = task {
-    let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
-    
-    if spamScore >= 100 then
-        do! warnSpamDetection botClient botConfig message logger spamScore    
-    
-    use _ =
-        botActivity
-            .StartActivity("justMessage")
-            .SetTag("fromUserId", message.From.Id)
-            .SetTag("fromUsername", message.From.Username)
-            .SetTag("spamScore", spamScore)
-    do!
-        message
-        |> DbMessage.newMessage
-        |> DB.insertMessage
-        |> taskIgnore
-}
-
-let adminCommand
-    (botClient: ITelegramBotClient)
-    (botConfig: BotConfiguration)
-    (logger: ILogger)
-    (message: Message) =
-    
-    // aux functions to overcome annoying FS3511: This state machine is not statically compilable.
-    let banOnReplyAux() = task {
-        let targetUserId = message.ReplyToMessage.From.Id
-        let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
-        let authed =
-            isBanAuthorized
-                botConfig
-                message
-                logger
-                targetUserId
-                targetUsername
-                true
-        if authed then
-            do! banOnReply botClient botConfig message logger
-    }
-    let unbanAux() = task {
-        let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
-        let authed =
-            isBanAuthorized
-                botConfig
-                message
-                logger
-                targetUserId
-                None
-                false
-        if authed then
-            do! unban botClient botConfig message logger targetUserId
-    }
-    let softBanOnReplyAux() = task {
-        let targetUserId = message.ReplyToMessage.From.Id
-        let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
-        let authed =
-            isBanAuthorized
-                botConfig
-                message
-                logger
-                targetUserId
-                targetUsername
-                true
-        if authed then
-            do! softBanOnReply botClient botConfig message logger
-    }
-    
-    task {
-        use _ = botActivity.StartActivity("adminCommand")
-        // delete command message
-        let deleteCmdTask = task {
-            use _ = 
-                botActivity
-                    .StartActivity("deleteCmdMsg")
-                    .SetTag("msgId", message.MessageId)
-                    .SetTag("chatId", message.Chat.Id)
-                    .SetTag("chatUsername", message.Chat.Username)
-            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
-        }
-        // check that user is allowed to (un)ban others
-        if isBanOnReplyCommand message then
-            do! banOnReplyAux()
-        elif isUnbanCommand message then
-            do! unbanAux()
-        elif isSoftBanOnReplyCommand message then
-            do! softBanOnReplyAux()
-        // ping command for testing that bot works and you can talk to it
-        elif isPingCommand message then
-            do! ping botClient message
-        do! deleteCmdTask
-    } 
-
 let onUpdate
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -529,9 +431,78 @@ let onUpdate
 
     // check if message is a known command from authorized user
     elif isKnownCommand message && isMessageFromAdmin botConfig message then
-        do! adminCommand botClient botConfig logger message
+        use _ = botActivity.StartActivity("adminCommand")
+        // delete command message
+        let deleteCmdTask = task {
+            use _ = 
+                botActivity
+                    .StartActivity("deleteCmdMsg")
+                    .SetTag("msgId", message.MessageId)
+                    .SetTag("chatId", message.Chat.Id)
+                    .SetTag("chatUsername", message.Chat.Username)
+            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
+        }
+        // check that user is allowed to (un)ban others
+        if isBanOnReplyCommand message then
+            let targetUserId = message.ReplyToMessage.From.Id
+            let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    targetUsername
+                    true
+            if authed then
+                do! banOnReply botClient botConfig message logger
+        elif isUnbanCommand message then
+            let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    None
+                    false
+            if authed then
+                do! unban botClient botConfig message logger targetUserId
+        elif isSoftBanOnReplyCommand message then
+            let targetUserId = message.ReplyToMessage.From.Id
+            let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
+            let authed =
+                isBanAuthorized
+                    botConfig
+                    message
+                    logger
+                    targetUserId
+                    targetUsername
+                    true
+            if authed then
+                do! softBanOnReply botClient botConfig message logger
+        // ping command for testing that bot works and you can talk to it
+        elif isPingCommand message then
+            do! ping botClient message
+        do! deleteCmdTask
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        do! justMessage botClient botConfig logger message
+        let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
+        
+        if spamScore >= 100 then
+            do! warnSpamDetection botClient botConfig message logger spamScore    
+        
+        use _ =
+            botActivity
+                .StartActivity("justMessage")
+                .SetTag("fromUserId", message.From.Id)
+                .SetTag("fromUsername", message.From.Username)
+                .SetTag("spamScore", spamScore)
+        do!
+            message
+            |> DbMessage.newMessage
+            |> DB.insertMessage
+            |> taskIgnore
 }

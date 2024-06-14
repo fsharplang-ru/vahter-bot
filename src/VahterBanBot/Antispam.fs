@@ -34,9 +34,8 @@ let phrases = [
 
 let countPhrases (wl: string list) =
     // premium performance
-    let rec countPhrase wl totalScore (score, psx as phrase) =
-        // List.tail should be safe here as we are passing list of phrases above which is always non-empty
-        let p, ps = List.head psx, List.tail psx
+    let rec countPhrase wl totalScore phrase =
+        let score, p::ps = phrase
 
         match wl with
         | w :: ws when w = p ->
