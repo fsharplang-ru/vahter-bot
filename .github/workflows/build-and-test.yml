@@ -16,4 +16,13 @@ jobs:
     - uses: actions/setup-dotnet@v4
       with:
         global-json-file: global.json
-    - run: dotnet test -c Release
+    - run: dotnet test -c Release --logger trx --results-directory TestResults
+      
+      # upload test results
+    - name: Upload dotnet test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: dotnet-results
+        path: TestResults
+      # Use always() to always run this step to publish test results when there are test failures
+      if: ${{ always() }}
