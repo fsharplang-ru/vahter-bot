@@ -407,12 +407,16 @@ let onUpdate
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (message: Message) = task {
-    
     use banOnReplyActivity = botActivity.StartActivity("onUpdate")
 
-    // early return if if we can't process it
+    // early return if we can't process it
     if isNull message || isNull message.From then
         logger.LogWarning "Received update without message"
+    else
+    
+    // early return if we don't monitor this chat
+    if not (botConfig.ChatsToMonitor.ContainsValue message.Chat.Id) then
+        ()
     else
 
     %banOnReplyActivity
