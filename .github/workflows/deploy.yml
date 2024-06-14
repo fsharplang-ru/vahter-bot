@@ -1,4 +1,4 @@
-name: CD
+name: Deploy
 
 on:
   push:
@@ -14,7 +14,7 @@ env:
   SCHEMAS: public
 
 jobs:
-  cd:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
