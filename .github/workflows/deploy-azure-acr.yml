@@ -41,10 +41,10 @@ jobs:
     - name: Report test results
       uses: dorny/test-reporter@v1
       with:
-        artifact: test-results
-        name: .NET Tests
-        path: '*.trx'
+        name: Test results
+        path: "**/*.trx"
         reporter: dotnet-trx
+        fail-on-error: true
 
     # if tests are ok, deploy to production
     - name: Apply migrations to production DB
