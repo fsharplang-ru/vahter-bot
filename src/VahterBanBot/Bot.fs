@@ -409,7 +409,7 @@ let justMessage
     (message: Message) = task {
     let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
     
-    if spamScore >= 100 then
+    if spamScore > 100 then
         do! warnSpamDetection botClient botConfig message logger spamScore    
     
     use _ =
