@@ -3,7 +3,7 @@ module VahterBanBot.Antispam
 open System
 open System.Linq
 
-let cyrillicLikeCharacters = [| 'u'; 't'; 'a' |]
+let cyrillicLikeCharacters = [| 'u'; 't'; 'a'; 'e'; 'o' |]
 let cyrillicCharacters = "абвгдежзиклмнопрстуфхцчшщъыьэюяё".ToHashSet()
     
 let countFakeCyrillicWords (wl: string list) =
@@ -80,11 +80,15 @@ let distillWords (str: string) =
         let isCyr = c >= 'а' && c <= 'я' // who cares about Ё
         let isDigit = c >= '0' && c <= '9'
         let isDollar = c = '$' // useful
-        let isAnySpace = Char.IsWhiteSpace(c)
+        let isHash = c = '#' // useful
         
-        isLat || isCyr || isDigit || isDollar || isAnySpace
+        isLat || isCyr || isDigit || isDollar || isHash
     
-    let filteredStr = String.filter isCyrLatAlphaChar (str.ToLower())
+    let mapChar c =
+        if isCyrLatAlphaChar c then c.ToString() else " "
+    
+    // 999 allocations per message
+    let filteredStr = String.collect mapChar (str.ToLower())
     
     List.ofArray <| filteredStr.Split(' ', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
     
@@ -98,10 +102,36 @@ let countEmojiLikeCharacters str =
     
     emojis
     
-let calcSpamScore msg =
+let jobsMiscTags = ["#удалёнка"; "#удаленка"; "#офис"; "#parttime"; "#fulltime"; "#аккредитация"; "#нет_аккредитации"]
+
+let jobsTagScore (wl: string list) =
+    let countTags w =
+        let countSingleTag t = if w = t then 1 else 0 
+        
+        if w = "#резюме" || w = "#вакансия" then 10 else List.sumBy countSingleTag jobsMiscTags
+        
+    List.sumBy countTags wl
+    
+let calcSpamScore msg isJobs =
     let words = distillWords msg
     
-    (countFakeCyrillicWords words) * 100
+    let jobsTagScore = if isJobs then jobsTagScore words else 0    
+    
+    (countFakeCyrillicWords words) * 200
         + (countEmojiLikeCharacters msg) * 5
         + (countPhrases words) * 10
         + (countWords words) * 10
+        - jobsTagScore * 10
+        
+let debugSpam msg isJobs =
+    
+    let words = distillWords msg
+    
+    let fcw = countFakeCyrillicWords words
+    let emoji = countEmojiLikeCharacters msg
+    let phrases = countPhrases words
+    let cwords = countWords words
+    
+    printfn "words = %A" words
+    printfn "fcw = %d; emoji = %d; phrases = %d; cwords = %d; total = %d" fcw emoji phrases cwords (calcSpamScore msg isJobs)
+    

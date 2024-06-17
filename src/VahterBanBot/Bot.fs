@@ -407,7 +407,8 @@ let justMessage
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (message: Message) = task {
-    let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
+    let isJobs = message.Chat.Username = "DotNetRuJobs"
+    let spamScore = if message.Text <> null then calcSpamScore message.Text isJobs else 0
     
     if spamScore > 100 then
         do! warnSpamDetection botClient botConfig message logger spamScore    
