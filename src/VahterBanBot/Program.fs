@@ -19,6 +19,7 @@ open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
+open VahterBanBot.FakeTgApi
 open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
 open OpenTelemetry.Resources
@@ -38,7 +39,8 @@ let botConf =
       AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
-      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse }
+      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
+      UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -56,7 +58,12 @@ let builder = WebApplication.CreateBuilder()
     .AddHttpClient("telegram_bot_client")
     .AddTypedClient(fun httpClient sp ->
         let options = TelegramBotClientOptions(botConf.BotToken)
-        TelegramBotClient(options, httpClient) :> ITelegramBotClient)
+        TelegramBotClient(options, httpClient) :> ITelegramBotClient
+    )
+    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
+        if botConf.UseFakeTgApi then
+            handlers.Add(fakeTgApi botConf)
+    )
 
 let otelBuilder =
     builder.Services

@@ -15,6 +15,7 @@ type BotConfiguration =
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
+      UseFakeTgApi: bool
       UsePolling: bool }
 
 [<CLIMutable>]
