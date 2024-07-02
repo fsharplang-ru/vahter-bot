@@ -80,6 +80,7 @@ type VahterTestContainers() =
             .WithEnvironment("ALLOWED_USERS", """{"vahter_1": 34, "vahter_2": 69}""")
             .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
             .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
+            .WithEnvironment("USE_FAKE_TG_API", "true")
             .WithEnvironment("USE_POLLING", "false")
             .WithEnvironment("DATABASE_URL", internalConnectionString)
             // .net 8.0 upgrade has a breaking change
