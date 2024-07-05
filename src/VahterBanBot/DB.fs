@@ -16,13 +16,10 @@ let upsertUser (user: DbUser): Task<DbUser> =
         //language=postgresql
         let sql =
             """
-INSERT INTO "user" (id, username, ban_reason, banned_at, banned_by, created_at, updated_at)
-VALUES (@id, @username, @banReason, @bannedAt, @bannedBy, @createdAt, @updatedAt)
+INSERT INTO "user" (id, username, created_at, updated_at)
+VALUES (@id, @username, @createdAt, @updatedAt)
 ON CONFLICT (id) DO UPDATE
     SET username   = COALESCE("user".username, EXCLUDED.username),
-        ban_reason = COALESCE("user".ban_reason, EXCLUDED.ban_reason),
-        banned_at  = COALESCE("user".banned_at, EXCLUDED.banned_at),
-        banned_by  = COALESCE("user".banned_by, EXCLUDED.banned_by),
         updated_at = GREATEST(EXCLUDED.updated_at, "user".updated_at)
 RETURNING *;
 """
@@ -32,9 +29,6 @@ RETURNING *;
                 sql,
                 {| id = user.Id
                    username = user.Username
-                   banReason = user.Ban_Reason
-                   bannedAt = user.Banned_At
-                   bannedBy = user.Banned_By
                    createdAt = user.Created_At
                    updatedAt = user.Updated_At |}
             )
@@ -69,6 +63,30 @@ ON CONFLICT (chat_id, message_id) DO NOTHING RETURNING *;
             |> Option.defaultValue message
 }
 
+let banUser (banned: DbBanned): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO banned (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username, banned_by)
+VALUES (@messageId, @messageText, @bannedUserId, @bannedAt, @bannedInChatId, @bannedInChatUsername, @bannedBy)
+            """
+        
+        let! _ = conn.ExecuteAsync(
+                sql,
+                {| messageId = banned.Message_Id
+                   messageText = banned.Message_text
+                   bannedUserId = banned.Banned_User_Id
+                   bannedAt = banned.Banned_At
+                   bannedInChatId = banned.Banned_In_Chat_Id
+                   bannedInChatUsername = banned.Banned_In_Chat_username
+                   bannedBy = banned.Banned_By |}
+        )
+        return banned
+    }
+
 let getUserMessages (userId: int64): Task<DbMessage array> =
     task {
         use conn = new NpgsqlConnection(connString)
@@ -102,17 +120,16 @@ let cleanupOldMessages (howOld: TimeSpan): Task<int> =
 let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
     task {
         use conn = new NpgsqlConnection(connString)
-
+        
         //language=postgresql
         let sql =
             """
 SELECT vahter.username                                                      AS vahter
      , COUNT(*)                                                             AS killCountTotal
-     , COUNT(*) FILTER (WHERE u.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
-FROM "user" u
-         JOIN "user" vahter ON vahter.id = u.banned_by
-WHERE u.banned_by IS NOT NULL
-GROUP BY u.banned_by, vahter.username
+     , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
+FROM banned b
+         JOIN "user" vahter ON vahter.id = b.banned_by
+GROUP BY b.banned_by, vahter.username
 ORDER BY killCountTotal DESC
             """
 

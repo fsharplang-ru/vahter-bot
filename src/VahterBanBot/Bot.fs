@@ -259,10 +259,9 @@ let banOnReply
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
     }
     // update user in DB
-    let banUserInDb =
+    let updatedUser =
         message.ReplyToMessage.From
         |> DbUser.newUser
-        |> DbUser.banUser message.From.Id (Option.ofObj message.ReplyToMessage.Text)
         |> DB.upsertUser
 
     let deletedUserMessagesTask = task {
@@ -296,13 +295,18 @@ let banOnReply
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg message logger deletedUserMessages banResults 
+    let logMsg = aggregateBanResultInLogMsg message logger deletedUserMessages banResults
+    
+    // add ban record to DB
+    do! message.ReplyToMessage
+        |> DbBanned.banMessage message.From.Id
+        |> DB.banUser
 
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
     
-    do! banUserInDb.Ignore()
+    do! updatedUser.Ignore()
     do! deleteReplyTask
 }
 
@@ -358,17 +362,9 @@ let unban
         .SetTag("targetId", targetUserId)
 
     let! user = DB.getUserById targetUserId
-    let unbanUserTask = task {
-        if user.IsSome then
-            %banOnReplyActivity.SetTag("targetUsername", user.Value.Username)
-            let! unbannedUser =
-                user.Value
-                |> DbUser.unban
-                |> DB.upsertUser
-            return Some unbannedUser
-        else
-            return None
-    }
+    if user.IsSome then
+        %banOnReplyActivity.SetTag("targetUsername", user.Value.Username)
+
     let targetUsername = user |> Option.bind (fun u -> u.Username)
 
     // try unban user in all monitored chats
@@ -380,8 +376,6 @@ let unban
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
-    
-    do! unbanUserTask.Ignore()
 }
 
 let warnSpamDetection

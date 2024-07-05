@@ -16,22 +16,14 @@ type CleanupService(
     telegramClient: ITelegramBotClient,
     botConf: BotConfiguration
 ) =
-    let cleanupInterval =
-        getEnvOr "MESSAGES_CLEANUP_INTERVAL_SEC" "86400" // 1 day
-        |> int
-        |> TimeSpan.FromSeconds
-    let cleanupOldLimit =
-        getEnvOr "MESSAGES_CLEANUP_OLD_LIMIT_SEC" "259200" // 3 days
-        |> int
-        |> TimeSpan.FromSeconds
     let mutable timer: Timer = null
     
     let cleanup _ = task {
-        let! cleanupMsgs = DB.cleanupOldMessages cleanupOldLimit
-        let! vahterStats = DB.getVahterStats (Some cleanupInterval)
+        let! cleanupMsgs = DB.cleanupOldMessages botConf.CleanupOldLimit
+        let! vahterStats = DB.getVahterStats (Some botConf.CleanupInterval)
         
         let sb = StringBuilder()
-        %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable cleanupOldLimit}"
+        %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable botConf.CleanupOldLimit}"
         %sb.AppendLine(string vahterStats)
         
         let msg = sb.ToString()
@@ -44,8 +36,8 @@ type CleanupService(
     
     interface IHostedService with
         member this.StartAsync _ =
-            if not botConf.IgnoreSideEffects then
-                timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, cleanupInterval)
+            if botConf.CleanupOldMessages then
+                timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, botConf.CleanupInterval)
             Task.CompletedTask
 
         member this.StopAsync _ =

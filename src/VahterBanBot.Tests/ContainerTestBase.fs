@@ -165,3 +165,11 @@ type VahterTestContainers() =
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count = 1
     }
+
+    member _.MessageBanned(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM banned WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count > 0
+    }
