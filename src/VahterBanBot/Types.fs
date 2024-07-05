@@ -16,46 +16,47 @@ type BotConfiguration =
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
       UseFakeTgApi: bool
-      UsePolling: bool }
+      UsePolling: bool
+      CleanupOldMessages: bool
+      CleanupInterval: TimeSpan
+      CleanupOldLimit: TimeSpan }
 
 [<CLIMutable>]
 type DbUser =
     { Id: int64
       Username: string option
-      Banned_By: int64 option
-      Banned_At: DateTime option
-      Ban_Reason: string option
       Updated_At: DateTime
       Created_At: DateTime }
 
     static member newUser(id, ?username: string) =
         { Id = id
           Username = username
-          Banned_By = None
-          Banned_At = None
-          Ban_Reason = None
           Updated_At = DateTime.UtcNow
           Created_At = DateTime.UtcNow }
 
     static member newUser(user: Telegram.Bot.Types.User) =
         DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
 
-    member this.Ban(vahter: int64, ?reason: String) =
-        { this with
-            Banned_By = Some vahter
-            Banned_At = Some DateTime.UtcNow
-            Ban_Reason = reason
-            Updated_At = DateTime.UtcNow }
-    member this.Unban() =
-        { this with
-            Banned_By = None
-            Banned_At = None
-            Ban_Reason = None
-            Updated_At = DateTime.UtcNow }
-
-module DbUser =
-    let banUser vahter reason (user: DbUser) = user.Ban(vahter, ?reason = reason)
-    let unban (user: DbUser) = user.Unban()
+[<CLIMutable>]
+type DbBanned =
+    { Message_Id: int option
+      Message_text: string
+      Banned_User_Id: int64
+      Banned_At: DateTime
+      Banned_In_Chat_Id: int64 option
+      Banned_In_Chat_username: string option
+      Banned_By: int64 }
+module DbBanned =
+    let banMessage (vahter: int64) (message: Telegram.Bot.Types.Message) =
+        if isNull message.From || isNull message.Chat then
+            failwith "Message should have a user and a chat"
+        { Message_Id = Some message.MessageId
+          Message_text = message.Text
+          Banned_User_Id = message.From.Id
+          Banned_At = DateTime.UtcNow
+          Banned_In_Chat_Id = Some message.Chat.Id
+          Banned_In_Chat_username = Some message.Chat.Username
+          Banned_By = vahter }
 
 [<CLIMutable>]
 type DbMessage =

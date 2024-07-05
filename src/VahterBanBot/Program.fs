@@ -40,7 +40,10 @@ let botConf =
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
-      UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse }
+      UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
+      CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
+      CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
+      CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
