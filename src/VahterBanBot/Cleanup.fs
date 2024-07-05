@@ -19,11 +19,12 @@ type CleanupService(
     let mutable timer: Timer = null
     
     let cleanup _ = task {
-        let! cleanupMsgs = DB.cleanupOldMessages botConf.CleanupOldLimit
-        let! vahterStats = DB.getVahterStats (Some botConf.CleanupInterval)
-        
         let sb = StringBuilder()
-        %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable botConf.CleanupOldLimit}"
+        if botConf.CleanupOldMessages then
+            let! cleanupMsgs = DB.cleanupOldMessages botConf.CleanupOldLimit
+            %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable botConf.CleanupOldLimit}"
+
+        let! vahterStats = DB.getVahterStats (Some botConf.CleanupInterval)
         %sb.AppendLine(string vahterStats)
         
         let msg = sb.ToString()
@@ -36,7 +37,7 @@ type CleanupService(
     
     interface IHostedService with
         member this.StartAsync _ =
-            if botConf.CleanupOldMessages then
+            if not botConf.IgnoreSideEffects then
                 timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, botConf.CleanupInterval)
             Task.CompletedTask
 
