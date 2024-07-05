@@ -24,10 +24,8 @@ type StartupMessage(
         for KeyValue(username, chatId) in botConf.ChatsToMonitor do
             %sb.AppendLine($"  {prependUsername username} ({chatId})")
 
-        let totalStats = (DB.getVahterStats None).Result
-        %sb.AppendLine (string totalStats)
-
         sb.ToString()
+
     interface IHostedService with
         member this.StartAsync _ = task {
             if not botConf.IgnoreSideEffects then

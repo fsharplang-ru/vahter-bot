@@ -19,6 +19,7 @@ open VahterBanBot.Cleanup
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
+open VahterBanBot.StartupMessage
 open VahterBanBot.FakeTgApi
 open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
@@ -58,6 +59,7 @@ let builder = WebApplication.CreateBuilder()
     .AddSingleton(botConf)
     .AddGiraffe()
     .AddHostedService<CleanupService>()
+    .AddHostedService<StartupMessage>()
     .AddHttpClient("telegram_bot_client")
     .AddTypedClient(fun httpClient sp ->
         let options = TelegramBotClientOptions(botConf.BotToken)
