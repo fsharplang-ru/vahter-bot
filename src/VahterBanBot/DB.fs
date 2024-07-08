@@ -17,21 +17,14 @@ let upsertUser (user: DbUser): Task<DbUser> =
         let sql =
             """
 INSERT INTO "user" (id, username, created_at, updated_at)
-VALUES (@id, @username, @createdAt, @updatedAt)
+VALUES (@id, @username, @created_at, @updated_at)
 ON CONFLICT (id) DO UPDATE
     SET username   = COALESCE("user".username, EXCLUDED.username),
         updated_at = GREATEST(EXCLUDED.updated_at, "user".updated_at)
 RETURNING *;
 """
 
-        let! insertedUser =
-            conn.QueryAsync<DbUser>(
-                sql,
-                {| id = user.Id
-                   username = user.Username
-                   createdAt = user.Created_At
-                   updatedAt = user.Updated_At |}
-            )
+        let! insertedUser = conn.QueryAsync<DbUser>(sql, user)
 
         return insertedUser |> Seq.head
     }
@@ -43,19 +36,12 @@ let insertMessage (message: DbMessage): Task<DbMessage> =
         //language=postgresql
         let sql =
             """
-INSERT INTO message (chat_id, message_id, user_id, created_at)
-VALUES (@chatId, @messageId, @userId, @createdAt)
+INSERT INTO message (chat_id, message_id, user_id, text, raw_message, created_at)
+VALUES (@chat_id, @message_id, @user_id, @text, @raw_message::JSONB, @created_at)
 ON CONFLICT (chat_id, message_id) DO NOTHING RETURNING *;
             """
 
-        let! insertedMessage =
-            conn.QueryAsync<DbMessage>(
-                sql,
-                {| chatId = message.Chat_Id
-                   messageId = message.Message_Id
-                   userId = message.User_Id
-                   createdAt = message.Created_At |}
-            )
+        let! insertedMessage = conn.QueryAsync<DbMessage>(sql, message)
 
         return
             insertedMessage
@@ -71,19 +57,10 @@ let banUser (banned: DbBanned): Task =
         let sql =
             """
 INSERT INTO banned (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username, banned_by)
-VALUES (@messageId, @messageText, @bannedUserId, @bannedAt, @bannedInChatId, @bannedInChatUsername, @bannedBy)
+VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat_id, @banned_in_chat_username, @banned_by)
             """
         
-        let! _ = conn.ExecuteAsync(
-                sql,
-                {| messageId = banned.Message_Id
-                   messageText = banned.Message_text
-                   bannedUserId = banned.Banned_User_Id
-                   bannedAt = banned.Banned_At
-                   bannedInChatId = banned.Banned_In_Chat_Id
-                   bannedInChatUsername = banned.Banned_In_Chat_username
-                   bannedBy = banned.Banned_By |}
-        )
+        let! _ = conn.ExecuteAsync(sql, banned)
         return banned
     }
 
@@ -100,7 +77,7 @@ let getUserMessages (userId: int64): Task<DbMessage array> =
 
 let deleteMsgs (msg: DbMessage[]): Task<int> =
     task {
-        let msgIds = msg |> Array.map (fun m -> m.Message_Id)
+        let msgIds = msg |> Array.map (_.message_id)
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql

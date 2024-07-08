@@ -277,11 +277,11 @@ let banOnReply
                     use _ =
                         botActivity
                             .StartActivity("deleteMsg")
-                            .SetTag("msgId", msg.Message_Id)
-                            .SetTag("chatId", msg.Chat_Id)
-                    do! botClient.DeleteMessageAsync(ChatId(msg.Chat_Id), msg.Message_Id)
+                            .SetTag("msgId", msg.message_id)
+                            .SetTag("chatId", msg.chat_id)
+                    do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
                 with e ->
-                    logger.LogError ($"Failed to delete message {msg.Message_Id} from chat {msg.Chat_Id}", e)
+                    logger.LogError ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
             })
             |> Task.WhenAll
             |> taskIgnore
@@ -363,9 +363,9 @@ let unban
 
     let! user = DB.getUserById targetUserId
     if user.IsSome then
-        %banOnReplyActivity.SetTag("targetUsername", user.Value.Username)
+        %banOnReplyActivity.SetTag("targetUsername", user.Value.username)
 
-    let targetUsername = user |> Option.bind (fun u -> u.Username)
+    let targetUsername = user |> Option.bind (_.username)
 
     // try unban user in all monitored chats
     let! unbanResults = unbanInAllChats botConfig botClient targetUserId
@@ -505,7 +505,7 @@ let onUpdate
     if isNull message || isNull message.From then
         logger.LogWarning "Received update without message"
     else
-    
+
     // early return if we don't monitor this chat
     if not (botConfig.ChatsToMonitor.ContainsValue message.Chat.Id) then
         ()

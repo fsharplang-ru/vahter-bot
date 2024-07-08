@@ -12,6 +12,7 @@ open Npgsql
 open Telegram.Bot.Types
 open Testcontainers.PostgreSql
 open VahterBanBot.Tests.TgMessageUtils
+open VahterBanBot.Types
 open Xunit
 open Dapper
 
@@ -158,12 +159,12 @@ type VahterTestContainers() =
         Tg.chat(id = -42, username = "dotnetru")
     ]
 
-    member _.MessageExist(msg: Message) = task {
+    member _.TryGetDbMessage(msg: Message) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM message WHERE chat_id = @chatId AND message_id = @messageId"
-        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
-        return count = 1
+        let sql = "SELECT * FROM message WHERE chat_id = @chatId AND message_id = @messageId"
+        let! dbMessage = conn.QueryAsync<DbMessage>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return dbMessage |> Seq.tryHead
     }
 
     member _.MessageBanned(msg: Message) = task {
