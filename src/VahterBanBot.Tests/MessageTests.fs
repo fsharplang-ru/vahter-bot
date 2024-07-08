@@ -8,6 +8,7 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
+open Xunit.Extensions.AssemblyFixture
 
 type MessageTests(fixture: VahterTestContainers) =
 
@@ -36,3 +37,5 @@ type MessageTests(fixture: VahterTestContainers) =
               created_at = dbMsg.Value.created_at }
         )                 
     }
+
+    interface IAssemblyFixture<VahterTestContainers>
