@@ -3,6 +3,7 @@
 open System
 open System.Collections.Generic
 open System.Text
+open Newtonsoft.Json
 open Utils
 
 [<CLIMutable>]
@@ -23,52 +24,56 @@ type BotConfiguration =
 
 [<CLIMutable>]
 type DbUser =
-    { Id: int64
-      Username: string option
-      Updated_At: DateTime
-      Created_At: DateTime }
+    { id: int64
+      username: string option
+      updated_at: DateTime
+      created_at: DateTime }
 
     static member newUser(id, ?username: string) =
-        { Id = id
-          Username = username
-          Updated_At = DateTime.UtcNow
-          Created_At = DateTime.UtcNow }
+        { id = id
+          username = username
+          updated_at = DateTime.UtcNow
+          created_at = DateTime.UtcNow }
 
     static member newUser(user: Telegram.Bot.Types.User) =
         DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
 
 [<CLIMutable>]
 type DbBanned =
-    { Message_Id: int option
-      Message_text: string
-      Banned_User_Id: int64
-      Banned_At: DateTime
-      Banned_In_Chat_Id: int64 option
-      Banned_In_Chat_username: string option
-      Banned_By: int64 }
+    { message_id: int option
+      message_text: string
+      banned_user_id: int64
+      banned_at: DateTime
+      banned_in_chat_id: int64 option
+      banned_in_chat_username: string option
+      banned_by: int64 }
 module DbBanned =
     let banMessage (vahter: int64) (message: Telegram.Bot.Types.Message) =
         if isNull message.From || isNull message.Chat then
             failwith "Message should have a user and a chat"
-        { Message_Id = Some message.MessageId
-          Message_text = message.Text
-          Banned_User_Id = message.From.Id
-          Banned_At = DateTime.UtcNow
-          Banned_In_Chat_Id = Some message.Chat.Id
-          Banned_In_Chat_username = Some message.Chat.Username
-          Banned_By = vahter }
+        { message_id = Some message.MessageId
+          message_text = message.Text
+          banned_user_id = message.From.Id
+          banned_at = DateTime.UtcNow
+          banned_in_chat_id = Some message.Chat.Id
+          banned_in_chat_username = Some message.Chat.Username
+          banned_by = vahter }
 
 [<CLIMutable>]
 type DbMessage =
-    { Chat_Id: int64
-      Message_Id: int
-      User_Id: int64
-      Created_At: DateTime }
+    { chat_id: int64
+      message_id: int
+      user_id: int64
+      text: string
+      raw_message: string
+      created_at: DateTime }
     static member newMessage(message: Telegram.Bot.Types.Message) =
-        { Chat_Id = message.Chat.Id
-          Message_Id = message.MessageId
-          User_Id = message.From.Id
-          Created_At = DateTime.UtcNow }
+        { chat_id = message.Chat.Id
+          message_id = message.MessageId
+          user_id = message.From.Id
+          created_at = DateTime.UtcNow
+          text = message.Text
+          raw_message = JsonConvert.SerializeObject message }
 
 [<CLIMutable>]
 type VahterStat =

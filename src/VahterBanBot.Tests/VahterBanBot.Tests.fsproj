@@ -12,6 +12,7 @@
         <Compile Include="TgMessageUtils.fs" />
         <Compile Include="ContainerTestBase.fs" />
         <Compile Include="BaseTests.fs" />
+        <Compile Include="MessageTests.fs" />
         <Compile Include="BanTests.fs" />
         <Compile Include="PingTests.fs" />
         <Compile Include="Program.fs"/>
