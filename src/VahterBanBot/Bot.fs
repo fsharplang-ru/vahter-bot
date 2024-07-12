@@ -114,7 +114,7 @@ let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId 
         CanPinMessages = false,
         CanManageTopics = false
         )
-    let untilDate = DateTime.Now.AddHours duration
+    let untilDate = DateTime.UtcNow.AddHours duration
     try 
         do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, Nullable(), untilDate)
         return Ok(chatId, targetUserId)
@@ -203,7 +203,7 @@ let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
 
 let softBanResultInLogMsg (message: Message) (duration: int) =
     let logMsgBuilder = StringBuilder()
-    let untilDate = (DateTime.Now.AddHours duration).ToString "u"
+    let untilDate = (DateTime.UtcNow.AddHours duration).ToString "u"
     %logMsgBuilder.Append $"Vahter {prependUsername message.From.Username}({message.From.Id}) "
     %logMsgBuilder.Append $"softbanned {prependUsername message.ReplyToMessage.From.Username}({message.ReplyToMessage.From.Id}) "
     %logMsgBuilder.Append $"in {prependUsername message.Chat.Username}({message.Chat.Id}) "
@@ -286,8 +286,7 @@ let banOnReply
             |> Task.WhenAll
             |> taskIgnore
 
-        // delete recorded messages from DB
-        return! DB.deleteMsgs allUserMessages
+        return allUserMessages.Length
     }
     
     // try ban user in all monitored chats
