@@ -63,7 +63,13 @@ type VahterTestContainers() =
             .WithEnvironment("FLYWAY_USER", "vahter_bot_ban_service")
             .WithEnvironment("FLYWAY_PASSWORD", "vahter_bot_ban_service")
             .WithCommand("migrate", "-schemas=public")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Successfully applied \d+ migrations"))
+            .WithWaitStrategy(Wait.ForUnixContainer().AddCustomWaitStrategy(
+                { new IWaitUntil  with
+                    override this.UntilAsync(container) = task {
+                        let! _ = container.GetExitCodeAsync()
+                        return true
+                    }
+                }))
             .DependsOn(dbContainer)
             .Build()
 
@@ -111,6 +117,11 @@ type VahterTestContainers() =
 
             // run migrations
             do! flywayContainer.StartAsync()
+            let! out, err = flywayContainer.GetLogsAsync()
+            if err <> "" then
+                failwith err
+            if not (out.Contains "Successfully applied") then
+                failwith out
             
             // seed some test data
             // inserting the only admin users we have
