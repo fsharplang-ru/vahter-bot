@@ -5,7 +5,7 @@ open System.Threading
 open Telegram.Bot.Types
 
 type Tg() =
-    static let mutable i = 0L
+    static let mutable i = 10000L // higher than the data in the test_seed.sql
     static let nextInt64() = Interlocked.Increment &i
     static let next() = nextInt64() |> int
     static member user (?id: int64, ?username: string, ?firstName: string) =

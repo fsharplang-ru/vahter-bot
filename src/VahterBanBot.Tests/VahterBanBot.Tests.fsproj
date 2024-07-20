@@ -9,10 +9,14 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Content Include="test_seed.sql">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
         <Compile Include="TgMessageUtils.fs" />
         <Compile Include="ContainerTestBase.fs" />
         <Compile Include="BaseTests.fs" />
         <Compile Include="MessageTests.fs" />
+        <Compile Include="MLBanTests.fs" />
         <Compile Include="BanTests.fs" />
         <Compile Include="PingTests.fs" />
         <Compile Include="Program.fs"/>

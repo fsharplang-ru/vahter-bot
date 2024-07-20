@@ -7,6 +7,7 @@ open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
 open Telegram.Bot.Types
+open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.Antispam
@@ -377,19 +378,29 @@ let unban
     logger.LogInformation logMsg
 }
 
-let warnSpamDetection
+let killSpammerAutomated
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (logger: ILogger)
+    (deleteMessage: bool)
     score = task {
-    use banOnReplyActivity = botActivity.StartActivity("warnSpamDetection")
+    use banOnReplyActivity = botActivity.StartActivity("killAutomated")
     %banOnReplyActivity
         .SetTag("spammerId", message.From.Id)
         .SetTag("spammerUsername", message.From.Username)
+        
+    if deleteMessage then
+        // delete message
+        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+        // 0 here is the bot itself
+        do! DbBanned.banMessage 0 message
+            |> DB.banUserByBot
 
-    let logMsg = $"Detected spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"
-    
+    let msgType = if deleteMessage then "Deleted" else "Detected"
+    let logMsg = $"""{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"""
+
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
@@ -399,18 +410,48 @@ let justMessage
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
+    (ml: MachineLearning)
     (message: Message) = task {
-    let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
     
-    if spamScore > 100 then
-        do! warnSpamDetection botClient botConfig message logger spamScore    
-    
-    use _ =
+    use justMessageActivity =
         botActivity
             .StartActivity("justMessage")
             .SetTag("fromUserId", message.From.Id)
             .SetTag("fromUsername", message.From.Username)
-            .SetTag("spamScore", spamScore)
+            
+    
+    if botConfig.MlEnabled && message.Text <> null then
+        use mlActivity = botActivity.StartActivity("mlPrediction")
+        
+        let shouldBeSkipped =
+            match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
+            | true, stopWords ->
+                stopWords
+                |> Seq.exists (fun sw -> message.Text.Contains(sw, StringComparison.OrdinalIgnoreCase))
+            | _ -> false
+        %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
+        
+        if not shouldBeSkipped then
+            match ml.Predict message.Text with
+            | Some prediction ->
+                %mlActivity.SetTag("spamScoreMl", prediction.Score)
+                
+                if prediction.Score >= botConfig.MlSpamThreshold then
+                    // delete message
+                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
+                elif prediction.Score > 0.0f then
+                    // just warn
+                    do! killSpammerAutomated botClient botConfig message logger false prediction.Score
+                else
+                    // not a spam
+                    ()
+            | None ->
+                // no prediction (error or not ready yet)
+                ()
+    
+    let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
+    %justMessageActivity.SetTag("spamScore", spamScore)
+    
     do!
         message
         |> DbMessage.newMessage
@@ -497,6 +538,7 @@ let onUpdate
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
+    (ml: MachineLearning)
     (message: Message) = task {
     use banOnReplyActivity = botActivity.StartActivity("onUpdate")
 
@@ -530,5 +572,5 @@ let onUpdate
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        do! justMessage botClient botConfig logger message
+        do! justMessage botClient botConfig logger ml message
 }

@@ -2,6 +2,7 @@
 
 open System
 open System.Threading.Tasks
+open Microsoft.ML.Data
 open Npgsql
 open VahterBanBot.Types
 open Dapper
@@ -64,6 +65,21 @@ VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat
         return banned
     }
 
+let banUserByBot (banned: DbBanned) : Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO banned_by_bot (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username)
+VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat_id, @banned_in_chat_username)
+            """
+
+        let! _ = conn.ExecuteAsync(sql, banned)
+        return banned
+    }
+
 let getUserMessages (userId: int64): Task<DbMessage array> =
     task {
         use conn = new NpgsqlConnection(connString)
@@ -101,13 +117,18 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
         //language=postgresql
         let sql =
             """
-SELECT vahter.username                                                      AS vahter
-     , COUNT(*)                                                             AS killCountTotal
-     , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
-FROM banned b
-         JOIN "user" vahter ON vahter.id = b.banned_by
-GROUP BY b.banned_by, vahter.username
-ORDER BY killCountTotal DESC
+(SELECT vahter.username                                                      AS vahter
+      , COUNT(*)                                                             AS killCountTotal
+      , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
+ FROM banned b
+          JOIN "user" vahter ON vahter.id = b.banned_by
+ GROUP BY b.banned_by, vahter.username
+ UNION
+ SELECT 'bot'                                                                  AS vahter
+      , COUNT(*)                                                               AS killCountTotal
+      , COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
+ FROM banned_by_bot bbb)
+    ORDER BY killCountTotal DESC
             """
 
         let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
@@ -122,4 +143,49 @@ let getUserById (userId: int64): Task<DbUser option> =
         let sql = "SELECT * FROM \"user\" WHERE id = @userId"
         let! users = conn.QueryAsync<DbUser>(sql, {| userId = userId |})
         return users |> Seq.tryHead
+    }
+
+type SpamOrHam =
+    { [<LoadColumn(0)>]
+      text: string
+      [<LoadColumn(1)>]
+      spam: bool }
+
+let mlData(criticalDate: DateTime) : Task<SpamOrHam array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+WITH really_banned AS (SELECT *
+                       FROM banned b
+                       -- known false positive spam messages
+                       WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
+                         AND NOT EXISTS(SELECT 1 FROM false_positive_messages fpm WHERE fpm.id = b.id)
+                         AND b.message_text IS NOT NULL
+                         AND b.banned_at <= @criticalDate),
+     spam_or_ham AS (SELECT DISTINCT COALESCE(m.text, re_id.message_text) AS text,
+                                     CASE
+                                         -- known false negative spam messages
+                                         WHEN EXISTS(SELECT 1
+                                                     FROM false_negative_messages fnm
+                                                     WHERE fnm.chat_id = m.chat_id
+                                                       AND fnm.message_id = m.message_id)
+                                             THEN TRUE
+                                         WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
+                                             THEN FALSE
+                                         ELSE TRUE
+                                         END                              AS spam
+                     FROM (SELECT * FROM message WHERE text IS NOT NULL AND created_at <= @criticalDate) m
+                              FULL OUTER JOIN really_banned re_id
+                                              ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
+                              LEFT JOIN really_banned re_text ON m.text = re_text.message_text)
+SELECT *
+FROM spam_or_ham
+ORDER BY RANDOM();
+"""
+
+        let! data = conn.QueryAsync<SpamOrHam>(sql, {| criticalDate = criticalDate |})
+        return Array.ofSeq data
     }
