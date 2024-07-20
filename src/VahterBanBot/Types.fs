@@ -20,7 +20,14 @@ type BotConfiguration =
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
-      CleanupOldLimit: TimeSpan }
+      CleanupOldLimit: TimeSpan
+      MlEnabled: bool
+      MlSeed: Nullable<int>
+      MlSpamDeletionEnabled: bool
+      MlTrainBeforeDate: DateTime
+      MlTrainingSetFraction: float
+      MlSpamThreshold: single
+      MlStopWordsInChats: Dictionary<int64, string list> }
 
 [<CLIMutable>]
 type DbUser =

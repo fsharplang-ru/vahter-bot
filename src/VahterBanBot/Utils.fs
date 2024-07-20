@@ -22,6 +22,12 @@ let getEnvWith name action =
     if value <> null then
         action value
 
+let getEnvOrWith name defaultValue action =
+    let value = Environment.GetEnvironmentVariable name
+    if value <> null then
+        action value
+    else defaultValue
+
 let prependUsername (s: string) =
     if isNull s then
         null

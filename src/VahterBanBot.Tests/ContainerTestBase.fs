@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Net.Http
 open System.Text
+open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
@@ -90,6 +91,14 @@ type VahterTestContainers() =
             .WithEnvironment("USE_FAKE_TG_API", "true")
             .WithEnvironment("USE_POLLING", "false")
             .WithEnvironment("DATABASE_URL", internalConnectionString)
+            .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
+            .WithEnvironment("ML_ENABLED", "true")
+            // seed data uses 2021-01-01 as a date for all messages
+            .WithEnvironment("ML_TRAIN_BEFORE_DATE", "2021-01-02T00:00:00Z")
+            .WithEnvironment("ML_SEED", "42")
+            .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
+            .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
+            .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
             // .net 8.0 upgrade has a breaking change
             // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
             // Azure default port for containers is 80, se we need explicitly set it
@@ -124,10 +133,14 @@ type VahterTestContainers() =
                 failwith out
             
             // seed some test data
-            // inserting the only admin users we have
-            // TODO might be a script in test assembly
-            let! _ = dbContainer.ExecAsync([|"""INSERT INTO "user"(id, username, banned_by, banned_at, ban_reason) VALUES (34, 'vahter_1', NULL, NULL, NULL), (69, 'vahter_2', NULL, NULL, NULL);"""|])
-            
+            let script = File.ReadAllText(CommonDirectoryPath.GetCallerFileDirectory().DirectoryPath + "/test_seed.sql")
+            let scriptFilePath = String.Join("/", String.Empty, "tmp", Guid.NewGuid().ToString("D"), Path.GetRandomFileName())
+            do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, Unix.FileMode644)
+            let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_bot_ban"; "--file"; scriptFilePath |]
+
+            if scriptResult.Stderr <> "" then
+                failwith scriptResult.Stderr
+
             // start the app container
             do! appContainer.StartAsync()
             
@@ -185,3 +198,18 @@ type VahterTestContainers() =
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
     }
+    
+    member _.MessageIsAutoBanned(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count > 0
+    }
+
+// workaround to wait for ML to be ready
+type MlAwaitFixture() =
+    interface IAsyncLifetime with
+        member this.DisposeAsync() = Task.CompletedTask
+        // we assume 5 seconds is enough for model to train. Could be flaky
+        member this.InitializeAsync() = Task.Delay 5000
