@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Net.Http
 open System.Text
+open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
@@ -205,3 +206,10 @@ type VahterTestContainers() =
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
     }
+
+// workaround to wait for ML to be ready
+type MlAwaitFixture() =
+    interface IAsyncLifetime with
+        member this.DisposeAsync() = Task.CompletedTask
+        // we assume 5 seconds is enough for model to train. Could be flaky
+        member this.InitializeAsync() = Task.Delay 5000
