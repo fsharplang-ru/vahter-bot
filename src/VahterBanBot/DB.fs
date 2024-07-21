@@ -127,7 +127,8 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
  SELECT 'bot'                                                                  AS vahter
       , COUNT(*)                                                               AS killCountTotal
       , COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
- FROM banned_by_bot bbb)
+ FROM banned_by_bot bbb
+ GROUP BY bbb.banned_user_id)
     ORDER BY killCountTotal DESC
             """
 
