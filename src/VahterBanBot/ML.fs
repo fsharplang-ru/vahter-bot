@@ -28,10 +28,11 @@ type MachineLearning(
 ) =
     let metricsToString(metrics: CalibratedBinaryClassificationMetrics) (duration: TimeSpan) =
         let sb = StringBuilder()
+        let formattedTable = metrics.ConfusionMatrix.GetFormattedConfusionTable().Replace(".", "\\.")
         %sb.AppendLine($"Model trained in {duration.TotalSeconds} seconds with following metrics:")
         %sb.AppendLine($"Accuracy: {metrics.Accuracy}")
         %sb.AppendLine($"AreaUnderPrecisionRecallCurve: {metrics.AreaUnderPrecisionRecallCurve}")
-        %sb.AppendLine($"""ConfusionMatrix:\\n```\\n{metrics.ConfusionMatrix.GetFormattedConfusionTable().Replace(".", "\\.")}\\n```""")
+        %sb.AppendLine($"ConfusionMatrix:\n```\n{formattedTable}\n```")
         %sb.AppendLine($"Entropy:{metrics.Entropy}")
         %sb.AppendLine($"F1Score:{metrics.F1Score}")
         %sb.AppendLine($"LogLoss:{metrics.LogLoss}")
