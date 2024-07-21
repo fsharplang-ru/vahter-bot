@@ -28,19 +28,19 @@ type MachineLearning(
 ) =
     let metricsToString(metrics: CalibratedBinaryClassificationMetrics) (duration: TimeSpan) =
         let sb = StringBuilder()
-        let formattedTable = metrics.ConfusionMatrix.GetFormattedConfusionTable().Replace(".", "\\.")
+        let formattedTable = metrics.ConfusionMatrix.GetFormattedConfusionTable()
         %sb.AppendLine($"Model trained in {duration.TotalSeconds} seconds with following metrics:")
         %sb.AppendLine($"Accuracy: {metrics.Accuracy}")
         %sb.AppendLine($"AreaUnderPrecisionRecallCurve: {metrics.AreaUnderPrecisionRecallCurve}")
         %sb.AppendLine($"ConfusionMatrix:\n```\n{formattedTable}\n```")
-        %sb.AppendLine($"Entropy:{metrics.Entropy}")
-        %sb.AppendLine($"F1Score:{metrics.F1Score}")
-        %sb.AppendLine($"LogLoss:{metrics.LogLoss}")
-        %sb.AppendLine($"LogLossReduction:{metrics.LogLossReduction}")
-        %sb.AppendLine($"NegativePrecision:{metrics.NegativePrecision}")
-        %sb.AppendLine($"NegativeRecall:{metrics.NegativeRecall}")
-        %sb.AppendLine($"PositivePrecision:{metrics.PositivePrecision}")
-        %sb.AppendLine($"PositiveRecall:{metrics.PositiveRecall}")
+        %sb.AppendLine($"Entropy: {metrics.Entropy}")
+        %sb.AppendLine($"F1Score: {metrics.F1Score}")
+        %sb.AppendLine($"LogLoss: {metrics.LogLoss}")
+        %sb.AppendLine($"LogLossReduction: {metrics.LogLossReduction}")
+        %sb.AppendLine($"NegativePrecision: {metrics.NegativePrecision}")
+        %sb.AppendLine($"NegativeRecall: {metrics.NegativeRecall}")
+        %sb.AppendLine($"PositivePrecision: {metrics.PositivePrecision}")
+        %sb.AppendLine($"PositiveRecall: {metrics.PositiveRecall}")
         sb.ToString()
         
     let mutable predictionEngine: PredictionEngine<SpamOrHam, Prediction> option = None
