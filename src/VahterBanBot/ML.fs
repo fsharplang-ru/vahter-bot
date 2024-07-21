@@ -31,7 +31,7 @@ type MachineLearning(
         %sb.AppendLine($"Model trained in {duration.TotalSeconds} seconds with following metrics:")
         %sb.AppendLine($"Accuracy: {metrics.Accuracy}")
         %sb.AppendLine($"AreaUnderPrecisionRecallCurve: {metrics.AreaUnderPrecisionRecallCurve}")
-        %sb.AppendLine($"ConfusionMatrix:\n```\n{metrics.ConfusionMatrix.GetFormattedConfusionTable()}\n```")
+        %sb.AppendLine($"""ConfusionMatrix:\\n```\\n{metrics.ConfusionMatrix.GetFormattedConfusionTable().Replace(".", "\\.")}\\n```""")
         %sb.AppendLine($"Entropy:{metrics.Entropy}")
         %sb.AppendLine($"F1Score:{metrics.F1Score}")
         %sb.AppendLine($"LogLoss:{metrics.LogLoss}")
