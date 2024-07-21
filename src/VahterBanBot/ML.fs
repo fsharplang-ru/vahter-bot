@@ -10,6 +10,7 @@ open Microsoft.ML
 open Microsoft.ML.Data
 open Telegram.Bot
 open Telegram.Bot.Types
+open Telegram.Bot.Types.Enums
 open VahterBanBot.DB
 open VahterBanBot.Types
 open VahterBanBot.Utils
@@ -72,7 +73,7 @@ type MachineLearning(
         
         let metricsStr = metricsToString metrics sw.Elapsed
         logger.LogInformation metricsStr
-        do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr)
+        do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.MarkdownV2)
             |> taskIgnore
     }
 
