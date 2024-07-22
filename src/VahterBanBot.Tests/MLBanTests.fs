@@ -12,7 +12,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``Message IS autobanned if it looks like a spam`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -25,7 +25,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
         // but it was sent by vahter
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2", from = fixture.AdminUsers[0])
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = fixture.AdminUsers[0])
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -37,7 +37,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``Message is NOT autobanned if it has a stopword in specific chat`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[1] does have a stopword 2
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[1], text = "2")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[1], text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -59,7 +59,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     [<Fact>]
     let ``Message IS autobanned if it is a known false-negative spam`` () = task {
         // record a message, where 3 is in a training set as false negative spam word
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "3")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "3333333")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -71,7 +71,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``If message got auto-deleted we can mark it as false-positive with a button click`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "7")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "7777777")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -95,7 +95,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``Only vahter can press THE BUTTON(s)`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "6")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
