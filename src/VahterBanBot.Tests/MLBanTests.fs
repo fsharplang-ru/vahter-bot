@@ -71,7 +71,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``If message got auto-deleted we can mark it as false-positive with a button click`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "7")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -105,7 +105,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         // send a callback to mark it as false-positive
         // we are sending this as a usual user
         let! callbackId = fixture.GetCallbackId msgUpdate.Message (nameof CallbackMessage.NotASpam)
-        let msgCallback = Tg.callback(string callbackId)
+        let msgCallback = Tg.callback(string callbackId, from = msgUpdate.Message.From)
         let! _ = fixture.SendMessage msgCallback
         
         // assert it is still NOT a false-positive

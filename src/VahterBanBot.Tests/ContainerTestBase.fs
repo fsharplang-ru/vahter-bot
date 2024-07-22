@@ -228,10 +228,9 @@ WHERE data ->> 'Case' = @caseName
         //language=postgresql
         let sql = """
 SELECT COUNT(*) FROM false_positive_messages
-WHERE chat_id = @chatId
-  AND message_id = @messageId
+WHERE text = @text
 """
-        let! result = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text |})
         return result > 0
     }
 
