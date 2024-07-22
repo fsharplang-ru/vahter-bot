@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
+open Dapper
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
@@ -31,6 +32,7 @@ open Azure.Monitor.OpenTelemetry.AspNetCore
 type Root = class end
 
 Dapper.FSharp.PostgreSQL.OptionTypes.register()
+SqlMapper.AddTypeHandler(CallbackMessageTypeHandler());
 
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
@@ -52,6 +54,7 @@ let botConf =
       MlTrainBeforeDate = getEnvOrWith "ML_TRAIN_BEFORE_DATE" DateTime.UtcNow (DateTimeOffset.Parse >> _.UtcDateTime)
       MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
       MlSpamThreshold = getEnvOr "ML_SPAM_THRESHOLD" "0.5" |> single
+      MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
       MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> JsonConvert.DeserializeObject<_> }
 
 let validateApiKey (ctx : HttpContext) =
@@ -145,7 +148,7 @@ let webApp = choose [
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update.Message
+            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
             %topActivity.SetTag("update-error", false)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
@@ -172,7 +175,7 @@ if botConf.UsePolling then
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate client botConf logger ml update.Message
+                    do! onUpdate client botConf logger ml update
             }
           member x.HandlePollingErrorAsync (botClient: ITelegramBotClient, ex: Exception, cancellationToken: CancellationToken) =
               Task.CompletedTask

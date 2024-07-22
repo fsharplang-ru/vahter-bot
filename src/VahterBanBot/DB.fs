@@ -59,8 +59,9 @@ let banUser (banned: DbBanned): Task =
             """
 INSERT INTO banned (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username, banned_by)
 VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat_id, @banned_in_chat_username, @banned_by)
+ON CONFLICT (banned_user_id) DO NOTHING;
             """
-        
+
         let! _ = conn.ExecuteAsync(sql, banned)
         return banned
     }
@@ -78,6 +79,20 @@ VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat
 
         let! _ = conn.ExecuteAsync(sql, banned)
         return banned
+    }
+
+let unbanUserByBot (msg: DbMessage) : Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+DELETE FROM banned_by_bot WHERE message_id = @message_id and banned_in_chat_id = @chat_id
+            """
+
+        let! _ = conn.ExecuteAsync(sql, msg)
+        return ()
     }
 
 let getUserMessages (userId: int64): Task<DbMessage array> =
@@ -109,6 +124,15 @@ let cleanupOldMessages (howOld: TimeSpan): Task<int> =
         let sql = "DELETE FROM message WHERE created_at < @thatOld"
         return! conn.ExecuteAsync(sql, {| thatOld = DateTime.UtcNow.Subtract howOld |})
     }
+    
+let cleanupOldCallbacks (howOld: TimeSpan): Task<int> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+        
+        //language=postgresql
+        let sql = "DELETE FROM callback WHERE created_at < @thatOld"
+        return! conn.ExecuteAsync(sql, {| thatOld = DateTime.UtcNow.Subtract howOld |})
+    }
 
 let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
     task {
@@ -124,11 +148,12 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
           JOIN "user" vahter ON vahter.id = b.banned_by
  GROUP BY b.banned_by, vahter.username
  UNION
- SELECT 'bot'                                                                  AS vahter
-      , COUNT(*)                                                               AS killCountTotal
-      , COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
- FROM banned_by_bot bbb
- GROUP BY bbb.banned_user_id)
+ SELECT 'bot'                                                          AS vahter,
+        COUNT(*)                                                       AS killCountTotal,
+        COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - NULL::INTERVAL) AS killCountInterval
+ FROM (SELECT banned_user_id, MIN(banned_at) AS banned_at
+       FROM banned_by_bot
+       GROUP BY banned_user_id) bbb)
     ORDER BY killCountTotal DESC
             """
 
@@ -163,7 +188,9 @@ WITH really_banned AS (SELECT *
                        FROM banned b
                        -- known false positive spam messages
                        WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
-                         AND NOT EXISTS(SELECT 1 FROM false_positive_messages fpm WHERE fpm.id = b.id)
+                         AND NOT EXISTS(SELECT 1
+                                        FROM false_positive_messages fpm
+                                        WHERE fpm.text = b.message_text)
                          AND b.message_text IS NOT NULL
                          AND b.banned_at <= @criticalDate),
      spam_or_ham AS (SELECT DISTINCT COALESCE(m.text, re_id.message_text) AS text,
@@ -189,4 +216,71 @@ ORDER BY RANDOM();
 
         let! data = conn.QueryAsync<SpamOrHam>(sql, {| criticalDate = criticalDate |})
         return Array.ofSeq data
+    }
+
+let unbanUser (userId: int64): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+DELETE FROM banned
+WHERE banned_user_id = @userId
+            """
+        
+        let! _ = conn.ExecuteAsync(sql, {| userId = userId |})
+        return ()
+    }
+
+let markMessageAsFalsePositive (message: DbMessage): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO false_positive_messages (text) 
+VALUES (@text)
+ON CONFLICT DO NOTHING;
+            """
+
+        return! conn.ExecuteAsync(sql, message)
+    }
+
+let newCallback (data: CallbackMessage): Task<DbCallback> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO callback (data)
+VALUES (@data::JSONB)
+RETURNING *;
+            """
+
+        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data |})
+    }
+
+let getCallback (id: Guid): Task<DbCallback option> = 
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT * FROM callback WHERE id = @id"
+
+        let! result = conn.QueryAsync<DbCallback>(sql, {| id = id |})
+        return Seq.tryHead result
+    }
+
+let deleteCallback (id: Guid): Task = 
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "DELETE FROM callback WHERE id = @id"
+
+        let! _ = conn.QueryAsync<DbCallback>(sql, {| id = id |})
+        return ()
     }
