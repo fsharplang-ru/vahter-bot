@@ -166,7 +166,7 @@ let getUserById (userId: int64): Task<DbUser option> =
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "SELECT * FROM \"user\" WHERE id = @userId"
+        let sql = """SELECT * FROM "user" WHERE id = @userId"""
         let! users = conn.QueryAsync<DbUser>(sql, {| userId = userId |})
         return users |> Seq.tryHead
     }
