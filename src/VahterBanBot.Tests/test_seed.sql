@@ -341,8 +341,8 @@ VALUES (100001, 10001, 'a', 1001, '2021-01-01 00:00:00', -666, 'pro.hell', 34),
 INSERT INTO public.false_positive_users(user_id)
 VALUES (1001);
 
-INSERT INTO public.false_positive_messages(chat_id, message_id)
-VALUES (-666, 10008);
+INSERT INTO public.false_positive_messages(text)
+VALUES ('a');
 
 INSERT INTO public.false_negative_messages(chat_id, message_id)
 VALUES (-42, 10008),

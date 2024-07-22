@@ -190,8 +190,7 @@ WITH really_banned AS (SELECT *
                        WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
                          AND NOT EXISTS(SELECT 1
                                         FROM false_positive_messages fpm
-                                        WHERE fpm.chat_id = b.banned_in_chat_id
-                                          AND fpm.message_id = b.message_id)
+                                        WHERE fpm.text = b.message_text)
                          AND b.message_text IS NOT NULL
                          AND b.banned_at <= @criticalDate),
      spam_or_ham AS (SELECT DISTINCT COALESCE(m.text, re_id.message_text) AS text,
@@ -241,8 +240,8 @@ let markMessageAsFalsePositive (message: DbMessage): Task =
         //language=postgresql
         let sql =
             """
-INSERT INTO false_positive_messages (chat_id, message_id) 
-VALUES (@chat_id, @message_id)
+INSERT INTO false_positive_messages (text) 
+VALUES (@text)
 ON CONFLICT DO NOTHING;
             """
 
