@@ -95,7 +95,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     let ``Only vahter can press THE BUTTON(s)`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "6")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
