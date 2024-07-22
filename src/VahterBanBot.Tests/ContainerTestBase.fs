@@ -206,6 +206,34 @@ type VahterTestContainers() =
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
     }
+    
+    member _.GetCallbackId(msg: Message) (caseName: string) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT id
+FROM callback
+WHERE data ->> 'Case' = @caseName
+  AND data -> 'Fields' -> 0 -> 'message' ->> 'message_id' = @messageId::TEXT
+  AND data -> 'Fields' -> 0 -> 'message' -> 'chat' ->> 'id' = @chatId::TEXT
+"""
+        return! conn.QuerySingleAsync<Guid>(
+            sql, {| chatId = msg.Chat.Id
+                    messageId = msg.MessageId
+                    caseName = caseName |})
+    }
+    
+    member _.IsMessageFalsePositive(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT COUNT(*) FROM false_positive_messages
+WHERE chat_id = @chatId
+  AND message_id = @messageId
+"""
+        let! result = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return result > 0
+    }
 
 // workaround to wait for ML to be ready
 type MlAwaitFixture() =

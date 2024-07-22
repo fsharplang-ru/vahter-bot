@@ -76,4 +76,58 @@ type BanTests(fixture: VahterTestContainers) =
         Assert.False msgNotBanned
     }
 
+    [<Fact>]
+    let ``Vahter can unban user`` () = task {
+        // record a message
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0])
+        let! _ = fixture.SendMessage msgUpdate
+
+        // send the ban message
+        let! banResp =
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
+        
+        // assert that the message got banned
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.True msgBanned
+        
+        // send the unban message from another vahter
+        let! banResp =
+            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0], from = fixture.AdminUsers[1])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
+        
+        // assert that the message no longer banned
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.False msgBanned
+    }
+
+    [<Fact>]
+    let ``Only Vahter can unban user`` () = task {
+        // record a message
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0])
+        let! _ = fixture.SendMessage msgUpdate
+
+        // send the ban message
+        let! banResp =
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
+        
+        // assert that the message got banned
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.True msgBanned
+        
+        // send the unban message from a random user
+        let! banResp =
+            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
+        
+        // assert that the message still banned
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.True msgBanned
+    }
+
     interface IAssemblyFixture<VahterTestContainers>

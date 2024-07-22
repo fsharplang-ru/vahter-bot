@@ -19,7 +19,20 @@ type Tg() =
             Id = (id |> Option.defaultValue (nextInt64())),
             Username = (username |> Option.defaultValue null)
         )
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime) =
+    
+    static member callback(data: string, ?from: User) =
+        Update(
+            Id = next(),
+            Message = null,
+            CallbackQuery = CallbackQuery(
+                Id = Guid.NewGuid().ToString(),
+                Data = data,
+                From = (from |> Option.defaultValue (Tg.user())),
+                ChatInstance = Guid.NewGuid().ToString()
+            )
+        )
+
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery) =
         Update(
             Id = next(),
             Message = 
