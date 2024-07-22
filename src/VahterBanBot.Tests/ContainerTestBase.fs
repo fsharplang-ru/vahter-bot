@@ -239,4 +239,4 @@ type MlAwaitFixture() =
     interface IAsyncLifetime with
         member this.DisposeAsync() = Task.CompletedTask
         // we assume 5 seconds is enough for model to train. Could be flaky
-        member this.InitializeAsync() = Task.Delay 5000
+        member this.InitializeAsync() = Task.Delay 10000
