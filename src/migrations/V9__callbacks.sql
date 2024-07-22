@@ -21,6 +21,11 @@ FROM (SELECT b.message_text, b.id
                JOIN public.banned b ON b.id = fpm.id) AS b
 WHERE false_positive_messages.id = b.id;
 
+DELETE FROM false_positive_messages
+WHERE ctid NOT IN (SELECT MIN(ctid)
+                   FROM false_positive_messages
+                   GROUP BY text);
+
 ALTER TABLE false_positive_messages
     ALTER COLUMN text SET NOT NULL;
 
