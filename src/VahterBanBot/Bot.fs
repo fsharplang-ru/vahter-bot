@@ -7,10 +7,10 @@ open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
 open Telegram.Bot.Types
+open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
-open VahterBanBot.Antispam
 
 let botActivity = new ActivitySource("VahterBanBot")
 
@@ -42,11 +42,11 @@ let isBanOnReplyCommand (message: Message) =
 let isMessageFromAllowedChats (botConfig: BotConfiguration) (message: Message) =
     botConfig.ChatsToMonitor.ContainsValue message.Chat.Id
     
-let isMessageFromAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.ContainsValue message.From.Id
+let isUserVahter (botConfig: BotConfiguration) (user: DbUser) =
+    botConfig.AllowedUsers.ContainsValue user.id
 
 let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.ContainsValue message.ReplyToMessage.From.Id
+    botConfig.AllowedUsers.ContainsValue message.From.Id
 
 let isKnownCommand (message: Message) =
     message.Text <> null &&
@@ -57,31 +57,29 @@ let isKnownCommand (message: Message) =
 
 let isBanAuthorized
     (botConfig: BotConfiguration)
-    (message: Message)
-    (logger: ILogger)
-    (targetUserId: int64)
-    (targetUsername: string option)
-    (isBan: bool)
-    =
-    let banType = if isBan then "ban" else "unban"
-    let fromUserId = message.From.Id
-    let fromUsername = message.From.Username
-    let chatId = message.Chat.Id
-    let chatUsername = message.Chat.Username
+    (bannedMessage: Message)
+    (vahter: DbUser)
+    (logger: ILogger) =
+    let fromUserId = vahter.id
+    let fromUsername = defaultArg vahter.username null
+    let chatId = bannedMessage.Chat.Id
+    let chatUsername = bannedMessage.Chat.Username
+    let targetUserId = bannedMessage.From.Id
+    let targetUsername = bannedMessage.From.Username
     
     // check that user is allowed to ban others
-    if isMessageFromAdmin botConfig message then
-        if not(isMessageFromAllowedChats botConfig message) then
-            logger.LogWarning $"User {fromUsername} {fromUserId} tried to {banType} user {targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
+    if isUserVahter botConfig vahter then
+        if not(isMessageFromAllowedChats botConfig bannedMessage) then
+            logger.LogWarning $"User {fromUsername} {fromUserId} tried to ban user {prependUsername targetUsername} ({targetUserId}) from not allowed chat {chatUsername} ({chatId})"
             false
         // check that user is not trying to ban other admins
-        elif isBan && isBannedPersonAdmin botConfig message then
-            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to {banType} admin {targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
+        elif isBannedPersonAdmin botConfig bannedMessage then
+            logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban admin {prependUsername targetUsername} ({targetUserId}) in chat {chatUsername} ({chatId}"
             false
         else
             true
     else
-        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to {banType} user {targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
+        logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban user {prependUsername targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
         false
     
 let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
@@ -192,8 +190,8 @@ let aggregateBanResultInLogMsg message =
     aggregateResultInLogMsg
         true
         message
-        message.ReplyToMessage.From.Id
-        (Some message.ReplyToMessage.From.Username)
+        message.From.Id
+        (Some message.From.Username)
 
 let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
     aggregateResultInLogMsg
@@ -202,11 +200,12 @@ let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
         targetUserId
         targetUsername
 
-let softBanResultInLogMsg (message: Message) (duration: int) =
+let softBanResultInLogMsg (message: Message) (vahter: DbUser) (duration: int) =
     let logMsgBuilder = StringBuilder()
+    let vahterUsername = defaultArg vahter.username null
     let untilDate = (DateTime.UtcNow.AddHours duration).ToString "u"
-    %logMsgBuilder.Append $"Vahter {prependUsername message.From.Username}({message.From.Id}) "
-    %logMsgBuilder.Append $"softbanned {prependUsername message.ReplyToMessage.From.Username}({message.ReplyToMessage.From.Id}) "
+    %logMsgBuilder.Append $"Vahter {prependUsername vahterUsername}({vahter.id}) "
+    %logMsgBuilder.Append $"softbanned {prependUsername message.From.Username}({message.From.Id}) "
     %logMsgBuilder.Append $"in {prependUsername message.Chat.Username}({message.Chat.Id}) "
     %logMsgBuilder.Append $"until {untilDate}"
     string logMsgBuilder
@@ -236,37 +235,39 @@ let deleteChannelMessage
     logger.LogInformation $"Deleted message from channel {probablyChannelName}"
 }
 
-let banOnReply
+let totalBan
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
+    (vahter: DbUser)
     (logger: ILogger) = task {
-    use banOnReplyActivity = botActivity.StartActivity("banOnReply")
+    use banOnReplyActivity = botActivity.StartActivity("totalBan")
     %banOnReplyActivity
-        .SetTag("vahterId", message.From.Id)
-        .SetTag("vahterUsername", message.From.Username)
-        .SetTag("targetId", message.ReplyToMessage.From.Id)
-        .SetTag("targetUsername", message.ReplyToMessage.From.Username)
-
-    // delete message that was replied to
-    let deleteReplyTask = task {
+        .SetTag("vahterId", vahter.id)
+        .SetTag("vahterUsername", (defaultArg vahter.username null))
+        .SetTag("targetId", message.From.Id)
+        .SetTag("targetUsername", message.From.Username)
+        
+    // delete message
+    let deleteMsgTask = task {
         use _ =
             botActivity
-                .StartActivity("deleteReplyMsg")
-                .SetTag("msgId", message.ReplyToMessage.MessageId)
+                .StartActivity("deleteMsg")
+                .SetTag("msgId", message.MessageId)
                 .SetTag("chatId", message.Chat.Id)
                 .SetTag("chatUsername", message.Chat.Username)
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
+        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
     }
+
     // update user in DB
     let updatedUser =
-        message.ReplyToMessage.From
+        message.From
         |> DbUser.newUser
         |> DB.upsertUser
-
+        
     let deletedUserMessagesTask = task {
-        let fromUserId = message.ReplyToMessage.From.Id
+        let fromUserId = message.From.Id
         let! allUserMessages = DB.getUserMessages fromUserId
         logger.LogInformation($"Deleting {allUserMessages.Length} messages from user {fromUserId}")
         
@@ -291,14 +292,14 @@ let banOnReply
     }
     
     // try ban user in all monitored chats
-    let! banResults = banInAllChats botConfig botClient message.ReplyToMessage.From.Id
+    let! banResults = banInAllChats botConfig botClient message.From.Id
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
     let logMsg = aggregateBanResultInLogMsg message logger deletedUserMessages banResults
     
     // add ban record to DB
-    do! message.ReplyToMessage
+    do! message
         |> DbBanned.banMessage message.From.Id
         |> DB.banUser
 
@@ -307,30 +308,52 @@ let banOnReply
     logger.LogInformation logMsg
     
     do! updatedUser.Ignore()
-    do! deleteReplyTask
+    do! deleteMsgTask
 }
 
-let softBanOnReply
+let banOnReply
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
+    (vahter: DbUser)
+    (logger: ILogger) = task {
+    use banOnReplyActivity = botActivity.StartActivity("banOnReply")
+    %banOnReplyActivity
+        .SetTag("vahterId", message.From.Id)
+        .SetTag("vahterUsername", message.From.Username)
+        .SetTag("targetId", message.ReplyToMessage.From.Id)
+        .SetTag("targetUsername", message.ReplyToMessage.From.Username)
+    
+    do! totalBan
+            botClient
+            botConfig
+            message.ReplyToMessage
+            vahter
+            logger
+}
+
+let softBanMsg
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (vahter: DbUser)
     (logger: ILogger) = task {
         use banOnReplyActivity = botActivity.StartActivity("softBanOnReply")
         %banOnReplyActivity
-            .SetTag("vahterId", message.From.Id)
-            .SetTag("vahterUsername", message.From.Username)
-            .SetTag("targetId", message.ReplyToMessage.From.Id)
-            .SetTag("targetUsername", message.ReplyToMessage.From.Username)
+            .SetTag("vahterId", vahter.id)
+            .SetTag("vahterUsername", defaultArg vahter.username null)
+            .SetTag("targetId", message.From.Id)
+            .SetTag("targetUsername", message.From.Username)
         
-        let deleteReplyTask = task {
+        let deleteMsgTask = task {
             use _ =
                 botActivity
-                    .StartActivity("deleteReplyMsg")
-                    .SetTag("msgId", message.ReplyToMessage.MessageId)
+                    .StartActivity("deleteMsg")
+                    .SetTag("msgId", message.MessageId)
                     .SetTag("chatId", message.Chat.Id)
                     .SetTag("chatUsername", message.Chat.Username)
-            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.ReplyToMessage.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.ReplyToMessage.MessageId} from chat {message.Chat.Id}", e))
+            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.MessageId} from chat {message.Chat.Id}", e))
         }
         
         let maybeDurationString = message.Text.Split " " |> Seq.last
@@ -340,10 +363,10 @@ let softBanOnReply
             | true, x -> x
             | _ -> 24 // 1 day should be enough
 
-        let logText = softBanResultInLogMsg message duration
+        let logText = softBanResultInLogMsg message vahter duration
         
-        do! softBanInChat botClient (ChatId message.Chat.Id) message.ReplyToMessage.From.Id duration |> taskIgnore
-        do! deleteReplyTask
+        do! softBanInChat botClient (ChatId message.Chat.Id) message.From.Id duration |> taskIgnore
+        do! deleteMsgTask
         
         do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logText) |> taskIgnore
         logger.LogInformation logText
@@ -364,6 +387,10 @@ let unban
     let! user = DB.getUserById targetUserId
     if user.IsSome then
         %banOnReplyActivity.SetTag("targetUsername", user.Value.username)
+
+        // delete ban record from DB
+        do! user.Value.id
+            |> DB.unbanUser 
 
     let targetUsername = user |> Option.bind (_.username)
 
@@ -401,8 +428,26 @@ let killSpammerAutomated
     let msgType = if deleteMessage then "Deleted" else "Detected"
     let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"
 
+    let! replyMarkup = task {
+        if deleteMessage then
+            let data = CallbackMessage.NotASpam { message = message }
+            let! callback = DB.newCallback data
+            return InlineKeyboardMarkup [
+                InlineKeyboardButton.WithCallbackData("NOT a spam", string callback.id)
+            ]
+        else
+            let spamData = CallbackMessage.Spam { message = message }
+            let notSpamData = CallbackMessage.NotASpam { message = message }
+            let! spamCallback = DB.newCallback spamData
+            let! notSpamCallback = DB.newCallback notSpamData
+            return InlineKeyboardMarkup [
+                InlineKeyboardButton.WithCallbackData("KILL", string spamCallback.id)
+                InlineKeyboardButton.WithCallbackData("NOT a spam", string notSpamCallback.id)
+            ]
+    }
+
     // log both to logger and to logs channel
-    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg, replyMarkup = replyMarkup) |> taskIgnore
     logger.LogInformation logMsg
 }
 
@@ -412,18 +457,22 @@ let justMessage
     (logger: ILogger)
     (ml: MachineLearning)
     (message: Message) = task {
-    
-    use justMessageActivity =
+
+    use _ =
         botActivity
             .StartActivity("justMessage")
             .SetTag("fromUserId", message.From.Id)
             .SetTag("fromUsername", message.From.Username)
-            
-    
+
     if botConfig.MlEnabled && message.Text <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
         
         let shouldBeSkipped =
+            // skip prediction for vahters
+            if botConfig.AllowedUsers.ContainsValue message.From.Id then
+                true
+            else
+
             match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
             | true, stopWords ->
                 stopWords
@@ -439,7 +488,7 @@ let justMessage
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message
                     do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
-                elif prediction.Score > 0.0f then
+                elif prediction.Score >= botConfig.MlWarningThreshold then
                     // just warn
                     do! killSpammerAutomated botClient botConfig message logger false prediction.Score
                 else
@@ -448,9 +497,6 @@ let justMessage
             | None ->
                 // no prediction (error or not ready yet)
                 ()
-    
-    let spamScore = if message.Text <> null then calcSpamScore message.Text else 0
-    %justMessageActivity.SetTag("spamScore", spamScore)
     
     do!
         message
@@ -463,49 +509,34 @@ let adminCommand
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
+    (vahter: DbUser)
     (message: Message) =
     
     // aux functions to overcome annoying FS3511: This state machine is not statically compilable.
     let banOnReplyAux() = task {
-        let targetUserId = message.ReplyToMessage.From.Id
-        let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
         let authed =
             isBanAuthorized
                 botConfig
-                message
+                message.ReplyToMessage
+                vahter
                 logger
-                targetUserId
-                targetUsername
-                true
         if authed then
-            do! banOnReply botClient botConfig message logger
+            do! banOnReply botClient botConfig message vahter logger
     }
     let unbanAux() = task {
         let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
-        let authed =
-            isBanAuthorized
-                botConfig
-                message
-                logger
-                targetUserId
-                None
-                false
-        if authed then
+        if isUserVahter botConfig vahter then
             do! unban botClient botConfig message logger targetUserId
     }
     let softBanOnReplyAux() = task {
-        let targetUserId = message.ReplyToMessage.From.Id
-        let targetUsername = Option.ofObj message.ReplyToMessage.From.Username
         let authed =
             isBanAuthorized
                 botConfig
-                message
+                message.ReplyToMessage
+                vahter
                 logger
-                targetUserId
-                targetUsername
-                true
         if authed then
-            do! softBanOnReply botClient botConfig message logger
+            do! softBanMsg botClient botConfig message.ReplyToMessage vahter logger
     }
     
     task {
@@ -532,15 +563,15 @@ let adminCommand
         elif isPingCommand message then
             do! ping botClient message
         do! deleteCmdTask
-    } 
+    }
 
-let onUpdate
+let onMessage
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
     (message: Message) = task {
-    use banOnReplyActivity = botActivity.StartActivity("onUpdate")
+    use banOnReplyActivity = botActivity.StartActivity("onMessage")
 
     // early return if we can't process it
     if isNull message || isNull message.From then
@@ -557,20 +588,119 @@ let onUpdate
         .SetTag("chatUsername", message.Chat.Username)
 
     // upserting user to DB
-    let! _ =
+    let! user =
         DbUser.newUser message.From
         |> DB.upsertUser
-        |> taskIgnore
 
     // check if message comes from channel, we should delete it immediately
     if botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
         do! deleteChannelMessage botClient message logger
 
     // check if message is a known command from authorized user
-    elif isKnownCommand message && isMessageFromAdmin botConfig message then
-        do! adminCommand botClient botConfig logger message
+    elif isKnownCommand message && isUserVahter botConfig user then
+        do! adminCommand botClient botConfig logger user message
 
     // if message is not a command from authorized user, just save it ID to DB
     else
         do! justMessage botClient botConfig logger ml message
+}
+
+let vahterMarkedAsNotSpam
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (vahter: DbUser)
+    (msg: MessageWrapper) = task {
+    let msgId = msg.message.MessageId
+    let chatId = msg.message.Chat.Id
+    let chatName = msg.message.Chat.Username
+    use _ =
+        botActivity
+            .StartActivity("vahterMarkedAsNotSpam")
+            .SetTag("messageId", msgId)
+            .SetTag("chatId", chatId)
+    let dbMessage = DbMessage.newMessage msg.message
+    do! DB.markMessageAsFalsePositive dbMessage
+    do! DB.unbanUserByBot dbMessage
+
+    let vahterUsername = vahter.username |> Option.defaultValue null
+    
+    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.Text}"
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    logger.LogInformation logMsg
+}
+
+let vahterMarkedAsSpam
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (vahter: DbUser)
+    (message: MessageWrapper) = task {
+    let msgId = message.message.MessageId
+    let chatId = message.message.Chat.Id
+    use _ =
+        botActivity
+            .StartActivity("vahterMarkedAsSpam")
+            .SetTag("messageId", msgId)
+            .SetTag("chatId", chatId)
+
+    let isAuthed = isBanAuthorized botConfig message.message vahter logger
+    if isAuthed then
+        do! totalBan
+                botClient
+                botConfig
+                message.message
+                vahter
+                logger
+}
+
+let onCallback
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (callbackQuery: CallbackQuery) = task {
+    use onCallbackActivity = botActivity.StartActivity("onCallback")
+    %onCallbackActivity.SetTag("callbackId", callbackQuery.Data)
+    
+    let callbackId = Guid.Parse callbackQuery.Data
+    
+    match! DB.getCallback callbackId with
+    | None ->
+        logger.LogWarning $"Callback {callbackId} not found in DB"
+    | Some dbCallback ->
+        %onCallbackActivity.SetTag("callbackData", dbCallback.data)
+        let callback = dbCallback.data
+        match! DB.getUserById callbackQuery.From.Id with
+        | None ->
+            logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being in DB"
+        | Some vahter ->
+            %onCallbackActivity.SetTag("vahterUsername", vahter.username)
+            %onCallbackActivity.SetTag("vahterId", vahter.id)
+            
+            // only vahters should be able to press message buttons
+            let isAuthed = botConfig.AllowedUsers.ContainsValue vahter.id
+            if not isAuthed then
+                logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being a certified vahter"
+            else
+                match callback with
+                | NotASpam msg ->
+                    %onCallbackActivity.SetTag("type", "NotASpam")
+                    do! vahterMarkedAsNotSpam botClient botConfig logger vahter msg
+                | Spam msg ->
+                    %onCallbackActivity.SetTag("type", "Spam")
+                    do! vahterMarkedAsSpam botClient botConfig logger vahter msg
+        do! DB.deleteCallback callbackId
+}
+
+let onUpdate
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (ml: MachineLearning)
+    (update: Update) = task {
+    use _ = botActivity.StartActivity("onUpdate")
+    if update.CallbackQuery <> null then
+        do! onCallback botClient botConfig logger update.CallbackQuery
+    else
+        do! onMessage botClient botConfig logger ml update.Message
 }

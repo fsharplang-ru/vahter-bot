@@ -3,7 +3,9 @@
 open System
 open System.Collections.Generic
 open System.Text
+open Dapper
 open Newtonsoft.Json
+open Telegram.Bot.Types
 open Utils
 
 [<CLIMutable>]
@@ -27,6 +29,7 @@ type BotConfiguration =
       MlTrainBeforeDate: DateTime
       MlTrainingSetFraction: float
       MlSpamThreshold: single
+      MlWarningThreshold: single
       MlStopWordsInChats: Dictionary<int64, string list> }
 
 [<CLIMutable>]
@@ -42,7 +45,7 @@ type DbUser =
           updated_at = DateTime.UtcNow
           created_at = DateTime.UtcNow }
 
-    static member newUser(user: Telegram.Bot.Types.User) =
+    static member newUser(user: User) =
         DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
 
 [<CLIMutable>]
@@ -55,7 +58,7 @@ type DbBanned =
       banned_in_chat_username: string option
       banned_by: int64 }
 module DbBanned =
-    let banMessage (vahter: int64) (message: Telegram.Bot.Types.Message) =
+    let banMessage (vahter: int64) (message: Message) =
         if isNull message.From || isNull message.Chat then
             failwith "Message should have a user and a chat"
         { message_id = Some message.MessageId
@@ -115,3 +118,26 @@ type VahterStats =
             |> Array.iteri (fun i stat ->
                 %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountTotal}")
         sb.ToString()
+
+// used as aux type to possibly extend in future without breaking changes 
+type MessageWrapper= { message: Message }
+
+// This type must be backwards compatible with the previous version
+// as it is used to (de)serialize the button callback data
+type CallbackMessage =
+    | NotASpam of MessageWrapper
+    | Spam of MessageWrapper
+
+[<CLIMutable>]
+type DbCallback =
+    { id: Guid
+      data: CallbackMessage
+      created_at: DateTime }
+
+type CallbackMessageTypeHandler() =
+    inherit SqlMapper.TypeHandler<CallbackMessage>()
+
+    override this.SetValue(parameter, value) =
+        parameter.Value <- JsonConvert.SerializeObject value
+    override this.Parse(value) =
+        JsonConvert.DeserializeObject<CallbackMessage>(value.ToString())

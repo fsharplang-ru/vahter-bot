@@ -95,6 +95,7 @@ type MachineLearning(
         member this.StartAsync _ = task {
             if botConf.MlEnabled then
                 try
+                    logger.LogInformation "Training model..."
                     do! trainModel()
                 with ex ->
                     logger.LogError(ex, "Error training model")
