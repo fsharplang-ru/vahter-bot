@@ -300,7 +300,7 @@ let totalBan
     
     // add ban record to DB
     do! message
-        |> DbBanned.banMessage message.From.Id
+        |> DbBanned.banMessage vahter.id
         |> DB.banUser
 
     // log both to logger and to logs channel
