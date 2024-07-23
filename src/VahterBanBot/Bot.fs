@@ -122,7 +122,7 @@ let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId 
 }
 
 let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
-    let banTasks =
+    let unbanTasks =
         botConfig.ChatsToMonitor
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // unban user in each chat
@@ -132,7 +132,7 @@ let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient
             with e ->
                 return Error (chatUserName, chatId, e)
         })
-    return! Task.WhenAll banTasks
+    return! Task.WhenAll unbanTasks
 }
 
 let safeTaskAwait onError (task: Task) =
@@ -143,20 +143,22 @@ let safeTaskAwait onError (task: Task) =
 
 let aggregateResultInLogMsg
     (isBan: bool)
-    (message: Message)
+    (chat: Chat)
     (vahter: DbUser)
+    (user: DbUser)
+
     (logger: ILogger)
     (deletedUserMessages: int) // 0 for unban
     (results: Result<string * int64, string * int64 * exn> []) =
 
     let resultType = if isBan then "ban" else "unban"
-    let sanitizedUsername = prependUsername message.From.Username
-    let targetUserId = message.From.Id
+    let sanitizedUsername = defaultArg user.username null |> prependUsername
+    let targetUserId = user.id
     let vahterUsername = defaultArg vahter.username null |> prependUsername
     let vahterUserId = vahter.id
 
-    let chatName = message.Chat.Username
-    let chatId = message.Chat.Id
+    let chatName = chat.Username
+    let chatId = chat.Id
     
     let logMsgBuilder = StringBuilder()
     %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
@@ -183,17 +185,19 @@ let aggregateResultInLogMsg
         ) |> ignore
     string logMsgBuilder
 
-let aggregateBanResultInLogMsg vahter message =
+let aggregateBanResultInLogMsg chat vahter user =
     aggregateResultInLogMsg
         true
-        message
+        chat
         vahter
+        user
 
-let aggregateUnbanResultInLogMsg message vahter =
+let aggregateUnbanResultInLogMsg chat vahter user =
     aggregateResultInLogMsg
         false
-        message
+        chat
         vahter
+        user
 
 let softBanResultInLogMsg (message: Message) (vahter: DbUser) (duration: int) =
     let logMsgBuilder = StringBuilder()
@@ -256,7 +260,7 @@ let totalBan
     }
 
     // update user in DB
-    let updatedUser =
+    let! updatedUser =
         message.From
         |> DbUser.newUser
         |> DB.upsertUser
@@ -291,7 +295,7 @@ let totalBan
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg vahter message logger deletedUserMessages banResults
+    let logMsg = aggregateBanResultInLogMsg message.Chat vahter updatedUser logger deletedUserMessages banResults
     
     // add ban record to DB
     do! message
@@ -301,8 +305,7 @@ let totalBan
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
-    
-    do! updatedUser.Ignore()
+
     do! deleteMsgTask
 }
 
@@ -372,27 +375,25 @@ let unban
     (botConfig: BotConfiguration)
     (message: Message)
     (vahter: DbUser)
+    (userToUnban: DbUser)
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("unban")
-    let targetUserId = message.From.Id
+    let targetUserId = userToUnban.id
     %banOnReplyActivity
         .SetTag("vahterId", vahter.id)
         .SetTag("vahterUsername", defaultArg vahter.username null)
         .SetTag("targetId", targetUserId)
-
-    let! user = DB.getUserById targetUserId
-    if user.IsSome then
-        %banOnReplyActivity.SetTag("targetUsername", user.Value.username)
-
-        // delete ban record from DB
-        do! user.Value.id
-            |> DB.unbanUser 
+        .SetTag("targetUsername", userToUnban.username)
+        
+    // delete ban record from DB
+    do! userToUnban.id
+        |> DB.unbanUser 
 
     // try unban user in all monitored chats
     let! unbanResults = unbanInAllChats botConfig botClient targetUserId
     
     // produce aggregated log message
-    let logMsg = aggregateUnbanResultInLogMsg message vahter logger 0 unbanResults
+    let logMsg = aggregateUnbanResultInLogMsg message.Chat vahter userToUnban logger 0 unbanResults
 
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
@@ -518,9 +519,14 @@ let adminCommand
             do! banOnReply botClient botConfig message vahter logger
     }
     let unbanAux() = task {
-        let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
         if isUserVahter botConfig vahter then
-            do! unban botClient botConfig message vahter logger
+            let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
+            let! userToUnban = DB.getUserById targetUserId
+            match userToUnban with
+            | None ->
+                logger.LogWarning $"User {vahter.username} ({vahter.id}) tried to unban non-existing user {targetUserId}"
+            | Some userToUnban ->
+                do! unban botClient botConfig message vahter userToUnban logger
     }
     let softBanOnReplyAux() = task {
         let authed =
