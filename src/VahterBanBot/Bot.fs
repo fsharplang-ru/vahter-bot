@@ -144,20 +144,17 @@ let safeTaskAwait onError (task: Task) =
 let aggregateResultInLogMsg
     (isBan: bool)
     (message: Message)
-    (targetUserId: int64)
-    (targetUserName: string option)
+    (vahter: DbUser)
     (logger: ILogger)
     (deletedUserMessages: int) // 0 for unban
     (results: Result<string * int64, string * int64 * exn> []) =
 
     let resultType = if isBan then "ban" else "unban"
-    let sanitizedUsername =
-        targetUserName
-        |> Option.map prependUsername
-        |> Option.defaultValue "{NO_USERNAME}"
+    let sanitizedUsername = prependUsername message.From.Username
+    let targetUserId = message.From.Id
+    let vahterUsername = defaultArg vahter.username null |> prependUsername
+    let vahterUserId = vahter.id
 
-    let vahterUserId = message.From.Id
-    let vahterUsername = message.From.Username
     let chatName = message.Chat.Username
     let chatId = message.Chat.Id
     
@@ -186,19 +183,17 @@ let aggregateResultInLogMsg
         ) |> ignore
     string logMsgBuilder
 
-let aggregateBanResultInLogMsg message =
+let aggregateBanResultInLogMsg vahter message =
     aggregateResultInLogMsg
         true
         message
-        message.From.Id
-        (Some message.From.Username)
+        vahter
 
-let aggregateUnbanResultInLogMsg message targetUserId targetUsername =
+let aggregateUnbanResultInLogMsg message vahter =
     aggregateResultInLogMsg
         false
         message
-        targetUserId
-        targetUsername
+        vahter
 
 let softBanResultInLogMsg (message: Message) (vahter: DbUser) (duration: int) =
     let logMsgBuilder = StringBuilder()
@@ -296,7 +291,7 @@ let totalBan
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg message logger deletedUserMessages banResults
+    let logMsg = aggregateBanResultInLogMsg vahter message logger deletedUserMessages banResults
     
     // add ban record to DB
     do! message
@@ -376,12 +371,13 @@ let unban
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
-    (logger: ILogger)
-    (targetUserId: int64) = task {
+    (vahter: DbUser)
+    (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("unban")
+    let targetUserId = message.From.Id
     %banOnReplyActivity
-        .SetTag("vahterId", message.From.Id)
-        .SetTag("vahterUsername", message.From.Username)
+        .SetTag("vahterId", vahter.id)
+        .SetTag("vahterUsername", defaultArg vahter.username null)
         .SetTag("targetId", targetUserId)
 
     let! user = DB.getUserById targetUserId
@@ -392,13 +388,11 @@ let unban
         do! user.Value.id
             |> DB.unbanUser 
 
-    let targetUsername = user |> Option.bind (_.username)
-
     // try unban user in all monitored chats
     let! unbanResults = unbanInAllChats botConfig botClient targetUserId
     
     // produce aggregated log message
-    let logMsg = aggregateUnbanResultInLogMsg message targetUserId targetUsername logger 0 unbanResults
+    let logMsg = aggregateUnbanResultInLogMsg message vahter logger 0 unbanResults
 
     // log both to logger and to logs channel
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
@@ -526,7 +520,7 @@ let adminCommand
     let unbanAux() = task {
         let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
         if isUserVahter botConfig vahter then
-            do! unban botClient botConfig message logger targetUserId
+            do! unban botClient botConfig message vahter logger
     }
     let softBanOnReplyAux() = task {
         let authed =
@@ -538,7 +532,7 @@ let adminCommand
         if authed then
             do! softBanMsg botClient botConfig message.ReplyToMessage vahter logger
     }
-    
+
     task {
         use _ = botActivity.StartActivity("adminCommand")
         // delete command message
@@ -690,6 +684,7 @@ let onCallback
                     %onCallbackActivity.SetTag("type", "Spam")
                     do! vahterMarkedAsSpam botClient botConfig logger vahter msg
         do! DB.deleteCallback callbackId
+    do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id)
 }
 
 let onUpdate
