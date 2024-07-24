@@ -196,10 +196,15 @@ WITH really_banned AS (SELECT *
      spam_or_ham AS (SELECT DISTINCT COALESCE(m.text, re_id.message_text) AS text,
                                      CASE
                                          -- known false negative spam messages
-                                         WHEN EXISTS(SELECT 1
-                                                     FROM false_negative_messages fnm
-                                                     WHERE fnm.chat_id = m.chat_id
-                                                       AND fnm.message_id = m.message_id)
+                                         WHEN (EXISTS(SELECT 1
+                                                      FROM false_negative_messages fnm
+                                                      WHERE fnm.chat_id = m.chat_id
+                                                        AND fnm.message_id = m.message_id)
+                                             -- known banned spam messages by bot, and not marked as false positive
+                                             OR EXISTS(SELECT 1
+                                                       FROM banned_by_bot bbb
+                                                       WHERE bbb.banned_in_chat_id = m.chat_id
+                                                         AND bbb.message_id = m.message_id))
                                              THEN TRUE
                                          WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
                                              THEN FALSE
