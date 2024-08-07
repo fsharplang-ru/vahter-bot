@@ -466,6 +466,9 @@ let autoBan
     if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
         // ban user in all monitored chats
         do! totalBan botClient botConfig message botUser logger
+        let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
+        logger.LogInformation msg
+        do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), msg) |> taskIgnore
 }
 
 let justMessage
