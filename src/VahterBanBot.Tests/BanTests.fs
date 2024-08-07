@@ -16,7 +16,7 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
@@ -50,7 +50,7 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
@@ -62,12 +62,12 @@ type BanTests(fixture: VahterTestContainers) =
     [<Fact>]
     let ``Vahter can't ban another vahter`` () = task {
         // record a message in a random chat
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], from = fixture.AdminUsers[0])
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgUpdate
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[1])
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[1])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
@@ -84,7 +84,7 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
@@ -94,7 +94,7 @@ type BanTests(fixture: VahterTestContainers) =
         
         // send the unban message from another vahter
         let! banResp =
-            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0], from = fixture.AdminUsers[1])
+            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0], from = fixture.Vahters[1])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
@@ -111,7 +111,7 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.AdminUsers[0])
+            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         

@@ -103,6 +103,8 @@ type VahterTestContainers() =
             // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
             // Azure default port for containers is 80, se we need explicitly set it
             .WithEnvironment("ASPNETCORE_HTTP_PORTS", "80")
+            .WithEnvironment("UPDATE_CHAT_ADMINS", "true")
+            .WithEnvironment("UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400")
             .DependsOn(flywayContainer)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
             .Build()
@@ -172,9 +174,13 @@ type VahterTestContainers() =
         return resp
     }
 
-    member _.AdminUsers = [
+    member _.Vahters = [
         Tg.user(id = 34, username = "vahter_1")
         Tg.user(id = 69, username = "vahter_2")
+    ]
+    
+    member _.Admins = [
+        Tg.user(id = 42, username = "just_admin")
     ]
 
     member _.LogChat = Tg.chat(id = -123, username = "logs")
