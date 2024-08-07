@@ -75,7 +75,11 @@ type MachineLearning(
                       createdAt = x.created_at
                       lessThanNMessagesF = if x.less_than_n_messages then 1.0f else 0.0f }
                 )
-            
+                |> fun x ->
+                    if botConf.MlTrainRandomSortData then
+                        Array.sortInPlaceBy (fun _ -> Guid.NewGuid()) x
+                    x
+
             let dataView = mlContext.Data.LoadFromEnumerable data
             let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction)
             let trainingData = trainTestSplit.TrainSet

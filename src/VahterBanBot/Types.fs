@@ -34,6 +34,7 @@ type BotConfiguration =
       MlSpamAutobanEnabled: bool
       MlSpamAutobanCheckLastMsgCount: int
       MlSpamAutobanScoreThreshold: double
+      MlTrainRandomSortData: bool
       MlTrainInterval: TimeSpan
       MlTrainCriticalMsgCount: int
       MlTrainingSetFraction: float
