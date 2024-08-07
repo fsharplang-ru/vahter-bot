@@ -447,7 +447,29 @@ let killSpammerAutomated
     logger.LogInformation logMsg
 }
 
+let autoBan
+    (botUser: DbUser)
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger) = task {
+    use banOnReplyActivity = botActivity.StartActivity("autoBan")
+    %banOnReplyActivity
+        .SetTag("spammerId", message.From.Id)
+        .SetTag("spammerUsername", message.From.Username)
+    
+    let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount message.From.Id
+    let socialScore = userStats.good - userStats.bad
+    
+    %banOnReplyActivity.SetTag("socialScore", socialScore)
+    
+    if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
+        // ban user in all monitored chats
+        do! totalBan botClient botConfig message botUser logger
+}
+
 let justMessage
+    (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -460,7 +482,16 @@ let justMessage
             .SetTag("fromUserId", message.From.Id)
             .SetTag("fromUsername", message.From.Username)
 
-    if botConfig.MlEnabled && message.Text <> null then
+    // check if user got auto-banned already
+    // that could happen due to the race condition between spammers mass messages
+    // and the bot's processing queue
+    let! isAutoBanned = DB.isBannedByVahter botUser.id message.From.Id 
+    if isAutoBanned then
+        // just delete message and move on
+        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+
+    elif botConfig.MlEnabled && message.Text <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
         
         let shouldBeSkipped =
@@ -487,6 +518,10 @@ let justMessage
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message
                     do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
+
+                    if botConfig.MlSpamAutobanEnabled then
+                        // trigger auto-ban check
+                        do! autoBan botUser botClient botConfig message logger
                 elif prediction.Score >= botConfig.MlWarningThreshold then
                     // just warn
                     do! killSpammerAutomated botClient botConfig message logger false prediction.Score
@@ -496,7 +531,7 @@ let justMessage
             | None ->
                 // no prediction (error or not ready yet)
                 ()
-    
+
     do!
         message
         |> DbMessage.newMessage
@@ -570,6 +605,7 @@ let adminCommand
     }
 
 let onMessage
+    (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -606,7 +642,7 @@ let onMessage
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        do! justMessage botClient botConfig logger ml message
+        do! justMessage botUser botClient botConfig logger ml message
 }
 
 let vahterMarkedAsNotSpam
@@ -698,6 +734,7 @@ let onCallback
 }
 
 let onUpdate
+    (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -707,5 +744,5 @@ let onUpdate
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
     else
-        do! onMessage botClient botConfig logger ml update.Message
+        do! onMessage botUser botClient botConfig logger ml update.Message
 }

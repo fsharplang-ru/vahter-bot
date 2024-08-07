@@ -16,6 +16,7 @@ open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
 open Telegram.Bot.Types.Enums
+open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.Utils
@@ -39,6 +40,8 @@ let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
+      BotUserId = getEnv "BOT_USER_ID" |> int64
+      BotUserName = getEnv "BOT_USER_NAME"
       LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<_>
       AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
@@ -55,6 +58,9 @@ let botConf =
       MlRetrainInterval = getEnvOrWith "ML_RETRAIN_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
       MlSeed = getEnvOrWith "ML_SEED" (Nullable<int>()) (int >> Nullable)
       MlSpamDeletionEnabled = getEnvOr "ML_SPAM_DELETION_ENABLED" "false" |> bool.Parse
+      MlSpamAutobanEnabled = getEnvOr "ML_SPAM_AUTOBAN_ENABLED" "false" |> bool.Parse
+      MlSpamAutobanCheckLastMsgCount = getEnvOr "ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT" "10" |> int
+      MlSpamAutobanScoreThreshold = getEnvOr "ML_SPAM_AUTOBAN_SCORE_THRESHOLD" "-5.0" |> double
       MlTrainInterval = getEnvOr "ML_TRAIN_INTERVAL_DAYS" "30" |> int |> TimeSpan.FromDays
       MlTrainCriticalMsgCount = getEnvOr "ML_TRAIN_CRITICAL_MSG_COUNT" "5" |> int
       MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
@@ -134,7 +140,12 @@ getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
 )
 
 %builder.Logging.AddConsole()
-    
+
+let botUser =
+    DbUser.newUser(botConf.BotUserId, botConf.BotUserName)
+    |> DB.upsertUser
+    |> fun x -> x.Result
+
 let webApp = choose [
     // need for Azure health checks on any route
     GET >=> text "OK"
@@ -154,7 +165,7 @@ let webApp = choose [
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
+            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
             %topActivity.SetTag("update-error", false)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
@@ -181,7 +192,7 @@ if botConf.UsePolling then
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate client botConf logger ml update
+                    do! onUpdate botUser client botConf logger ml update
             }
           member x.HandlePollingErrorAsync (botClient: ITelegramBotClient, ex: Exception, cancellationToken: CancellationToken) =
               Task.CompletedTask

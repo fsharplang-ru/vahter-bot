@@ -16,7 +16,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
     }
     
@@ -29,7 +29,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
     }
     
@@ -42,7 +42,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
     }
     
@@ -54,7 +54,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
     }
     
@@ -65,7 +65,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
     }
     
@@ -76,7 +76,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
     }
     
@@ -88,7 +88,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
         // assert it is not false-positive
         let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
@@ -112,7 +112,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
         
         // send a callback to mark it as false-positive
@@ -124,6 +124,104 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         // assert it is still NOT a false-positive
         let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
         Assert.False isFalsePositive
+    }
+    
+    [<Fact>]
+    let ``User will be autobanned after consecutive spam`` () = task {
+        // record a message, where 2 is in a training set as spam word
+        // ChatsToMonitor[0] doesn't have stopwords
+        let user = Tg.user()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+        
+        // 1 - no ban
+        let! _ = fixture.SendMessage msgUpdate
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.False msgBanned
+        
+        // 2 - no ban
+        let! _ = fixture.SendMessage msgUpdate
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.False msgBanned
+        
+        // 3 - no ban
+        let! _ = fixture.SendMessage msgUpdate
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.False msgBanned
+        
+        // 4 - ban (depends on the ML_SPAM_AUTOBAN_SCORE_THRESHOLD)
+        let! _ = fixture.SendMessage msgUpdate
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        Assert.True msgBanned
+    }
+    
+    [<Fact>]
+    let ``User can recover from autoban by sending good messages`` () = task {
+        // record a message, where 2 is in a training set as spam word
+        // ChatsToMonitor[0] doesn't have stopwords
+        let user = Tg.user()
+        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+        let notSpam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "b", from = user)
+        
+        // 1 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+        
+        // 1.5 - no ban
+        let! _ = fixture.SendMessage notSpam
+        let! msgBanned = fixture.MessageBanned notSpam.Message
+        Assert.False msgBanned
+        
+        // 2 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+        
+        // 3 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+        
+        // 4 - no ban (as user posted 1 good message in beetween)
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+    }
+    
+    [<Fact>]
+    let ``User can be saved from auto ban by vahter marking it false-positive`` () = task {
+        // record a message, where 777777777777777777 is in a training set as spam word
+        // ChatsToMonitor[0] doesn't have stopwords
+        let user = Tg.user()
+        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "777777777777777777", from = user)
+        
+        // 1 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgDeleted = fixture.MessageIsAutoDeleted spam.Message
+        Assert.True msgDeleted
+        Assert.False msgBanned
+        
+        // 1.5 - vahter marked as false-positive via button
+        // send a callback to mark it as false-positive
+        let! callbackId = fixture.GetCallbackId spam.Message "NotASpam"
+        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
+        let! _ = fixture.SendMessage msgCallback
+        
+        // 2 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+        
+        // 3 - no ban
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
+        
+        // 4 - no ban (as vahter marked this as false positive)
+        let! _ = fixture.SendMessage spam
+        let! msgBanned = fixture.MessageBanned spam.Message
+        Assert.False msgBanned
     }
 
     interface IAssemblyFixture<VahterTestContainers>
