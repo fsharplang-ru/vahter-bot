@@ -96,6 +96,7 @@ type VahterTestContainers() =
             .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
             .WithEnvironment("ML_ENABLED", "true")
             .WithEnvironment("ML_SEED", "42")
+            .WithEnvironment("ML_TRAIN_RANDOM_SORT_DATA", "false")
             .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
             .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
             .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
