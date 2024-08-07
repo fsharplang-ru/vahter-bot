@@ -93,8 +93,6 @@ type VahterTestContainers() =
             .WithEnvironment("DATABASE_URL", internalConnectionString)
             .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
             .WithEnvironment("ML_ENABLED", "true")
-            // seed data uses 2021-01-01 as a date for all messages
-            .WithEnvironment("ML_TRAIN_BEFORE_DATE", "2021-01-02T00:00:00Z")
             .WithEnvironment("ML_SEED", "42")
             .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
             .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")

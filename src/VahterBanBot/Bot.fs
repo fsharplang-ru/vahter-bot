@@ -478,7 +478,9 @@ let justMessage
         %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
         
         if not shouldBeSkipped then
-            match ml.Predict message.Text with
+            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+            
+            match ml.Predict(message.Text, usrMsgCount)  with
             | Some prediction ->
                 %mlActivity.SetTag("spamScoreMl", prediction.Score)
                 

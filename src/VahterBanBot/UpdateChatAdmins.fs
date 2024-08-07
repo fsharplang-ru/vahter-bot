@@ -31,8 +31,8 @@ type UpdateChatAdmins(
             do! Task.Delay 100
 
             for admin in admins do
-                %result.Add admin.User.Id
-                %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
+                if result.Add admin.User.Id then
+                    %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
         localAdmins <- result
         logger.LogInformation (sb.ToString())
     }

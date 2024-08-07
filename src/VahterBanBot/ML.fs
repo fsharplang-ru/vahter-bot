@@ -3,6 +3,7 @@ module VahterBanBot.ML
 open System
 open System.Diagnostics
 open System.Text
+open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
@@ -14,6 +15,13 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot.DB
 open VahterBanBot.Types
 open VahterBanBot.Utils
+
+[<CLIMutable>]
+type SpamOrHam =
+    { text: string
+      spam: bool
+      lessThanNMessagesF: single
+      createdAt: DateTime }
 
 [<CLIMutable>]
 type Prediction =
@@ -44,45 +52,66 @@ type MachineLearning(
         sb.ToString()
         
     let mutable predictionEngine: PredictionEngine<SpamOrHam, Prediction> option = None
+    let mutable timer: Timer = null
     
-    let trainModel() = task {
-        // switch to thread pool
-        do! Task.Yield()
-        
-        let sw = Stopwatch.StartNew()
+    let trainModel _ = task {
+        try
+            // switch to thread pool
+            do! Task.Yield()
+            logger.LogInformation "Training model..."
+            
+            let sw = Stopwatch.StartNew()
 
-        let mlContext = MLContext(botConf.MlSeed)
+            let mlContext = MLContext(botConf.MlSeed)
+            
+            let trainDate = DateTime.UtcNow - botConf.MlTrainInterval
+            let! rawData = DB.mlData botConf.MlTrainCriticalMsgCount trainDate
+            
+            let data =
+                rawData
+                |> Array.map (fun x ->
+                    { text = x.text
+                      spam = x.spam
+                      createdAt = x.created_at
+                      lessThanNMessagesF = if x.less_than_n_messages then 1.0f else 0.0f }
+                )
+            
+            let dataView = mlContext.Data.LoadFromEnumerable data
+            let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction)
+            let trainingData = trainTestSplit.TrainSet
+            let testData = trainTestSplit.TestSet
+            
+            let dataProcessPipeline =
+                mlContext.Transforms.Text
+                    .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
+                    .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF";|]))
+                    .Append(mlContext.BinaryClassification.Trainers.LbfgsLogisticRegression(labelColumnName = "spam", featureColumnName = "Features"))
 
-        let! data = DB.mlData botConf.MlTrainBeforeDate
-        
-        let dataView = mlContext.Data.LoadFromEnumerable data
-        let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction)
-        let trainingData = trainTestSplit.TrainSet
-        let testData = trainTestSplit.TestSet
-        
-        let dataProcessPipeline = mlContext.Transforms.Text.FeaturizeText(outputColumnName = "Features", inputColumnName = "text")
-        let trainer = mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(labelColumnName = "spam", featureColumnName = "Features")
-        let trainingPipeline = dataProcessPipeline.Append(trainer)
-        
-        let trainedModel = trainingPipeline.Fit(trainingData)
-        predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(trainedModel))
-        
-        let predictions = trainedModel.Transform(testData)
-        let metrics = mlContext.BinaryClassification.Evaluate(data = predictions, labelColumnName = "spam", scoreColumnName = "Score")
-        
-        sw.Stop()
-        
-        let metricsStr = metricsToString metrics sw.Elapsed
-        logger.LogInformation metricsStr
-        do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.Markdown)
-            |> taskIgnore
+            let trainedModel = dataProcessPipeline.Fit(trainingData)
+            predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(trainedModel))
+            
+            let predictions = trainedModel.Transform(testData)
+            let metrics = mlContext.BinaryClassification.Evaluate(data = predictions, labelColumnName = "spam", scoreColumnName = "Score")
+            
+            sw.Stop()
+            
+            let metricsStr = metricsToString metrics sw.Elapsed
+            logger.LogInformation metricsStr
+            do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.Markdown)
+                |> taskIgnore
+        with ex ->
+            logger.LogError(ex, "Error training model")
     }
 
-    member _.Predict(text: string) =
+    member _.Predict(text: string, userMsgCount: int) =
         try
             match predictionEngine with
             | Some predictionEngine ->
-                predictionEngine.Predict({ text = text; spam = false })
+                predictionEngine.Predict
+                    { text = text
+                      spam = false
+                      lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
+                      createdAt = DateTime.UtcNow }
                 |> Some
             | None ->
                 logger.LogInformation "Model not trained yet"
@@ -94,11 +123,15 @@ type MachineLearning(
     interface IHostedService with
         member this.StartAsync _ = task {
             if botConf.MlEnabled then
-                try
-                    logger.LogInformation "Training model..."
+                if botConf.MlRetrainInterval.IsSome then
+                    // recurring
+                    timer <- new Timer(TimerCallback(trainModel >> ignore), null, TimeSpan.Zero, botConf.MlRetrainInterval.Value)
+                else
+                    // once
                     do! trainModel()
-                with ex ->
-                    logger.LogError(ex, "Error training model")
         }
 
-        member this.StopAsync _ = Task.CompletedTask
+        member this.StopAsync _ =
+            match timer with
+            | null -> Task.CompletedTask
+            | timer -> timer.DisposeAsync().AsTask()

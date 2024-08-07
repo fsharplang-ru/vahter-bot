@@ -26,9 +26,11 @@ type BotConfiguration =
       UpdateChatAdminsInterval: TimeSpan option
       UpdateChatAdmins: bool
       MlEnabled: bool
+      MlRetrainInterval: TimeSpan option
       MlSeed: Nullable<int>
       MlSpamDeletionEnabled: bool
-      MlTrainBeforeDate: DateTime
+      MlTrainInterval: TimeSpan
+      MlTrainCriticalMsgCount: int
       MlTrainingSetFraction: float
       MlSpamThreshold: single
       MlWarningThreshold: single

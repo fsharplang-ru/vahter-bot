@@ -171,20 +171,24 @@ let getUserById (userId: int64): Task<DbUser option> =
         return users |> Seq.tryHead
     }
 
-type SpamOrHam =
-    { [<LoadColumn(0)>]
-      text: string
-      [<LoadColumn(1)>]
-      spam: bool }
+type SpamOrHamDb =
+    { text: string
+      spam: bool
+      less_than_n_messages: bool
+      created_at: DateTime }
 
-let mlData(criticalDate: DateTime) : Task<SpamOrHam array> =
+let mlData (criticalMsgCount: int) (criticalDate: DateTime) : Task<SpamOrHamDb array> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
         let sql =
             """
-WITH really_banned AS (SELECT *
+WITH less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsgCount AS less_than_n_messages
+                              FROM "user" u
+                                       LEFT JOIN message m ON u.id = m.user_id
+                              GROUP BY u.id),
+     really_banned AS (SELECT *
                        FROM banned b
                        -- known false positive spam messages
                        WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
@@ -192,34 +196,45 @@ WITH really_banned AS (SELECT *
                                         FROM false_positive_messages fpm
                                         WHERE fpm.text = b.message_text)
                          AND b.message_text IS NOT NULL
-                         AND b.banned_at <= @criticalDate),
-     spam_or_ham AS (SELECT DISTINCT COALESCE(m.text, re_id.message_text) AS text,
-                                     CASE
-                                         -- known false negative spam messages
-                                         WHEN (EXISTS(SELECT 1
-                                                      FROM false_negative_messages fnm
-                                                      WHERE fnm.chat_id = m.chat_id
-                                                        AND fnm.message_id = m.message_id)
-                                             -- known banned spam messages by bot, and not marked as false positive
-                                             OR EXISTS(SELECT 1
-                                                       FROM banned_by_bot bbb
-                                                       WHERE bbb.banned_in_chat_id = m.chat_id
-                                                         AND bbb.message_id = m.message_id))
-                                             THEN TRUE
-                                         WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
-                                             THEN FALSE
-                                         ELSE TRUE
-                                         END                              AS spam
-                     FROM (SELECT * FROM message WHERE text IS NOT NULL AND created_at <= @criticalDate) m
-                              FULL OUTER JOIN really_banned re_id
-                                              ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
-                              LEFT JOIN really_banned re_text ON m.text = re_text.message_text)
+                         AND b.banned_at >= @criticalDate),
+     spam_or_ham AS (SELECT x.text,
+                            x.spam,
+                            x.less_than_n_messages,
+                            MAX(x.created_at) AS created_at
+                     FROM (SELECT DISTINCT COALESCE(m.text, re_id.message_text)                       AS text,
+                                           CASE
+                                               -- known false negative spam messages
+                                               WHEN (EXISTS(SELECT 1
+                                                            FROM false_negative_messages fnm
+                                                            WHERE fnm.chat_id = m.chat_id
+                                                              AND fnm.message_id = m.message_id)
+                                                   -- known banned spam messages by bot, and not marked as false positive
+                                                   OR EXISTS(SELECT 1
+                                                             FROM banned_by_bot bbb
+                                                             WHERE bbb.banned_in_chat_id = m.chat_id
+                                                               AND bbb.message_id = m.message_id))
+                                                   THEN TRUE
+                                               WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
+                                                   THEN FALSE
+                                               ELSE TRUE
+                                               END                                                    AS spam,
+                                           COALESCE(l.less_than_n_messages, TRUE)                     AS less_than_n_messages,
+                                           COALESCE(re_id.banned_at, re_text.banned_at, m.created_at) AS created_at
+                           FROM (SELECT *
+                                 FROM message
+                                 WHERE text IS NOT NULL
+                                   AND created_at >= @criticalDate) m
+                                    FULL OUTER JOIN really_banned re_id
+                                                    ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
+                                    LEFT JOIN really_banned re_text ON m.text = re_text.message_text
+                                    LEFT JOIN less_than_n_messages l ON m.user_id = l.id) x
+                     GROUP BY text, spam, less_than_n_messages)
 SELECT *
 FROM spam_or_ham
-ORDER BY RANDOM();
+ORDER BY created_at;
 """
 
-        let! data = conn.QueryAsync<SpamOrHam>(sql, {| criticalDate = criticalDate |})
+        let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})
         return Array.ofSeq data
     }
 
@@ -288,4 +303,15 @@ let deleteCallback (id: Guid): Task =
 
         let! _ = conn.QueryAsync<DbCallback>(sql, {| id = id |})
         return ()
+    }
+
+let countUniqueUserMsg (userId: int64): Task<int> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT COUNT(DISTINCT text) FROM message WHERE user_id = @userId"
+
+        let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return result
     }
