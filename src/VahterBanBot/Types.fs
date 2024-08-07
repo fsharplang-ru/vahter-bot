@@ -23,6 +23,8 @@ type BotConfiguration =
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupOldLimit: TimeSpan
+      UpdateChatAdminsInterval: TimeSpan option
+      UpdateChatAdmins: bool
       MlEnabled: bool
       MlSeed: Nullable<int>
       MlSpamDeletionEnabled: bool

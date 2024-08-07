@@ -25,7 +25,20 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[0] doesn't have stopwords
         // but it was sent by vahter
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = fixture.AdminUsers[0])
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = fixture.Vahters[0])
+        let! _ = fixture.SendMessage msgUpdate
+
+        // assert that the message got auto banned
+        let! msgBanned = fixture.MessageIsAutoBanned msgUpdate.Message
+        Assert.False msgBanned
+    }
+    
+    [<Fact>]
+    let ``Message is NOT autobanned if it looks like a spam BUT local admin sent it`` () = task {
+        // record a message, where 2 is in a training set as spam word
+        // ChatsToMonitor[0] doesn't have stopwords
+        // but it was sent by local admin
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = fixture.Admins[0])
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
@@ -83,7 +96,7 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         
         // send a callback to mark it as false-positive
         let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
-        let msgCallback = Tg.callback(string callbackId, from = fixture.AdminUsers[0])
+        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
         // assert it is false-positive

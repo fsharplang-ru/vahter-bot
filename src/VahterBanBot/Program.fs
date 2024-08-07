@@ -22,6 +22,7 @@ open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
 open VahterBanBot.StartupMessage
+open VahterBanBot.UpdateChatAdmins
 open VahterBanBot.FakeTgApi
 open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
@@ -48,6 +49,8 @@ let botConf =
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
       CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds
+      UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
+      UpdateChatAdmins = getEnvOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
       MlEnabled = getEnvOr "ML_ENABLED" "false" |> bool.Parse
       MlSeed = getEnvOrWith "ML_SEED" (Nullable<int>()) (int >> Nullable)
       MlSpamDeletionEnabled = getEnvOr "ML_SPAM_DELETION_ENABLED" "false" |> bool.Parse
@@ -71,6 +74,7 @@ let builder = WebApplication.CreateBuilder()
     .AddGiraffe()
     .AddHostedService<CleanupService>()
     .AddHostedService<StartupMessage>()
+    .AddHostedService<UpdateChatAdmins>()
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
     .AddHttpClient("telegram_bot_client")
