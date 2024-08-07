@@ -106,16 +106,6 @@ let getUserMessages (userId: int64): Task<DbMessage array> =
         return Array.ofSeq messages
     }
 
-let deleteMsgs (msg: DbMessage[]): Task<int> =
-    task {
-        let msgIds = msg |> Array.map (_.message_id)
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "DELETE FROM message WHERE message_id = ANY(@msgIds)"
-        return! conn.ExecuteAsync(sql, {| msgIds = msgIds |})
-    }
-
 let cleanupOldMessages (howOld: TimeSpan): Task<int> =
     task {
         use conn = new NpgsqlConnection(connString)
@@ -313,5 +303,52 @@ let countUniqueUserMsg (userId: int64): Task<int> =
         let sql = "SELECT COUNT(DISTINCT text) FROM message WHERE user_id = @userId"
 
         let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return result
+    }
+
+let isBannedByVahter (vahterId: int64) (userId: int64): Task<bool> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT EXISTS(SELECT 1 FROM banned WHERE banned_user_id = @userId AND banned_by = @vahterId)"
+
+        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; vahterId = vahterId |})
+        return result
+    }
+
+let getUserStatsByLastNMessages (n: int) (userId: int64): Task<UserStats> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+WITH stats AS (SELECT m.message_id,
+                      m.chat_id,
+                      b.id IS NOT NULL        AS banned,
+                      bbb.id IS NOT NULL      AS banned_by_bot,
+                      fnm.chat_id IS NOT NULL AS false_neg,
+                      fpm.text IS NOT NULL    AS false_pos
+               FROM message m
+                        LEFT JOIN banned b ON m.message_id = b.message_id AND m.chat_id = b.banned_in_chat_id
+                        LEFT JOIN public.banned_by_bot bbb
+                                  ON m.message_id = bbb.message_id AND m.chat_id = bbb.banned_in_chat_id
+                        LEFT JOIN public.false_negative_messages fnm
+                                  ON m.message_id = fnm.message_id AND m.chat_id = fnm.chat_id
+                        LEFT JOIN false_positive_messages fpm ON m.text = fpm.text
+               WHERE m.user_id = @userId
+               ORDER BY m.created_at DESC
+               LIMIT @n),
+     stats_count AS (SELECT message_id,
+                            chat_id,
+                            CASE WHEN false_pos THEN FALSE ELSE banned OR banned_by_bot OR false_neg END AS spam
+                     FROM stats)
+SELECT COUNT(*) FILTER (WHERE NOT spam) AS good,
+       COUNT(*) FILTER (WHERE spam)     AS bad
+FROM stats_count;
+            """
+
+        let! result = conn.QuerySingleAsync<UserStats>(sql, {| userId = userId; n = n |})
         return result
     }

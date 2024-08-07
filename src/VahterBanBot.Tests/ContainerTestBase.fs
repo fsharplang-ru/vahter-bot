@@ -81,6 +81,8 @@ type VahterTestContainers() =
             .WithImage(image)
             .WithNetwork(network)
             .WithPortBinding(80, true)
+            .WithEnvironment("BOT_USER_ID", "1337")
+            .WithEnvironment("BOT_USER_NAME", "test_bot")
             .WithEnvironment("BOT_TELEGRAM_TOKEN", "TELEGRAM_SECRET")
             .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
             .WithEnvironment("LOGS_CHANNEL_ID", "-123")
@@ -97,6 +99,9 @@ type VahterTestContainers() =
             .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
             .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
             .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
+            .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
+            .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
+            .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
             // .net 8.0 upgrade has a breaking change
             // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
             // Azure default port for containers is 80, se we need explicitly set it
@@ -203,7 +208,7 @@ type VahterTestContainers() =
         return count > 0
     }
     
-    member _.MessageIsAutoBanned(msg: Message) = task {
+    member _.MessageIsAutoDeleted(msg: Message) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
         let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"

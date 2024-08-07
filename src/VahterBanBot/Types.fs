@@ -13,6 +13,8 @@ type BotConfiguration =
     { BotToken: string
       Route: string
       SecretToken: string
+      BotUserId: int64
+      BotUserName: string
       LogsChannelId: int64
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
@@ -29,6 +31,9 @@ type BotConfiguration =
       MlRetrainInterval: TimeSpan option
       MlSeed: Nullable<int>
       MlSpamDeletionEnabled: bool
+      MlSpamAutobanEnabled: bool
+      MlSpamAutobanCheckLastMsgCount: int
+      MlSpamAutobanScoreThreshold: double
       MlTrainInterval: TimeSpan
       MlTrainCriticalMsgCount: int
       MlTrainingSetFraction: float
@@ -145,3 +150,8 @@ type CallbackMessageTypeHandler() =
         parameter.Value <- JsonConvert.SerializeObject value
     override this.Parse(value) =
         JsonConvert.DeserializeObject<CallbackMessage>(value.ToString())
+
+[<CLIMutable>]
+type UserStats =
+    { good: int
+      bad: int }
