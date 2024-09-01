@@ -334,37 +334,39 @@ let banOnReply
 let softBanMsg
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
-    (message: Message)
+    (commandMessage: Message)
     (vahter: DbUser)
     (logger: ILogger) = task {
+        let messageToRemove = commandMessage.ReplyToMessage
+        
         use banOnReplyActivity = botActivity.StartActivity("softBanOnReply")
         %banOnReplyActivity
             .SetTag("vahterId", vahter.id)
             .SetTag("vahterUsername", defaultArg vahter.username null)
-            .SetTag("targetId", message.From.Id)
-            .SetTag("targetUsername", message.From.Username)
+            .SetTag("targetId", messageToRemove.From.Id)
+            .SetTag("targetUsername", messageToRemove.From.Username)
         
         let deleteMsgTask = task {
             use _ =
                 botActivity
                     .StartActivity("deleteMsg")
-                    .SetTag("msgId", message.MessageId)
-                    .SetTag("chatId", message.Chat.Id)
-                    .SetTag("chatUsername", message.Chat.Username)
-            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {message.MessageId} from chat {message.Chat.Id}", e))
+                    .SetTag("msgId", messageToRemove.MessageId)
+                    .SetTag("chatId", messageToRemove.Chat.Id)
+                    .SetTag("chatUsername", messageToRemove.Chat.Username)
+            do! botClient.DeleteMessageAsync(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
+                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
         }
         
-        let maybeDurationString = message.Text.Split " " |> Seq.last
+        let maybeDurationString = commandMessage.Text.Split " " |> Seq.last
         // use last value as soft ban duration
         let duration =
             match Int32.TryParse maybeDurationString with
             | true, x -> x
             | _ -> 24 // 1 day should be enough
 
-        let logText = softBanResultInLogMsg message vahter duration
+        let logText = softBanResultInLogMsg messageToRemove vahter duration
         
-        do! softBanInChat botClient (ChatId message.Chat.Id) message.From.Id duration |> taskIgnore
+        do! softBanInChat botClient (ChatId messageToRemove.Chat.Id) messageToRemove.From.Id duration |> taskIgnore
         do! deleteMsgTask
         
         do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logText) |> taskIgnore
@@ -578,7 +580,7 @@ let adminCommand
                 vahter
                 logger
         if authed then
-            do! softBanMsg botClient botConfig message.ReplyToMessage vahter logger
+            do! softBanMsg botClient botConfig message vahter logger
     }
 
     task {
