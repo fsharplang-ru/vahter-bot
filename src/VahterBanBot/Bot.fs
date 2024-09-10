@@ -435,12 +435,9 @@ let killSpammerAutomated
             ]
         else
             let spamData = CallbackMessage.Spam { message = message }
-            let notSpamData = CallbackMessage.NotASpam { message = message }
             let! spamCallback = DB.newCallback spamData
-            let! notSpamCallback = DB.newCallback notSpamData
             return InlineKeyboardMarkup [
                 InlineKeyboardButton.WithCallbackData("KILL", string spamCallback.id)
-                InlineKeyboardButton.WithCallbackData("NOT a spam", string notSpamCallback.id)
             ]
     }
 
