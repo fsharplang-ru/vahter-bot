@@ -32,7 +32,7 @@ type Tg() =
             )
         )
 
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery) =
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string) =
         Update(
             Id = next(),
             Message = 
@@ -42,6 +42,7 @@ type Tg() =
                     Chat = (chat |> Option.defaultValue (Tg.chat())),
                     From = (from |> Option.defaultValue (Tg.user())),
                     Date = (date |> Option.defaultValue DateTime.UtcNow),
+                    Caption = (caption |> Option.defaultValue null),
                     ReplyToMessage = null
                 )
             )

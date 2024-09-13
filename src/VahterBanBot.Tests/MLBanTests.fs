@@ -223,6 +223,19 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! msgBanned = fixture.MessageBanned spam.Message
         Assert.False msgBanned
     }
+    
+    [<Fact>]
+    let ``Message with spam in photo caption also triggers auto-delete`` () = task {
+        // record a message, where 2 is in a training set as spam word
+        // but text is in a message.Caption
+        // ChatsToMonitor[0] doesn't have stopwords
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, caption = "2")
+        let! _ = fixture.SendMessage msgUpdate
+
+        // assert that the message got auto banned
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
 
     interface IAssemblyFixture<VahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
