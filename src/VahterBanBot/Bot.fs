@@ -424,7 +424,7 @@ let killSpammerAutomated
             |> DB.banUserByBot
 
     let msgType = if deleteMessage then "Deleted" else "Detected"
-    let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.Text}"
+    let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
 
     let! replyMarkup = task {
         if deleteMessage then
@@ -493,7 +493,7 @@ let justMessage
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
-    elif botConfig.MlEnabled && message.Text <> null then
+    elif botConfig.MlEnabled && message.TextOrCaption <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
         
         let shouldBeSkipped =
@@ -506,14 +506,14 @@ let justMessage
             match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
             | true, stopWords ->
                 stopWords
-                |> Seq.exists (fun sw -> message.Text.Contains(sw, StringComparison.OrdinalIgnoreCase))
+                |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
             | _ -> false
         %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
         
         if not shouldBeSkipped then
             let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
             
-            match ml.Predict(message.Text, usrMsgCount)  with
+            match ml.Predict(message.TextOrCaption, usrMsgCount)  with
             | Some prediction ->
                 %mlActivity.SetTag("spamScoreMl", prediction.Score)
                 
@@ -667,7 +667,7 @@ let vahterMarkedAsNotSpam
 
     let vahterUsername = vahter.username |> Option.defaultValue null
     
-    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.Text}"
+    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.TextOrCaption}"
     do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
 }

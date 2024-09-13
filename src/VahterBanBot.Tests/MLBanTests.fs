@@ -226,10 +226,10 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
     
     [<Fact>]
     let ``Message with spam in photo caption also triggers auto-delete`` () = task {
-        // record a message, where 2 is in a training set as spam word
+        // record a message, where 2222222 is in a training set as spam word
         // but text is in a message.Caption
         // ChatsToMonitor[0] doesn't have stopwords
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, caption = "2")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, caption = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
