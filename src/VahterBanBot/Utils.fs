@@ -56,3 +56,10 @@ type Task<'x> with
     member this.Ignore() = task { let! _ = this in () }
 
 let inline taskIgnore (t: Task<'x>) = t.Ignore()
+
+type Telegram.Bot.Types.Message with
+    member msg.TextOrCaption =
+        if isNull msg.Text then
+            msg.Caption
+        else
+            msg.Text

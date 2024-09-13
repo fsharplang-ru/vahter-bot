@@ -72,7 +72,7 @@ module DbBanned =
         if isNull message.From || isNull message.Chat then
             failwith "Message should have a user and a chat"
         { message_id = Some message.MessageId
-          message_text = message.Text
+          message_text = message.TextOrCaption
           banned_user_id = message.From.Id
           banned_at = DateTime.UtcNow
           banned_in_chat_id = Some message.Chat.Id
@@ -92,7 +92,7 @@ type DbMessage =
           message_id = message.MessageId
           user_id = message.From.Id
           created_at = DateTime.UtcNow
-          text = message.Text
+          text = message.TextOrCaption
           raw_message = JsonConvert.SerializeObject message }
 
 [<CLIMutable>]
