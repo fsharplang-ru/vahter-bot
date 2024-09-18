@@ -431,13 +431,13 @@ let killSpammerAutomated
             let data = CallbackMessage.NotASpam { message = message }
             let! callback = DB.newCallback data
             return InlineKeyboardMarkup [
-                InlineKeyboardButton.WithCallbackData("NOT a spam", string callback.id)
+                InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
             ]
         else
             let spamData = CallbackMessage.Spam { message = message }
             let! spamCallback = DB.newCallback spamData
             return InlineKeyboardMarkup [
-                InlineKeyboardButton.WithCallbackData("KILL", string spamCallback.id)
+                InlineKeyboardButton.WithCallbackData("🚫 KILL", string spamCallback.id)
             ]
     }
 
