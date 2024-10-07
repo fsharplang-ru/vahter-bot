@@ -746,5 +746,5 @@ let onUpdate
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
     else
-        do! onMessage botUser botClient botConfig logger ml update.Message
+        do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
 }

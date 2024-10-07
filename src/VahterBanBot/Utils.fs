@@ -63,3 +63,10 @@ type Telegram.Bot.Types.Message with
             msg.Caption
         else
             msg.Text
+
+type Telegram.Bot.Types.Update with
+    member msg.EditedOrMessage =
+        if isNull msg.EditedMessage then
+            msg.Message
+        else
+            msg.EditedMessage
