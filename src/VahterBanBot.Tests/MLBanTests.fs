@@ -236,6 +236,18 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
     }
+    
+    [<Fact>]
+    let ``Message which were edited triggers auto-delete`` () = task {
+        // record a message, which originally was not a spam,
+        // but it was edited to be a spam
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "a", editedText = "2222222")
+        let! _ = fixture.SendMessage msgUpdate
+
+        // assert that the message got auto banned
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
 
     interface IAssemblyFixture<VahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
