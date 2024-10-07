@@ -33,11 +33,13 @@ type Tg() =
         )
 
     static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string, ?editedText: string) =
+        let updateId = next()
+        let msgId = next()
         Update(
-            Id = next(),
+            Id = updateId,
             Message = 
                 Message(
-                    MessageId = next(),
+                    MessageId = msgId,
                     Text = (text |> Option.defaultValue (Guid.NewGuid().ToString())),
                     Chat = (chat |> Option.defaultValue (Tg.chat())),
                     From = (from |> Option.defaultValue (Tg.user())),
@@ -48,7 +50,7 @@ type Tg() =
             EditedMessage =
                 if editedText |> Option.isSome then
                     Message(
-                        MessageId = next(),
+                        MessageId = msgId,
                         Text = editedText.Value,
                         Chat = (chat |> Option.defaultValue (Tg.chat())),
                         From = (from |> Option.defaultValue (Tg.user())),
