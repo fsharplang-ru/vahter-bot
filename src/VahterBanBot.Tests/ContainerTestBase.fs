@@ -162,9 +162,8 @@ type VahterTestContainers() =
             do! flywayContainer.DisposeAsync()
             do! appContainer.DisposeAsync()
             do! dbContainer.DisposeAsync()
-            // we need to dispose the image as well to catch docker build issues during tests
-            do! image.DisposeAsync()
-        }
+            // do! image.DisposeAsync() // might be faster not to dispose base image to cache?
+        }   
 
     member _.Http = httpClient
     member _.Uri = uri
