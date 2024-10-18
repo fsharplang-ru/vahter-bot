@@ -116,7 +116,7 @@ let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId 
         )
     let untilDate = DateTime.UtcNow.AddHours duration
     try 
-        do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, Nullable(), untilDate)
+        do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, untilDate = untilDate)
         return Ok(chatId, targetUserId)
     with e ->
         return Error(chatId, targetUserId, e)

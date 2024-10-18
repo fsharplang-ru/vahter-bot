@@ -4,18 +4,19 @@ open System
 open System.Net
 open System.Net.Http
 open System.Text
+open System.Text.Json
 open System.Threading.Tasks
-open Newtonsoft.Json
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
 open VahterBanBot.Types
+open VahterBanBot.Utils
 
 let fakeTgApi (botConf: BotConfiguration) =
     { new DelegatingHandler() with
         member x.SendAsync(request, cancellationToken) =
             let apiResult text =
                 let resp = new HttpResponseMessage(HttpStatusCode.OK)
-                resp.Content <- new StringContent($"""{{"Ok":true,"Result":{text}}}""", Encoding.UTF8, "application/json")
+                resp.Content <- new StringContent($"""{{"ok":true,"result":{text}}}""", Encoding.UTF8, "application/json")
                 resp
 
             let url = request.RequestUri.ToString()
@@ -37,7 +38,7 @@ let fakeTgApi (botConf: BotConfiguration) =
                                 Type = ChatType.Private
                             )
                         )
-                        |> JsonConvert.SerializeObject
+                        |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
                     apiResult message
                 elif url.EndsWith "/getChatAdministrators" then
                     // respond with the request body as a string
@@ -59,7 +60,7 @@ let fakeTgApi (botConf: BotConfiguration) =
                                 )
                             )
                         |]
-                        |> JsonConvert.SerializeObject
+                        |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
                     apiResult message
                 else
                     // return 500 for any other request
