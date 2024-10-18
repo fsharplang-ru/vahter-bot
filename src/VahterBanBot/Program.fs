@@ -195,7 +195,7 @@ if botConf.UsePolling then
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
                     do! onUpdate botUser client botConf logger ml update
             }
-          member x.HandlePollingErrorAsync (botClient: ITelegramBotClient, ex: Exception, cancellationToken: CancellationToken) =
+          member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask
     }
     telegramClient.StartReceiving(pollingHandler, null, CancellationToken.None)
