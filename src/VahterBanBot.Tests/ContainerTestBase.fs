@@ -116,12 +116,15 @@ type VahterTestContainers() =
 
     interface IAsyncLifetime with
         member this.InitializeAsync() = task {
-            // start building the image and spin up db
-            do! image.CreateAsync()
-            do! dbContainer.StartAsync()
+            // start building the image and spin up db at the same time
+            let imageTask = image.CreateAsync()
+            let dbTask = dbContainer.StartAsync()
 
+            // wait for both to finish
+            do! imageTask
+            do! dbTask
             publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
-
+            
             // initialize DB with the schema, database and a DB user
             let script = File.ReadAllText(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/init.sql")
             let! initResult = dbContainer.ExecScriptAsync(script)
@@ -159,7 +162,8 @@ type VahterTestContainers() =
             do! flywayContainer.DisposeAsync()
             do! appContainer.DisposeAsync()
             do! dbContainer.DisposeAsync()
-            // do! image.DisposeAsync() // might be faster not to dispose base image to cache?
+            // we need to dispose the image as well to catch docker build issues during tests
+            do! image.DisposeAsync()
         }
 
     member _.Http = httpClient
