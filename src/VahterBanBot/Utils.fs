@@ -80,6 +80,6 @@ let jsonOptions =
     // there is a contradiction in Telegram.Bot library where User.IsBot is not nullable and required during deserialization,
     // but it is omitted when default on deserialization via settings setup in JsonBotAPI.Configure
     // so we'll override this setting explicitly
-    baseOpts.SerializerOptions.DefaultIgnoreCondition <- System.Text.Json.Serialization.JsonIgnoreCondition.Never
+    baseOpts.SerializerOptions.DefaultIgnoreCondition <- System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     
     baseOpts.SerializerOptions

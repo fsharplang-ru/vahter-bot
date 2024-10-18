@@ -16,7 +16,7 @@ let fakeTgApi (botConf: BotConfiguration) =
         member x.SendAsync(request, cancellationToken) =
             let apiResult text =
                 let resp = new HttpResponseMessage(HttpStatusCode.OK)
-                resp.Content <- new StringContent($"""{{"Ok":true,"Result":{text}}}""", Encoding.UTF8, "application/json")
+                resp.Content <- new StringContent($"""{{"ok":true,"result":{text}}}""", Encoding.UTF8, "application/json")
                 resp
 
             let url = request.RequestUri.ToString()

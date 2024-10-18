@@ -9,9 +9,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Content Include="test_seed.sql">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </Content>
+        <Content Include="test_seed.sql" CopyToOutputDirectory="PreserveNewest" />
         <Compile Include="TgMessageUtils.fs" />
         <Compile Include="ContainerTestBase.fs" />
         <Compile Include="BaseTests.fs" />

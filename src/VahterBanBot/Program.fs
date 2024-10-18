@@ -81,6 +81,8 @@ let builder = WebApplication.CreateBuilder()
 %builder.Services
     .AddSingleton(botConf)
     .AddGiraffe()
+    // we need to customize Giraffe STJ settings to conform to the Telegram.Bot API
+    .AddSingleton<Json.ISerializer>(Json.Serializer(jsonOptions))
     .ConfigureTelegramBot<Microsoft.AspNetCore.Http.Json.JsonOptions>(fun x -> x.SerializerOptions)
     .AddHostedService<CleanupService>()
     .AddHostedService<StartupMessage>()

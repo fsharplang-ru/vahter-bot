@@ -84,11 +84,11 @@ type VahterTestContainers() =
             .WithPortBinding(80, true)
             .WithEnvironment("BOT_USER_ID", "1337")
             .WithEnvironment("BOT_USER_NAME", "test_bot")
-            .WithEnvironment("BOT_TELEGRAM_TOKEN", "TELEGRAM_SECRET")
+            .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
             .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
             .WithEnvironment("LOGS_CHANNEL_ID", "-123")
-            .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell": -666, "dotnetru": -42}""")
-            .WithEnvironment("ALLOWED_USERS", """{"vahter_1": 34, "vahter_2": 69}""")
+            .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":-666,"dotnetru":-42}""")
+            .WithEnvironment("ALLOWED_USERS", """{"vahter_1":34,"vahter_2":69}""")
             .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
             .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
             .WithEnvironment("USE_FAKE_TG_API", "true")
@@ -116,46 +116,51 @@ type VahterTestContainers() =
 
     interface IAsyncLifetime with
         member this.InitializeAsync() = task {
-            // start building the image and spin up db at the same time
-            let imageTask = image.CreateAsync()
-            let dbTask = dbContainer.StartAsync()
+            try
+                // start building the image and spin up db at the same time
+                let imageTask = image.CreateAsync()
+                let dbTask = dbContainer.StartAsync()
 
-            // wait for both to finish
-            do! imageTask
-            do! dbTask
-            publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
-            
-            // initialize DB with the schema, database and a DB user
-            let script = File.ReadAllText(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/init.sql")
-            let! initResult = dbContainer.ExecScriptAsync(script)
-            if initResult.Stderr <> "" then
-                failwith initResult.Stderr
+                // wait for both to finish
+                do! imageTask
+                do! dbTask
+                publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
+                
+                // initialize DB with the schema, database and a DB user
+                let script = File.ReadAllText(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/init.sql")
+                let! initResult = dbContainer.ExecScriptAsync(script)
+                if initResult.Stderr <> "" then
+                    failwith initResult.Stderr
 
-            // run migrations
-            do! flywayContainer.StartAsync()
-            let! out, err = flywayContainer.GetLogsAsync()
-            if err <> "" then
-                failwith err
-            if not (out.Contains "Successfully applied") then
-                failwith out
-            
-            // seed some test data
-            let script = File.ReadAllText(CommonDirectoryPath.GetCallerFileDirectory().DirectoryPath + "/test_seed.sql")
-            let scriptFilePath = String.Join("/", String.Empty, "tmp", Guid.NewGuid().ToString("D"), Path.GetRandomFileName())
-            do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, Unix.FileMode644)
-            let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_bot_ban"; "--file"; scriptFilePath |]
+                // run migrations
+                do! flywayContainer.StartAsync()
+                let! out, err = flywayContainer.GetLogsAsync()
+                if err <> "" then
+                    failwith err
+                if not (out.Contains "Successfully applied") then
+                    failwith out
+                
+                // seed some test data
+                let script = File.ReadAllText(CommonDirectoryPath.GetCallerFileDirectory().DirectoryPath + "/test_seed.sql")
+                let scriptFilePath = String.Join("/", String.Empty, "tmp", Guid.NewGuid().ToString("D"), Path.GetRandomFileName())
+                do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, Unix.FileMode644)
+                let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_bot_ban"; "--file"; scriptFilePath |]
 
-            if scriptResult.Stderr <> "" then
-                failwith scriptResult.Stderr
+                if scriptResult.Stderr <> "" then
+                    failwith scriptResult.Stderr
 
-            // start the app container
-            do! appContainer.StartAsync()
-            
-            // initialize the http client with correct hostname and port
-            httpClient <- new HttpClient()
-            uri <- Uri($"http://{appContainer.Hostname}:{appContainer.GetMappedPublicPort(80)}")
-            httpClient.BaseAddress <- uri
-            httpClient.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", "OUR_SECRET")
+                // start the app container
+                do! appContainer.StartAsync()
+                
+                // initialize the http client with correct hostname and port
+                httpClient <- new HttpClient()
+                uri <- Uri($"http://{appContainer.Hostname}:{appContainer.GetMappedPublicPort(80)}")
+                httpClient.BaseAddress <- uri
+                httpClient.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", "OUR_SECRET")
+            finally
+                let struct (_, err) = appContainer.GetLogsAsync().Result
+                if err <> "" then
+                    failwith err
         }
         member this.DisposeAsync() = task {
             // stop all the containers, flyway might be dead already
