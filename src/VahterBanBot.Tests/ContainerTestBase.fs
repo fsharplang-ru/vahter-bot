@@ -163,7 +163,7 @@ type VahterTestContainers() =
             do! appContainer.DisposeAsync()
             do! dbContainer.DisposeAsync()
             // do! image.DisposeAsync() // might be faster not to dispose base image to cache?
-        }   
+        }
 
     member _.Http = httpClient
     member _.Uri = uri
