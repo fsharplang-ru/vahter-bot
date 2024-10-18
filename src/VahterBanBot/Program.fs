@@ -3,6 +3,7 @@
 open System
 open System.Collections.Generic
 open System.Text.Json
+open System.Text.Json.Serialization
 open System.Threading
 open System.Threading.Tasks
 open Dapper
@@ -36,6 +37,13 @@ type Root = class end
 Dapper.FSharp.PostgreSQL.OptionTypes.register()
 SqlMapper.AddTypeHandler(CallbackMessageTypeHandler());
 
+let botConfJsonOptions =
+    let opts = JsonSerializerOptions(JsonSerializerDefaults.Web)
+    opts.NumberHandling <- JsonNumberHandling.AllowReadingFromString
+    opts
+let fromJson<'a> (json: string) =
+    JsonSerializer.Deserialize<'a>(json, botConfJsonOptions)
+
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
@@ -43,8 +51,8 @@ let botConf =
       BotUserId = getEnv "BOT_USER_ID" |> int64
       BotUserName = getEnv "BOT_USER_NAME"
       LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
-      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonSerializer.Deserialize<_>
-      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonSerializer.Deserialize<_>
+      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> fromJson
+      AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
@@ -67,7 +75,7 @@ let botConf =
       MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
       MlSpamThreshold = getEnvOr "ML_SPAM_THRESHOLD" "0.5" |> single
       MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
-      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> JsonSerializer.Deserialize<_> }
+      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
