@@ -7,6 +7,7 @@ LABEL "org.testcontainers.resource-reaper-session"=$RESOURCE_REAPER_SESSION_ID
 
 WORKDIR /src/VahterBanBot
 COPY src/VahterBanBot/VahterBanBot.fsproj .
+COPY NuGet.Config .
 RUN dotnet restore
 COPY src/VahterBanBot .
 COPY global.json .
