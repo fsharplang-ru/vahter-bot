@@ -2,6 +2,7 @@
 
 open System
 open System.Collections.Generic
+open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open Dapper
@@ -9,7 +10,6 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
-open Newtonsoft.Json
 open Telegram.Bot
 open Telegram.Bot.Polling
 open Telegram.Bot.Types
@@ -43,8 +43,8 @@ let botConf =
       BotUserId = getEnv "BOT_USER_ID" |> int64
       BotUserName = getEnv "BOT_USER_NAME"
       LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
-      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonConvert.DeserializeObject<_>
-      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonConvert.DeserializeObject<_>
+      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> JsonSerializer.Deserialize<_>
+      AllowedUsers = getEnv "ALLOWED_USERS" |> JsonSerializer.Deserialize<_>
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
@@ -67,7 +67,7 @@ let botConf =
       MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
       MlSpamThreshold = getEnvOr "ML_SPAM_THRESHOLD" "0.5" |> single
       MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
-      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> JsonConvert.DeserializeObject<_> }
+      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> JsonSerializer.Deserialize<_> }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -81,6 +81,7 @@ let builder = WebApplication.CreateBuilder()
 %builder.Services
     .AddSingleton(botConf)
     .AddGiraffe()
+    .ConfigureTelegramBot<Microsoft.AspNetCore.Http.Json.JsonOptions>(fun x -> x.SerializerOptions)
     .AddHostedService<CleanupService>()
     .AddHostedService<StartupMessage>()
     .AddHostedService<UpdateChatAdmins>()
@@ -153,7 +154,7 @@ let webApp = choose [
 
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
         let updateBodyJson =
-            try JsonConvert.SerializeObject update
+            try JsonSerializer.Serialize(update, options = jsonOptions)
             with e -> e.Message
         use topActivity =
             botActivity

@@ -4,16 +4,17 @@ open System
 open System.IO
 open System.Net.Http
 open System.Text
+open System.Text.Json
 open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
-open Newtonsoft.Json
 open Npgsql
 open Telegram.Bot.Types
 open Testcontainers.PostgreSql
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
+open VahterBanBot.Utils
 open Xunit
 open Dapper
 
@@ -168,10 +169,10 @@ type VahterTestContainers() =
     member _.Uri = uri
     
     member this.SendMessage(update: Update) = task {
-        let json = JsonConvert.SerializeObject(update)
+        let json = JsonSerializer.Serialize(update, options = jsonOptions)
         return! this.SendMessage(json)
     }
-    
+
     member _.SendMessage(json: string) = task {
         let content = new StringContent(json, Encoding.UTF8, "application/json")
         let! resp = httpClient.PostAsync("/bot", content)

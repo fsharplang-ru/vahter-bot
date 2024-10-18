@@ -23,10 +23,9 @@
     <PackageReference Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.2.0" />
     <PackageReference Include="Dapper" Version="2.1.35" />
     <PackageReference Include="Dapper.FSharp" Version="4.8.0" />
-    <PackageReference Include="Giraffe" Version="6.4.0" />
+    <PackageReference Include="Giraffe" Version="7.0.2" />
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.22.0" />
     <PackageReference Include="Microsoft.ApplicationInsights.PerfCounterCollector" Version="2.22.0" />
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="8.0.6" />
     <PackageReference Include="Microsoft.Extensions.Logging.ApplicationInsights" Version="2.22.0" />
     <PackageReference Include="Npgsql" Version="8.0.3" />
     <PackageReference Include="Npgsql.OpenTelemetry" Version="8.0.3" />

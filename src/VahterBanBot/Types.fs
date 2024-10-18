@@ -3,8 +3,8 @@
 open System
 open System.Collections.Generic
 open System.Text
+open System.Text.Json
 open Dapper
-open Newtonsoft.Json
 open Telegram.Bot.Types
 open Utils
 
@@ -93,7 +93,7 @@ type DbMessage =
           user_id = message.From.Id
           created_at = DateTime.UtcNow
           text = message.TextOrCaption
-          raw_message = JsonConvert.SerializeObject message }
+          raw_message = JsonSerializer.Serialize(message, options = jsonOptions) }
 
 [<CLIMutable>]
 type VahterStat =
@@ -148,9 +148,9 @@ type CallbackMessageTypeHandler() =
     inherit SqlMapper.TypeHandler<CallbackMessage>()
 
     override this.SetValue(parameter, value) =
-        parameter.Value <- JsonConvert.SerializeObject value
+        parameter.Value <- JsonSerializer.Serialize(value, options = jsonOptions)
     override this.Parse(value) =
-        JsonConvert.DeserializeObject<CallbackMessage>(value.ToString())
+        JsonSerializer.Deserialize<CallbackMessage>(value.ToString(), options = jsonOptions)
 
 [<CLIMutable>]
 type UserStats =

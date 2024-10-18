@@ -3,6 +3,7 @@ module VahterBanBot.Tests.TgMessageUtils
 open System
 open System.Threading
 open Telegram.Bot.Types
+open Telegram.Bot.Types.Enums
 
 type Tg() =
     static let mutable i = 1L // higher than the data in the test_seed.sql
@@ -17,7 +18,8 @@ type Tg() =
     static member chat (?id: int64, ?username: string) =
         Chat(
             Id = (id |> Option.defaultValue (nextInt64())),
-            Username = (username |> Option.defaultValue null)
+            Username = (username |> Option.defaultValue null),
+            Type = ChatType.Supergroup
         )
     
     static member callback(data: string, ?from: User) =
