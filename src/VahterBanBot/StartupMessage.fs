@@ -2,16 +2,15 @@ module VahterBanBot.StartupMessage
 
 open System.Text
 open System.Threading.Tasks
+open Funogram.Telegram.Types
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open Microsoft.Extensions.Hosting
 
 type StartupMessage(
     logger: ILogger<StartupMessage>,
-    telegramClient: ITelegramBotClient,
+    telegramClient: TelegramBotClient,
     botConf: BotConfiguration
 ) =
     let getStartLogMsg() =
@@ -31,7 +30,7 @@ type StartupMessage(
             if not botConf.IgnoreSideEffects then
                 let startLogMsg = getStartLogMsg()
                 logger.LogInformation startLogMsg
-                do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg)
+                do! telegramClient.SendTextMessageAsync(ChatId.Int(botConf.LogsChannelId), startLogMsg)
                     |> taskIgnore
         }
 

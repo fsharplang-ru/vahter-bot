@@ -4,10 +4,8 @@ open System
 open System.Diagnostics
 open System.Text
 open System.Threading.Tasks
+open Funogram.Telegram.Types
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Types
-open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
@@ -16,29 +14,29 @@ open VahterBanBot.UpdateChatAdmins
 let botActivity = new ActivitySource("VahterBanBot")
 
 let isChannelMessage (message: Message) =
-    message.From.IsBot &&
-    message.From.FirstName = "Channel" &&
-    message.From.Username = "Channel_Bot"
+    message.IsFromBot &&
+    message.FromFirstName = "Channel" &&
+    message.FromUsername = "Channel_Bot"
     
 let isPingCommand (message: Message) =
-    message.Text = "/ban ping"
+    message.TextOrEmpty = "/ban ping"
 
 let isBanCommand (message: Message) =
-    message.Text = "/ban"
+    message.TextOrEmpty = "/ban"
     
 let isUnbanCommand (message: Message) =
-    message.Text.StartsWith "/unban "
+    message.TextOrEmpty.StartsWith "/unban "
 
 let isSoftBanCommand (message: Message) =
-    message.Text.StartsWith "/sban"
+    message.TextOrEmpty.StartsWith "/sban"
 
 let isSoftBanOnReplyCommand (message: Message) =
     isSoftBanCommand message &&
-    message.ReplyToMessage <> null
+    Option.isSome message.ReplyToMessage
 
 let isBanOnReplyCommand (message: Message) =
     isBanCommand message &&
-    message.ReplyToMessage <> null
+    Option.isSome message.ReplyToMessage
 
 let isMessageFromAllowedChats (botConfig: BotConfiguration) (message: Message) =
     botConfig.ChatsToMonitor.ContainsValue message.Chat.Id
@@ -47,10 +45,10 @@ let isUserVahter (botConfig: BotConfiguration) (user: DbUser) =
     botConfig.AllowedUsers.ContainsValue user.id
 
 let isBannedPersonAdmin (botConfig: BotConfiguration) (message: Message) =
-    botConfig.AllowedUsers.ContainsValue message.From.Id
+    botConfig.AllowedUsers.ContainsValue message.FromId
 
 let isKnownCommand (message: Message) =
-    message.Text <> null &&
+    Option.isSome message.Text &&
     (isPingCommand message ||
      isBanCommand message ||
      isUnbanCommand message ||
@@ -65,8 +63,8 @@ let isBanAuthorized
     let fromUsername = defaultArg vahter.username null
     let chatId = bannedMessage.Chat.Id
     let chatUsername = bannedMessage.Chat.Username
-    let targetUserId = bannedMessage.From.Id
-    let targetUsername = bannedMessage.From.Username
+    let targetUserId = bannedMessage.FromId
+    let targetUsername = bannedMessage.FromUsername
     
     // check that user is allowed to ban others
     if isUserVahter botConfig vahter then
@@ -83,13 +81,13 @@ let isBanAuthorized
         logger.LogWarning $"User {fromUsername} ({fromUserId}) tried to ban user {prependUsername targetUsername} ({targetUserId}) without being admin in chat {chatUsername} ({chatId}"
         false
     
-let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
+let banInAllChats (botConfig: BotConfiguration) (botClient: TelegramBotClient) targetUserId = task {
     let banTasks =
         botConfig.ChatsToMonitor
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // ban user in each chat
             try
-                do! botClient.BanChatMemberAsync(ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
+                let! _ = botClient.BanChatMemberAsync(ChatId.Int chatId, targetUserId, DateTimeOffset.UtcNow.AddMonths 13)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -97,38 +95,38 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
     return! Task.WhenAll banTasks
 }
 
-let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId (duration: int) = task {
-    let permissions = ChatPermissions(
-        CanSendMessages = false,
-        CanSendAudios = false,
-        CanSendDocuments = false,
-        CanSendPhotos = false,
-        CanSendVideos = false,
-        CanSendVideoNotes = false,
-        CanSendVoiceNotes = false,
-        CanSendPolls = false,
-        CanSendOtherMessages = false,
-        CanAddWebPagePreviews = false,
-        CanChangeInfo = false,
-        CanInviteUsers = false,
-        CanPinMessages = false,
-        CanManageTopics = false
+let softBanInChat (botClient: TelegramBotClient) (chatId: ChatId) targetUserId (duration: int) = task {
+    let permissions = ChatPermissions.Create(
+        canSendMessages = false,
+        canSendAudios = false,
+        canSendDocuments = false,
+        canSendPhotos = false,
+        canSendVideos = false,
+        canSendVideoNotes = false,
+        canSendVoiceNotes = false,
+        canSendPolls = false,
+        canSendOtherMessages = false,
+        canAddWebPagePreviews = false,
+        canChangeInfo = false,
+        canInviteUsers = false,
+        canPinMessages = false,
+        canManageTopics = false
         )
     let untilDate = DateTime.UtcNow.AddHours duration
     try 
-        do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, untilDate = untilDate)
+        let! _ = botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, untilDate = untilDate)
         return Ok(chatId, targetUserId)
     with e ->
         return Error(chatId, targetUserId, e)
 }
 
-let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) targetUserId = task {
+let unbanInAllChats (botConfig: BotConfiguration) (botClient: TelegramBotClient) targetUserId = task {
     let unbanTasks =
         botConfig.ChatsToMonitor
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // unban user in each chat
             try
-                do! botClient.UnbanChatMemberAsync(ChatId chatId, targetUserId, true)
+                let! _ = botClient.UnbanChatMemberAsync(ChatId.Int chatId, targetUserId)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -162,7 +160,7 @@ let aggregateResultInLogMsg
     let chatId = chat.Id
     
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
+    %logMsgBuilder.Append($"Vahter {prependUsername vahterUsername}({vahterUserId}) {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsernameO chatName}({chatId})")
     
     // we don't want to spam logs channel if all is good
     let allChatsOk = results |> Array.forall Result.isOk
@@ -205,38 +203,37 @@ let softBanResultInLogMsg (message: Message) (vahter: DbUser) (duration: int) =
     let vahterUsername = defaultArg vahter.username null
     let untilDate = (DateTime.UtcNow.AddHours duration).ToString "u"
     %logMsgBuilder.Append $"Vahter {prependUsername vahterUsername}({vahter.id}) "
-    %logMsgBuilder.Append $"softbanned {prependUsername message.From.Username}({message.From.Id}) "
-    %logMsgBuilder.Append $"in {prependUsername message.Chat.Username}({message.Chat.Id}) "
+    %logMsgBuilder.Append $"softbanned {prependUsername message.FromUsername}({message.FromId}) "
+    %logMsgBuilder.Append $"in {prependUsernameO message.Chat.Username}({message.Chat.Id}) "
     %logMsgBuilder.Append $"until {untilDate}"
     string logMsgBuilder
 
 
 let ping
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (message: Message) = task {
     use _ = botActivity.StartActivity("ping")
-    do! botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong") |> taskIgnore
+    do! botClient.SendTextMessageAsync(ChatId.Int(message.Chat.Id), "pong") |> taskIgnore
 }
 
 let deleteChannelMessage
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (message: Message)
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
-    do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+    do! botClient.DeleteMessageAsync(ChatId.Int(message.Chat.Id), message.MessageId)
         |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     let probablyChannelName =
-        if message.SenderChat <> null then
-            message.SenderChat.Title
-        else
-            "[unknown]"
+        message.SenderChat
+        |> Option.bind _.Title
+        |> Option.defaultValue "[unknown]"
     %banOnReplyActivity.SetTag("channelName", probablyChannelName)
     logger.LogInformation $"Deleted message from channel {probablyChannelName}"
 }
 
 let totalBan
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (vahter: DbUser)
@@ -245,8 +242,8 @@ let totalBan
     %banOnReplyActivity
         .SetTag("vahterId", vahter.id)
         .SetTag("vahterUsername", (defaultArg vahter.username null))
-        .SetTag("targetId", message.From.Id)
-        .SetTag("targetUsername", message.From.Username)
+        .SetTag("targetId", message.FromId)
+        .SetTag("targetUsername", message.FromUsername)
         
     // delete message
     let deleteMsgTask = task {
@@ -256,18 +253,22 @@ let totalBan
                 .SetTag("msgId", message.MessageId)
                 .SetTag("chatId", message.Chat.Id)
                 .SetTag("chatUsername", message.Chat.Username)
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessageAsync(ChatId.Int(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
     }
+    
+    match message.From with
+    | None -> ()
+    | Some user ->
 
     // update user in DB
     let! updatedUser =
-        message.From
+        user
         |> DbUser.newUser
         |> DB.upsertUser
         
     let deletedUserMessagesTask = task {
-        let fromUserId = message.From.Id
+        let fromUserId = message.FromId
         let! allUserMessages = DB.getUserMessages fromUserId
         logger.LogInformation($"Deleting {allUserMessages.Length} messages from user {fromUserId}")
         
@@ -281,7 +282,8 @@ let totalBan
                             .StartActivity("deleteMsg")
                             .SetTag("msgId", msg.message_id)
                             .SetTag("chatId", msg.chat_id)
-                    do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
+                    let! _ = botClient.DeleteMessageAsync(ChatId.Int(msg.chat_id), msg.message_id)
+                    ()
                 with e ->
                     logger.LogError ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
             })
@@ -292,7 +294,7 @@ let totalBan
     }
     
     // try ban user in all monitored chats
-    let! banResults = banInAllChats botConfig botClient message.From.Id
+    let! banResults = banInAllChats botConfig botClient message.FromId
     let! deletedUserMessages = deletedUserMessagesTask
     
     // produce aggregated log message
@@ -304,47 +306,58 @@ let totalBan
         |> DB.banUser
 
     // log both to logger and to logs channel
-    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    let! _ = botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
 
     do! deleteMsgTask
 }
 
 let banOnReply
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (vahter: DbUser)
     (logger: ILogger) = task {
+    match message.ReplyToMessage with
+    | None -> ()
+    | Some replyToMessage ->
+    
+    match replyToMessage.From with
+    | None -> ()
+    | Some target ->
+    
     use banOnReplyActivity = botActivity.StartActivity("banOnReply")
+    
     %banOnReplyActivity
-        .SetTag("vahterId", message.From.Id)
-        .SetTag("vahterUsername", message.From.Username)
-        .SetTag("targetId", message.ReplyToMessage.From.Id)
-        .SetTag("targetUsername", message.ReplyToMessage.From.Username)
+        .SetTag("vahterId", message.FromId)
+        .SetTag("vahterUsername", message.FromUsername)
+        .SetTag("targetId", target.Id)
+        .SetTag("targetUsername", target.Username |> Option.toObj)
     
     do! totalBan
             botClient
             botConfig
-            message.ReplyToMessage
+            replyToMessage
             vahter
             logger
 }
 
 let softBanMsg
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (commandMessage: Message)
     (vahter: DbUser)
     (logger: ILogger) = task {
-        let messageToRemove = commandMessage.ReplyToMessage
+        match commandMessage.ReplyToMessage with
+        | None -> ()
+        | Some messageToRemove ->
         
         use banOnReplyActivity = botActivity.StartActivity("softBanOnReply")
         %banOnReplyActivity
             .SetTag("vahterId", vahter.id)
             .SetTag("vahterUsername", defaultArg vahter.username null)
-            .SetTag("targetId", messageToRemove.From.Id)
-            .SetTag("targetUsername", messageToRemove.From.Username)
+            .SetTag("targetId", messageToRemove.FromId)
+            .SetTag("targetUsername", messageToRemove.FromUsername)
         
         let deleteMsgTask = task {
             use _ =
@@ -353,11 +366,11 @@ let softBanMsg
                     .SetTag("msgId", messageToRemove.MessageId)
                     .SetTag("chatId", messageToRemove.Chat.Id)
                     .SetTag("chatUsername", messageToRemove.Chat.Username)
-            do! botClient.DeleteMessageAsync(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
+            do! botClient.DeleteMessageAsync(ChatId.Int(messageToRemove.Chat.Id), messageToRemove.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
         }
         
-        let maybeDurationString = commandMessage.Text.Split " " |> Seq.last
+        let maybeDurationString = commandMessage.TextOrEmpty.Split " " |> Seq.last
         // use last value as soft ban duration
         let duration =
             match Int32.TryParse maybeDurationString with
@@ -366,15 +379,15 @@ let softBanMsg
 
         let logText = softBanResultInLogMsg messageToRemove vahter duration
         
-        do! softBanInChat botClient (ChatId messageToRemove.Chat.Id) messageToRemove.From.Id duration |> taskIgnore
+        do! softBanInChat botClient (ChatId.Int messageToRemove.Chat.Id) messageToRemove.FromId duration |> taskIgnore
         do! deleteMsgTask
         
-        do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logText) |> taskIgnore
+        do! botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), logText) |> taskIgnore
         logger.LogInformation logText
 }
 
 let unban
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (vahter: DbUser)
@@ -399,12 +412,12 @@ let unban
     let logMsg = aggregateUnbanResultInLogMsg message.Chat vahter userToUnban logger 0 unbanResults
 
     // log both to logger and to logs channel
-    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    do! botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
 }
 
 let killSpammerAutomated
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (logger: ILogger)
@@ -412,52 +425,52 @@ let killSpammerAutomated
     score = task {
     use banOnReplyActivity = botActivity.StartActivity("killAutomated")
     %banOnReplyActivity
-        .SetTag("spammerId", message.From.Id)
-        .SetTag("spammerUsername", message.From.Username)
+        .SetTag("spammerId", message.FromId)
+        .SetTag("spammerUsername", message.FromUsername)
         
     if deleteMessage then
         // delete message
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessageAsync(ChatId.Int(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
         // 0 here is the bot itself
         do! DbBanned.banMessage 0 message
             |> DB.banUserByBot
 
     let msgType = if deleteMessage then "Deleted" else "Detected"
-    let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
+    let logMsg = $"{msgType} spam (score: {score}) in {prependUsernameO message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.FromUsername} ({message.FromId}) with text:\n{message.TextOrCaption}"
 
     let! replyMarkup = task {
         if deleteMessage then
             let data = CallbackMessage.NotASpam { message = message }
             let! callback = DB.newCallback data
-            return InlineKeyboardMarkup [
-                InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
-            ]
+            return InlineKeyboardMarkup.Create [|
+                [| InlineKeyboardButton.Create(text = "✅ NOT a spam", callbackData = string callback.id) |]
+            |]
         else
             let spamData = CallbackMessage.Spam { message = message }
             let! spamCallback = DB.newCallback spamData
-            return InlineKeyboardMarkup [
-                InlineKeyboardButton.WithCallbackData("🚫 KILL", string spamCallback.id)
-            ]
+            return InlineKeyboardMarkup.Create [|
+                [| InlineKeyboardButton.Create(text = "🚫 KILL", callbackData = string spamCallback.id) |]
+            |]
     }
 
     // log both to logger and to logs channel
-    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg, replyMarkup = replyMarkup) |> taskIgnore
+    do! botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), logMsg, replyMarkup = Markup.InlineKeyboardMarkup replyMarkup) |> taskIgnore
     logger.LogInformation logMsg
 }
 
 let autoBan
     (botUser: DbUser)
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("autoBan")
     %banOnReplyActivity
-        .SetTag("spammerId", message.From.Id)
-        .SetTag("spammerUsername", message.From.Username)
+        .SetTag("spammerId", message.FromId)
+        .SetTag("spammerUsername", message.FromUsername)
     
-    let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount message.From.Id
+    let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount message.FromId
     let socialScore = userStats.good - userStats.bad
     
     %banOnReplyActivity.SetTag("socialScore", socialScore)
@@ -465,14 +478,14 @@ let autoBan
     if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
         // ban user in all monitored chats
         do! totalBan botClient botConfig message botUser logger
-        let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
+        let msg = $"Auto-banned user {prependUsername message.FromUsername} ({message.FromId}) due to the low social score {socialScore}"
         logger.LogInformation msg
-        do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), msg) |> taskIgnore
+        do! botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), msg) |> taskIgnore
 }
 
 let justMessage
     (botUser: DbUser)
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
@@ -481,16 +494,16 @@ let justMessage
     use _ =
         botActivity
             .StartActivity("justMessage")
-            .SetTag("fromUserId", message.From.Id)
-            .SetTag("fromUsername", message.From.Username)
+            .SetTag("fromUserId", message.FromId)
+            .SetTag("fromUsername", message.FromUsername)
 
     // check if user got auto-banned already
     // that could happen due to the race condition between spammers mass messages
     // and the bot's processing queue
-    let! isAutoBanned = DB.isBannedByVahter botUser.id message.From.Id 
+    let! isAutoBanned = DB.isBannedByVahter botUser.id message.FromId 
     if isAutoBanned then
         // just delete message and move on
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessageAsync(ChatId.Int(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     elif botConfig.MlEnabled && message.TextOrCaption <> null then
@@ -498,8 +511,8 @@ let justMessage
         
         let shouldBeSkipped =
             // skip prediction for vahters or local admins
-            if botConfig.AllowedUsers.ContainsValue message.From.Id
-               || UpdateChatAdmins.Admins.Contains message.From.Id then
+            if botConfig.AllowedUsers.ContainsValue message.FromId
+               || UpdateChatAdmins.Admins.Contains message.FromId then
                 true
             else
 
@@ -511,7 +524,7 @@ let justMessage
         %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
         
         if not shouldBeSkipped then
-            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+            let! usrMsgCount = DB.countUniqueUserMsg message.FromId
             
             match ml.Predict(message.TextOrCaption, usrMsgCount)  with
             | Some prediction ->
@@ -542,18 +555,22 @@ let justMessage
 }
 
 let adminCommand
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (vahter: DbUser)
     (message: Message) =
+    
+    match message.ReplyToMessage with
+    | None -> Task.FromResult()
+    | Some replyToMessage ->
     
     // aux functions to overcome annoying FS3511: This state machine is not statically compilable.
     let banOnReplyAux() = task {
         let authed =
             isBanAuthorized
                 botConfig
-                message.ReplyToMessage
+                replyToMessage
                 vahter
                 logger
         if authed then
@@ -561,7 +578,7 @@ let adminCommand
     }
     let unbanAux() = task {
         if isUserVahter botConfig vahter then
-            let targetUserId = message.Text.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
+            let targetUserId = message.TextOrEmpty.Split(" ", StringSplitOptions.RemoveEmptyEntries)[1] |> int64
             let! userToUnban = DB.getUserById targetUserId
             match userToUnban with
             | None ->
@@ -573,7 +590,7 @@ let adminCommand
         let authed =
             isBanAuthorized
                 botConfig
-                message.ReplyToMessage
+                replyToMessage
                 vahter
                 logger
         if authed then
@@ -590,7 +607,7 @@ let adminCommand
                     .SetTag("msgId", message.MessageId)
                     .SetTag("chatId", message.Chat.Id)
                     .SetTag("chatUsername", message.Chat.Username)
-            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+            do! botClient.DeleteMessageAsync(ChatId.Int(message.Chat.Id), message.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
         // check that user is allowed to (un)ban others
@@ -608,17 +625,18 @@ let adminCommand
 
 let onMessage
     (botUser: DbUser)
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
     (message: Message) = task {
+
     use banOnReplyActivity = botActivity.StartActivity("onMessage")
 
     // early return if we can't process it
-    if isNull message || isNull message.From then
-        logger.LogWarning "Received update without message"
-    else
+    match message.From with
+    | None -> logger.LogWarning "Received update without message"
+    | Some from ->
 
     // early return if we don't monitor this chat
     if not (botConfig.ChatsToMonitor.ContainsValue message.Chat.Id) then
@@ -631,7 +649,7 @@ let onMessage
 
     // upserting user to DB
     let! user =
-        DbUser.newUser message.From
+        DbUser.newUser from
         |> DB.upsertUser
 
     // check if message comes from channel, we should delete it immediately
@@ -648,7 +666,7 @@ let onMessage
 }
 
 let vahterMarkedAsNotSpam
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (vahter: DbUser)
@@ -667,13 +685,13 @@ let vahterMarkedAsNotSpam
 
     let vahterUsername = vahter.username |> Option.defaultValue null
     
-    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.TextOrCaption}"
-    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg) |> taskIgnore
+    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsernameO chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.TextOrCaption}"
+    do! botClient.SendTextMessageAsync(ChatId.Int(botConfig.LogsChannelId), logMsg) |> taskIgnore
     logger.LogInformation logMsg
 }
 
 let vahterMarkedAsSpam
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (vahter: DbUser)
@@ -697,14 +715,14 @@ let vahterMarkedAsSpam
 }
 
 let onCallback
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (callbackQuery: CallbackQuery) = task {
     use onCallbackActivity = botActivity.StartActivity("onCallback")
     %onCallbackActivity.SetTag("callbackId", callbackQuery.Data)
     
-    let callbackId = Guid.Parse callbackQuery.Data
+    let callbackId = Guid.Parse(callbackQuery.Data |> Option.defaultValue "")
     
     match! DB.getCallback callbackId with
     | None ->
@@ -732,19 +750,22 @@ let onCallback
                     %onCallbackActivity.SetTag("type", "Spam")
                     do! vahterMarkedAsSpam botClient botConfig logger vahter msg
         do! DB.deleteCallback callbackId
-    do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id)
+    let! _ = botClient.AnswerCallbackQueryAsync(callbackQuery.Id)
+    ()
 }
 
 let onUpdate
     (botUser: DbUser)
-    (botClient: ITelegramBotClient)
+    (botClient: TelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
-    if update.CallbackQuery <> null then
-        do! onCallback botClient botConfig logger update.CallbackQuery
-    else
-        do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
+    match update.CallbackQuery with
+    | Some callbackQuery -> do! onCallback botClient botConfig logger callbackQuery
+    | None ->
+        match update.EditedOrMessage with
+        | None -> ()
+        | Some editedOrMessage -> do! onMessage botUser botClient botConfig logger ml editedOrMessage 
 }

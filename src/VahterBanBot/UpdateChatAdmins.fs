@@ -3,9 +3,8 @@
 open System.Collections.Generic
 open System.Text
 open System.Threading.Tasks
+open Funogram.Telegram.Types
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open System
@@ -14,7 +13,7 @@ open Microsoft.Extensions.Hosting
 
 type UpdateChatAdmins(
     logger: ILogger<UpdateChatAdmins>,
-    telegramClient: ITelegramBotClient,
+    telegramClient: TelegramBotClient,
     botConf: BotConfiguration
 ) =
     let mutable timer: Timer = null
@@ -25,14 +24,14 @@ type UpdateChatAdmins(
         %sb.AppendLine("New chat admins:")
         let result = HashSet<int64>()
         for chatId in botConf.ChatsToMonitor.Values do
-            let! admins = telegramClient.GetChatAdministratorsAsync(ChatId chatId)
+            let! admins = telegramClient.GetChatAdministratorsAsync(ChatId.Int chatId)
 
             // wait a bit so we don't get rate limited
             do! Task.Delay 100
 
             for admin in admins do
                 if result.Add admin.User.Id then
-                    %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
+                    %sb.AppendJoin(",", $"{prependUsernameO admin.User.Username} ({admin.User.Id})")
         localAdmins <- result
         logger.LogInformation (sb.ToString())
     }

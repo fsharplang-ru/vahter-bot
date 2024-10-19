@@ -7,9 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Converters.fs" />
     <Compile Include="Utils.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="DB.fs" />
+    <Compile Include="TelegramBotClient.fs" />
     <Compile Include="ML.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />
