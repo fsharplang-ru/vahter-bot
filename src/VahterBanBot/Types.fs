@@ -21,7 +21,6 @@ type BotConfiguration =
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
       UseFakeTgApi: bool
-      UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupOldLimit: TimeSpan

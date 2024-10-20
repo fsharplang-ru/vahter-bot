@@ -52,7 +52,6 @@ let botConf =
       AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
-      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
       UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
@@ -189,25 +188,5 @@ let app = builder.Build()
 
 app.UseGiraffe(webApp)
 let server = app.RunAsync()
-
-// Dev mode only
-// TODO[F]: Figure this out
-// if botConf.UsePolling then
-//     let telegramClient = app.Services.GetRequiredService<TelegramBotClient>()
-//     let pollingHandler = {
-//         new IUpdateHandler with
-//           member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
-//             task {
-//                 if update.Message <> null && update.Message.Type = MessageType.Text then
-//                     let ctx = app.Services.CreateScope()
-//                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
-//                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-//                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-//                     do! onUpdate botUser client botConf logger ml update
-//             }
-//           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
-//               Task.CompletedTask
-//     }
-//     telegramClient.StartReceiving(pollingHandler, null, CancellationToken.None)
 
 server.Wait()
