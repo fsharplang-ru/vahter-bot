@@ -246,7 +246,7 @@ WHERE data ->> 'Case' = @caseName
 SELECT COUNT(*) FROM false_positive_messages
 WHERE text = @text
 """
-        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text |})
+        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text.Value |})
         return result > 0
     }
 
