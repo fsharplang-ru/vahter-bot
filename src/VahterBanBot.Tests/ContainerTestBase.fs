@@ -9,8 +9,8 @@ open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
+open Funogram.Telegram.Types
 open Npgsql
-open Telegram.Bot.Types
 open Testcontainers.PostgreSql
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types

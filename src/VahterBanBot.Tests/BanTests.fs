@@ -3,6 +3,7 @@ module VahterBanBot.Tests.BanTests
 open System.Net
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
+open VahterBanBot.Utils
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
@@ -16,12 +17,12 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message got banned
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -33,12 +34,12 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message from a non-admin user
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", Tg.user())
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", Tg.user())
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message NOT banned
-        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgNotBanned
     }
 
@@ -50,12 +51,12 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message NOT banned
-        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgNotBanned
     }
 
@@ -67,12 +68,12 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[1])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[1])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message NOT banned
-        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgNotBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgNotBanned
     }
 
@@ -84,22 +85,22 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message got banned
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True msgBanned
         
         // send the unban message from another vahter
         let! banResp =
-            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0], from = fixture.Vahters[1])
+            Tg.quickMsg($"/unban {msgUpdate.Message.Value.FromId}", chat = fixture.ChatsToMonitor[0], from = fixture.Vahters[1])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message no longer banned
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -111,22 +112,22 @@ type BanTests(fixture: VahterTestContainers) =
 
         // send the ban message
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message got banned
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True msgBanned
         
         // send the unban message from a random user
         let! banResp =
-            Tg.quickMsg($"/unban {msgUpdate.Message.From.Id}", chat = fixture.ChatsToMonitor[0])
+            Tg.quickMsg($"/unban {msgUpdate.Message.Value.FromId}", chat = fixture.ChatsToMonitor[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
         
         // assert that the message still banned
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
