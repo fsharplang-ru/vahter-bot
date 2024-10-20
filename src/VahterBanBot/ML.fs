@@ -5,13 +5,11 @@ open System.Diagnostics
 open System.Text
 open System.Threading
 open System.Threading.Tasks
+open Funogram.Telegram.Types
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Microsoft.ML
 open Microsoft.ML.Data
-open Telegram.Bot
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
 open VahterBanBot.DB
 open VahterBanBot.Types
 open VahterBanBot.Utils
@@ -31,7 +29,7 @@ type Prediction =
 
 type MachineLearning(
     logger: ILogger<MachineLearning>,
-    telegramClient: ITelegramBotClient,
+    telegramClient: TelegramBotClient,
     botConf: BotConfiguration
 ) =
     let metricsToString(metrics: CalibratedBinaryClassificationMetrics) (duration: TimeSpan) =
@@ -101,7 +99,7 @@ type MachineLearning(
             
             let metricsStr = metricsToString metrics sw.Elapsed
             logger.LogInformation metricsStr
-            do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.Markdown)
+            do! telegramClient.SendTextMessageAsync(ChatId.Int(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.Markdown)
                 |> taskIgnore
         with ex ->
             logger.LogError(ex, "Error training model")

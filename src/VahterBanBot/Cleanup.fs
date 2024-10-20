@@ -2,9 +2,8 @@
 
 open System.Text
 open System.Threading.Tasks
+open Funogram.Telegram.Types
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open System
@@ -13,7 +12,7 @@ open Microsoft.Extensions.Hosting
 
 type CleanupService(
     logger: ILogger<CleanupService>,
-    telegramClient: ITelegramBotClient,
+    telegramClient: TelegramBotClient,
     botConf: BotConfiguration
 ) =
     let mutable timer: Timer = null
@@ -31,7 +30,7 @@ type CleanupService(
 
         let msg = sb.ToString()
         do! telegramClient.SendTextMessageAsync(
-                ChatId(botConf.LogsChannelId),
+                ChatId.Int(botConf.LogsChannelId),
                 msg
             ) |> taskIgnore
         logger.LogInformation msg

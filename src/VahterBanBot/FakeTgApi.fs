@@ -6,8 +6,7 @@ open System.Net.Http
 open System.Text
 open System.Text.Json
 open System.Threading.Tasks
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
+open Funogram.Telegram.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 
@@ -30,12 +29,12 @@ let fakeTgApi (botConf: BotConfiguration) =
                 elif url.EndsWith "/sendMessage" then
                     // respond with the request body as a string
                     let message =
-                        Message(
-                            MessageId = 1,
-                            Date = DateTime.UtcNow,
-                            Chat = Chat(
-                                Id = 1L,
-                                Type = ChatType.Private
+                        Message.Create(
+                            messageId = 1,
+                            date = DateTime.UtcNow,
+                            chat = Chat.Create(
+                                id = 1L,
+                                ``type`` = ChatType.Private
                             )
                         )
                         |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
@@ -44,19 +43,25 @@ let fakeTgApi (botConf: BotConfiguration) =
                     // respond with the request body as a string
                     let message =
                         [|
-                            ChatMemberAdministrator(
-                                CanBeEdited = false,
-                                IsAnonymous = false,
-                                CanDeleteMessages = false,
-                                CanManageVideoChats = false,
-                                CanRestrictMembers = false,
-                                CanPromoteMembers = false,
-                                CanChangeInfo = false,
-                                CanInviteUsers = false,
-                                User = User(
-                                    Id = 42L,
-                                    FirstName = "just_admin",
-                                    Username = "just_admin"
+                            ChatMemberAdministrator.Create(
+                                status = "",
+                                canDeleteStories = false,
+                                canEditStories = false,
+                                canPostStories = false,
+                                canInviteUsers = false,
+                                canPromoteMembers = false,
+                                canRestrictMembers = false,
+                                canChangeInfo = false,
+                                canDeleteMessages = false,
+                                canManageChat = false,
+                                isAnonymous = false,
+                                canBeEdited = false,
+                                canManageVideoChats = false,
+                                user = User.Create(
+                                    id = 42L,
+                                    isBot = false,
+                                    firstName = "just_admin",
+                                    username = "just_admin"
                                 )
                             )
                         |]

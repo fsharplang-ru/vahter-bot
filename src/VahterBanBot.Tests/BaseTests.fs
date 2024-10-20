@@ -3,7 +3,7 @@ module BaseTests
 open System
 open System.Net.Http
 open System.Text
-open Telegram.Bot.Types
+open Funogram.Telegram.Types
 open VahterBanBot.Tests.ContainerTestBase
 open Xunit
 open Xunit.Extensions.AssemblyFixture
@@ -28,7 +28,7 @@ type BaseTests(fixture: VahterTestContainers) =
     
     [<Fact>]
     let ``Should be possible to interact with the bot`` () = task {
-        let! resp = Update(Id = 123) |>  fixture.SendMessage
+        let! resp = Update.Create(updateId = 123) |>  fixture.SendMessage
         let! body = resp.Content.ReadAsStringAsync()
         Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode)
         Assert.Equal("null", body)
