@@ -67,6 +67,8 @@ type MachineLearning(
             let trainDate = DateTime.UtcNow - botConf.MlTrainInterval
             let! rawData = DB.mlData botConf.MlTrainCriticalMsgCount trainDate
             
+            logger.LogInformation $"Training data count: {rawData.Length}"
+            
             let data =
                 rawData
                 |> Array.map (fun x ->
@@ -94,12 +96,19 @@ type MachineLearning(
                         featureColumnName = "Features",
                         maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
                     ))
+                    
+            logger.LogInformation "Fitting model..."
 
             let trainedModel = dataProcessPipeline.Fit(trainingData)
+            
+            logger.LogInformation "Evaluating model..."
+            
             predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(trainedModel))
             
             let predictions = trainedModel.Transform(testData)
             let metrics = mlContext.BinaryClassification.Evaluate(data = predictions, labelColumnName = "spam", scoreColumnName = "Score")
+            
+            logger.LogInformation "Model transformation complete"
             
             sw.Stop()
             
@@ -107,6 +116,7 @@ type MachineLearning(
             logger.LogInformation metricsStr
             do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), metricsStr, parseMode = ParseMode.Markdown)
                 |> taskIgnore
+            logger.LogInformation "Model trained"
         with ex ->
             logger.LogError(ex, "Error training model")
     }
