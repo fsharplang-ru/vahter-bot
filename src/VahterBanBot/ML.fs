@@ -89,7 +89,11 @@ type MachineLearning(
                 mlContext.Transforms.Text
                     .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
                     .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF";|]))
-                    .Append(mlContext.BinaryClassification.Trainers.LbfgsLogisticRegression(labelColumnName = "spam", featureColumnName = "Features"))
+                    .Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
+                        labelColumnName = "spam",
+                        featureColumnName = "Features",
+                        maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
+                    ))
 
             let trainedModel = dataProcessPipeline.Fit(trainingData)
             predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(trainedModel))

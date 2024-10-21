@@ -41,6 +41,7 @@ type BotConfiguration =
       MlTrainingSetFraction: float
       MlSpamThreshold: single
       MlWarningThreshold: single
+      MlMaxNumberOfIterations: int
       MlStopWordsInChats: Dictionary<int64, string list> }
 
 [<CLIMutable>]

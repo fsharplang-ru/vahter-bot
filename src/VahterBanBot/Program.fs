@@ -75,6 +75,7 @@ let botConf =
       MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
       MlSpamThreshold = getEnvOr "ML_SPAM_THRESHOLD" "0.5" |> single
       MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
+      MlMaxNumberOfIterations = getEnvOr "ML_MAX_NUMBER_OF_ITERATIONS" "100" |> int 
       MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson }
 
 let validateApiKey (ctx : HttpContext) =
