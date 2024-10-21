@@ -30,6 +30,7 @@ type VahterTestContainers() =
     let mutable publicConnectionString: string = null
     
     // base image for the app, we'll build exactly how we build it in Azure
+    let buildLogger = StringLogger()
     let image =
         ImageFromDockerfileBuilder()
             .WithDockerfileDirectory(solutionDir, String.Empty)
@@ -39,6 +40,8 @@ type VahterTestContainers() =
             .WithBuildArgument("RESOURCE_REAPER_SESSION_ID", ResourceReaper.DefaultSessionId.ToString("D"))
             // it might speed up the process to not clean up the base image
             .WithCleanUp(false)
+            .WithDeleteIfExists(true)
+            .WithLogger(buildLogger)
             .Build()
 
     // private network for the containers
@@ -113,17 +116,27 @@ type VahterTestContainers() =
             .DependsOn(flywayContainer)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
             .Build()
+            
+    let startContainers() = task {
+        try
+            // start building the image and spin up db at the same time
+            let imageTask = image.CreateAsync()
+            let dbTask = dbContainer.StartAsync()
+
+            // wait for both to finish
+            do! imageTask
+            do! dbTask            
+        with
+        | e ->
+            let logs = buildLogger.ExtractMessages()
+            let errorMessage = "Container startup failure, logs:\n" + if String.IsNullOrWhiteSpace logs then "<no logs provided>" else logs
+            raise <| Exception(errorMessage, e)
+    }
 
     interface IAsyncLifetime with
         member this.InitializeAsync() = task {
             try
-                // start building the image and spin up db at the same time
-                let imageTask = image.CreateAsync()
-                let dbTask = dbContainer.StartAsync()
-
-                // wait for both to finish
-                do! imageTask
-                do! dbTask
+                do! startContainers()
                 publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
                 
                 // initialize DB with the schema, database and a DB user
@@ -158,9 +171,10 @@ type VahterTestContainers() =
                 httpClient.BaseAddress <- uri
                 httpClient.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", "OUR_SECRET")
             finally
-                let struct (_, err) = appContainer.GetLogsAsync().Result
-                if err <> "" then
-                    failwith err
+                if appContainer.State <> TestcontainersStates.Undefined then
+                    let struct (_stdout, err) = appContainer.GetLogsAsync().Result
+                    if err <> "" then
+                        failwith err
         }
         member this.DisposeAsync() = task {
             // stop all the containers, flyway might be dead already
