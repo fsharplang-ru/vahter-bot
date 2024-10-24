@@ -4,9 +4,8 @@ open System
 open System.Collections.Generic
 open System.Text
 open System.Text.Json
-open System.Text.Json.Serialization
 open Dapper
-open Telegram.Bot.Types
+open Funogram.Telegram.Types
 open Utils
 
 [<CLIMutable>]
@@ -22,7 +21,6 @@ type BotConfiguration =
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
       UseFakeTgApi: bool
-      UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupOldLimit: TimeSpan
@@ -58,7 +56,7 @@ type DbUser =
           created_at = DateTime.UtcNow }
 
     static member newUser(user: User) =
-        DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
+        DbUser.newUser (id = user.Id, ?username = user.Username)
 
 [<CLIMutable>]
 type DbBanned =
@@ -71,14 +69,14 @@ type DbBanned =
       banned_by: int64 }
 module DbBanned =
     let banMessage (vahter: int64) (message: Message) =
-        if isNull message.From || isNull message.Chat then
+        if Option.isNone message.From then
             failwith "Message should have a user and a chat"
-        { message_id = Some message.MessageId
+        { message_id = Some <| message.MessageId32
           message_text = message.TextOrCaption
-          banned_user_id = message.From.Id
+          banned_user_id = message.FromId
           banned_at = DateTime.UtcNow
           banned_in_chat_id = Some message.Chat.Id
-          banned_in_chat_username = Some message.Chat.Username
+          banned_in_chat_username = message.Chat.Username
           banned_by = vahter }
 
 [<CLIMutable>]
@@ -89,10 +87,10 @@ type DbMessage =
       text: string
       raw_message: string
       created_at: DateTime }
-    static member newMessage(message: Telegram.Bot.Types.Message) =
+    static member newMessage(message: Funogram.Telegram.Types.Message) =
         { chat_id = message.Chat.Id
-          message_id = message.MessageId
-          user_id = message.From.Id
+          message_id = message.MessageId32
+          user_id = message.FromId
           created_at = DateTime.UtcNow
           text = message.TextOrCaption
           raw_message = JsonSerializer.Serialize(message, options = jsonOptions) }
@@ -149,9 +147,7 @@ type DbCallback =
 type CallbackMessageTypeHandler() =
     inherit SqlMapper.TypeHandler<CallbackMessage>()
     let callBackOptions =
-        let opts = JsonFSharpOptions.Default().ToJsonSerializerOptions()
-        Telegram.Bot.JsonBotAPI.Configure(opts)
-        opts
+        jsonOptions
 
     override this.SetValue(parameter, value) =
         parameter.Value <- JsonSerializer.Serialize(value, options = callBackOptions)

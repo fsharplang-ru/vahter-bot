@@ -2,21 +2,19 @@
 
 open System
 open System.Collections.Generic
+open System.Net.Http
 open System.Text.Json
 open System.Text.Json.Serialization
-open System.Threading
-open System.Threading.Tasks
 open Dapper
+open Funogram.Telegram.Bot
+open Funogram.Telegram.Types
+open Funogram.Types
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
-open Telegram.Bot
-open Telegram.Bot.Polling
-open Telegram.Bot.Types
 open Giraffe
 open Microsoft.Extensions.DependencyInjection
-open Telegram.Bot.Types.Enums
 open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
@@ -55,7 +53,6 @@ let botConf =
       AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
-      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
       UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
@@ -92,21 +89,18 @@ let builder = WebApplication.CreateBuilder()
     .AddGiraffe()
     // we need to customize Giraffe STJ settings to conform to the Telegram.Bot API
     .AddSingleton<Json.ISerializer>(Json.Serializer(jsonOptions))
-    .ConfigureTelegramBot<Microsoft.AspNetCore.Http.Json.JsonOptions>(fun x -> x.SerializerOptions)
+    .AddSingleton<_>(
+        let mutable config = { Config.defaultConfig with Token = botConf.BotToken }
+        if botConf.UseFakeTgApi then
+            config <- { config with Client = new HttpClient(fakeTgApi botConf) }
+        
+        TelegramBotClient(config)
+    )
     .AddHostedService<CleanupService>()
     .AddHostedService<StartupMessage>()
     .AddHostedService<UpdateChatAdmins>()
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
-    .AddHttpClient("telegram_bot_client")
-    .AddTypedClient(fun httpClient sp ->
-        let options = TelegramBotClientOptions(botConf.BotToken)
-        TelegramBotClient(options, httpClient) :> ITelegramBotClient
-    )
-    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeTgApi then
-            handlers.Add(fakeTgApi botConf)
-    )
 
 let otelBuilder =
     builder.Services
@@ -174,7 +168,7 @@ let webApp = choose [
               .SetTag("updateBodyJson", updateBodyJson)
 
         use scope = ctx.RequestServices.CreateScope()
-        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+        let telegramClient = scope.ServiceProvider.GetRequiredService<TelegramBotClient>()
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
         let logger = ctx.GetLogger<Root>()
         try
@@ -192,24 +186,5 @@ let app = builder.Build()
 
 app.UseGiraffe(webApp)
 let server = app.RunAsync()
-
-// Dev mode only
-if botConf.UsePolling then
-    let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
-    let pollingHandler = {
-        new IUpdateHandler with
-          member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
-            task {
-                if update.Message <> null && update.Message.Type = MessageType.Text then
-                    let ctx = app.Services.CreateScope()
-                    let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
-                    let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-                    let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate botUser client botConf logger ml update
-            }
-          member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
-              Task.CompletedTask
-    }
-    telegramClient.StartReceiving(pollingHandler, null, CancellationToken.None)
 
 server.Wait()

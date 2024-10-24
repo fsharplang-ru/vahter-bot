@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0.302-jammy AS build-env
+FROM mcr.microsoft.com/dotnet/sdk:8.0.402-jammy AS build-env
 
 ### workaround for testcontainers resource reaper issue
 ARG RESOURCE_REAPER_SESSION_ID="00000000-0000-0000-0000-000000000000"

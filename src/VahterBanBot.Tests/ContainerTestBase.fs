@@ -9,8 +9,8 @@ open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
 open DotNet.Testcontainers.Containers
+open Funogram.Telegram.Types
 open Npgsql
-open Telegram.Bot.Types
 open Testcontainers.PostgreSql
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
@@ -260,7 +260,7 @@ WHERE data ->> 'Case' = @caseName
 SELECT COUNT(*) FROM false_positive_messages
 WHERE text = @text
 """
-        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text |})
+        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text.Value |})
         return result > 0
     }
 
