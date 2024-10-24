@@ -2,6 +2,7 @@
 
 open System
 open System.Collections.Generic
+open System.Net.Http
 open System.Text.Json
 open System.Text.Json.Serialization
 open Dapper
@@ -89,7 +90,10 @@ let builder = WebApplication.CreateBuilder()
     // we need to customize Giraffe STJ settings to conform to the Telegram.Bot API
     .AddSingleton<Json.ISerializer>(Json.Serializer(jsonOptions))
     .AddSingleton<_>(
-        let config = { Config.defaultConfig with Token = botConf.BotToken }
+        let mutable config = { Config.defaultConfig with Token = botConf.BotToken }
+        if botConf.UseFakeTgApi then
+            config <- { config with Client = new HttpClient(fakeTgApi botConf) }
+        
         TelegramBotClient(config)
     )
     .AddHostedService<CleanupService>()
@@ -97,12 +101,6 @@ let builder = WebApplication.CreateBuilder()
     .AddHostedService<UpdateChatAdmins>()
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
-    // TODO[F]: Figure out these
-    .AddHttpClient("telegram_bot_client")
-    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeTgApi then
-            handlers.Add(fakeTgApi botConf)
-    )
 
 let otelBuilder =
     builder.Services
