@@ -42,7 +42,14 @@ type BotConfiguration =
       MlSpamThreshold: single
       MlWarningThreshold: single
       MlMaxNumberOfIterations: int
-      MlStopWordsInChats: Dictionary<int64, string list> }
+      MlStopWordsInChats: Dictionary<int64, string list>
+      
+      BanCustomEmojiEnabled : bool
+      BanCustomEmojiProportionToBan : float
+      BanCustomEmojiPreviousMessagesCountToDontBan : int32
+      // if user registered in DB greater than N days, he won't be banned
+      BanCustomEmojiRegisteredInDbDaysToDontBan : int32
+      BanCustomEmojiTextMinLen : int32}
 
 [<CLIMutable>]
 type DbUser =
