@@ -7,6 +7,7 @@ open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
 open Telegram.Bot.Types
+open Telegram.Bot.Types.Enums
 open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.Types
@@ -446,6 +447,40 @@ let killSpammerAutomated
     logger.LogInformation logMsg
 }
 
+let deleteSpamMessageAutomated
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger)
+    (deleteType: string)
+    = task {
+    use banOnReplyActivity = botActivity.StartActivity("deleteSpamMessageAutomated")
+    %banOnReplyActivity
+        .SetTag("spammerId", message.From.Id)
+        .SetTag("spammerUsername", message.From.Username)
+        
+    // delete message
+    do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+    // 0 here is the bot itself
+    do! DbBanned.banMessage 0 message
+        |> DB.banUserByBot
+
+    let logMsg = $"Deleted {deleteType} spam in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
+
+    let! replyMarkup = task {
+        let data = CallbackMessage.NotASpam { message = message }
+        let! callback = DB.newCallback data
+        return InlineKeyboardMarkup [
+            InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
+        ]
+    }
+
+    // log both to logger and to logs channel
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg, replyMarkup = replyMarkup) |> taskIgnore
+    logger.LogInformation logMsg
+}
+
 let autoBan
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
@@ -470,6 +505,20 @@ let autoBan
         do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), msg) |> taskIgnore
 }
 
+
+let calculateCustomEmojiProportion
+    (message: Message) : float option = 
+    
+    let textLen = message.TextOrCaption |> Seq.where(fun c -> not (" :.,\n\r".Contains c)) |> Seq.length
+    let customEmojiCount = message.Entities |> Array.where(fun e -> e.Type = MessageEntityType.CustomEmoji) |> Array.length
+    
+    if customEmojiCount = 0 || textLen = 0 then
+        None
+    else
+        let proportion = float customEmojiCount / float textLen
+        Some proportion
+
+
 let justMessage
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
@@ -492,48 +541,68 @@ let justMessage
         // just delete message and move on
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
-
-    elif botConfig.MlEnabled && message.TextOrCaption <> null then
-        use mlActivity = botActivity.StartActivity("mlPrediction")
+    else
+        // set to true if Ml or other antispam deleted message
+        let mutable messageIsDeleted = false
         
-        let shouldBeSkipped =
-            // skip prediction for vahters or local admins
-            if botConfig.AllowedUsers.ContainsValue message.From.Id
-               || UpdateChatAdmins.Admins.Contains message.From.Id then
-                true
-            else
-
-            match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
-            | true, stopWords ->
-                stopWords
-                |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
-            | _ -> false
-        %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
-        
-        if not shouldBeSkipped then
-            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+        // ML
+        if not messageIsDeleted && botConfig.MlEnabled && message.TextOrCaption <> null then
+            use mlActivity = botActivity.StartActivity("mlPrediction")
             
-            match ml.Predict(message.TextOrCaption, usrMsgCount)  with
-            | Some prediction ->
-                %mlActivity.SetTag("spamScoreMl", prediction.Score)
-                
-                if prediction.Score >= botConfig.MlSpamThreshold then
-                    // delete message
-                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
-
-                    if botConfig.MlSpamAutobanEnabled then
-                        // trigger auto-ban check
-                        do! autoBan botUser botClient botConfig message logger
-                elif prediction.Score >= botConfig.MlWarningThreshold then
-                    // just warn
-                    do! killSpammerAutomated botClient botConfig message logger false prediction.Score
+            let shouldBeSkipped =
+                // skip prediction for vahters or local admins
+                if botConfig.AllowedUsers.ContainsValue message.From.Id
+                   || UpdateChatAdmins.Admins.Contains message.From.Id then
+                    true
                 else
-                    // not a spam
-                    ()
-            | None ->
-                // no prediction (error or not ready yet)
-                ()
 
+                match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
+                | true, stopWords ->
+                    stopWords
+                    |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
+                | _ -> false
+            %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
+            
+            if not shouldBeSkipped then
+                let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+                
+                match ml.Predict(message.TextOrCaption, usrMsgCount)  with
+                | Some prediction ->
+                    %mlActivity.SetTag("spamScoreMl", prediction.Score)
+                    
+                    if prediction.Score >= botConfig.MlSpamThreshold then
+                        // delete message
+                        do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
+                        messageIsDeleted <- true
+
+                        if botConfig.MlSpamAutobanEnabled then
+                            // trigger auto-ban check
+                            do! autoBan botUser botClient botConfig message logger
+                    elif prediction.Score >= botConfig.MlWarningThreshold then
+                        // just warn
+                        do! killSpammerAutomated botClient botConfig message logger false prediction.Score
+                    else
+                        // not a spam
+                        ()
+                | None ->
+                    // no prediction (error or not ready yet)
+                    ()
+
+        // emoji
+        if not messageIsDeleted
+           && botConfig.BanCustomEmojiEnabled
+           && message.TextOrCaption <> null
+           && botUser.created_at <= DateTime.Now.AddDays(-botConfig.BanCustomEmojiRegisteredInDbDaysToDontBan)
+           && message.TextOrCaption.Length >= botConfig.BanCustomEmojiTextMinLen
+        then
+            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+            if usrMsgCount < botConfig.BanCustomEmojiPreviousMessagesCountToDontBan then
+                let customEmojiProportion = calculateCustomEmojiProportion message
+                if customEmojiProportion.IsSome && customEmojiProportion.Value >= botConfig.BanCustomEmojiProportionToBan then
+                    // delete message
+                    do! deleteSpamMessageAutomated botClient botConfig message logger "emoji"
+                    messageIsDeleted <- true
+            
     do!
         message
         |> DbMessage.newMessage
