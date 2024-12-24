@@ -82,7 +82,7 @@ let botConf =
       BanCustomEmojiProportionToBan = getEnvOr "BAN_CUSTOM_EMOJI_PROPORTION_TO_BAN" "0.3" |> float
       BanCustomEmojiPreviousMessagesCountToDontBan = getEnvOr "BAN_CUSTOM_EMOJI_PREVIOUS_MESSAGES_COUNT_TO_DONT_BAN" "5" |> int32
       BanCustomEmojiRegisteredInDbDaysToDontBan = getEnvOr "BAN_CUSTOM_EMOJI_REGISTERED_IN_DB_DAYS_TO_DONT_BAN" "80" |> int32
-      BanCustomEmojiTextMinLen = getEnvOr "BAN_CUSTOM_TEXT_MIN_LEN" "10" |> int32}
+      BanCustomEmojiTextMinLen = getEnvOr "BAN_CUSTOM_EMOJI_TEXT_MIN_LEN" "10" |> int32}
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with

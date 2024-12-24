@@ -509,7 +509,7 @@ let autoBan
 let calculateCustomEmojiProportion
     (message: Message) : float option = 
     
-    let textLen = message.Text |> Seq.where(fun c -> not (" :.,\n\r".Contains c)) |> Seq.length
+    let textLen = message.TextOrCaption |> Seq.where(fun c -> not (" :.,\n\r".Contains c)) |> Seq.length
     let customEmojiCount = message.Entities |> Array.where(fun e -> e.Type = MessageEntityType.CustomEmoji) |> Array.length
     
     if customEmojiCount = 0 || textLen = 0 then
@@ -517,6 +517,7 @@ let calculateCustomEmojiProportion
     else
         let proportion = float customEmojiCount / float textLen
         Some proportion
+
 
 let justMessage
     (botUser: DbUser)
@@ -591,7 +592,7 @@ let justMessage
         if not messageIsDeleted
            && botConfig.BanCustomEmojiEnabled
            && message.TextOrCaption <> null
-           && botUser.created_at > DateTime.Now.AddDays(-botConfig.BanCustomEmojiRegisteredInDbDaysToDontBan)
+           && botUser.created_at <= DateTime.Now.AddDays(-botConfig.BanCustomEmojiRegisteredInDbDaysToDontBan)
            && message.TextOrCaption.Length >= botConfig.BanCustomEmojiTextMinLen
         then
             let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
