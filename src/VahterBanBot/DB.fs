@@ -162,6 +162,7 @@ let getUserById (userId: int64): Task<DbUser option> =
         return users |> Seq.tryHead
     }
 
+[<CLIMutable>]
 type SpamOrHamDb =
     { text: string
       spam: bool
