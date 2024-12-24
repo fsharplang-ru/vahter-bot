@@ -42,6 +42,7 @@ type BotConfiguration =
       MlSpamThreshold: single
       MlWarningThreshold: single
       MlMaxNumberOfIterations: int
+      MlCustomEmojiThreshold: int
       MlStopWordsInChats: Dictionary<int64, string list> }
 
 [<CLIMutable>]
