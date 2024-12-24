@@ -21,6 +21,7 @@ type SpamOrHam =
     { text: string
       spam: bool
       lessThanNMessagesF: single
+      moreThanNEmojisF: single
       createdAt: DateTime }
 
 [<CLIMutable>]
@@ -75,6 +76,7 @@ type MachineLearning(
                     { text = x.text
                       spam = x.spam
                       createdAt = x.created_at
+                      moreThanNEmojisF = if x.custom_emoji_count > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
                       lessThanNMessagesF = if x.less_than_n_messages then 1.0f else 0.0f }
                 )
                 |> fun x ->
@@ -90,7 +92,7 @@ type MachineLearning(
             let dataProcessPipeline =
                 mlContext.Transforms.Text
                     .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
-                    .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF";|]))
+                    .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF"; "moreThanNEmojisF"|]))
                     .Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
                         labelColumnName = "spam",
                         featureColumnName = "Features",
@@ -121,14 +123,22 @@ type MachineLearning(
             logger.LogError(ex, "Error training model")
     }
 
-    member _.Predict(text: string, userMsgCount: int) =
+    member _.Predict(text: string, userMsgCount: int, entities: MessageEntity array) =
         try
             match predictionEngine with
             | Some predictionEngine ->
+                let emojiCount =
+                    entities
+                    |> Option.ofObj
+                    |> Option.defaultValue [||]
+                    |> Seq.filter (fun x -> x.Type = MessageEntityType.CustomEmoji)
+                    |> Seq.length
+                
                 predictionEngine.Predict
                     { text = text
                       spam = false
                       lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
+                      moreThanNEmojisF = if emojiCount > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
                       createdAt = DateTime.UtcNow }
                 |> Some
             | None ->

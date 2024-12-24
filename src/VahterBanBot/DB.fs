@@ -162,10 +162,12 @@ let getUserById (userId: int64): Task<DbUser option> =
         return users |> Seq.tryHead
     }
 
+[<CLIMutable>]
 type SpamOrHamDb =
     { text: string
       spam: bool
       less_than_n_messages: bool
+      custom_emoji_count: int
       created_at: DateTime }
 
 let mlData (criticalMsgCount: int) (criticalDate: DateTime) : Task<SpamOrHamDb array> =
@@ -175,7 +177,11 @@ let mlData (criticalMsgCount: int) (criticalDate: DateTime) : Task<SpamOrHamDb a
         //language=postgresql
         let sql =
             """
-WITH less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsgCount AS less_than_n_messages
+WITH custom_emojis AS (SELECT message.id, COUNT(*) FILTER (WHERE entities ->> 'type' = 'custom_emoji') AS custom_emoji_count
+                       FROM message,
+                            LATERAL JSONB_ARRAY_ELEMENTS(raw_message -> 'entities') AS entities
+                       GROUP BY message.id),
+     less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsgCount AS less_than_n_messages
                               FROM "user" u
                                        LEFT JOIN message m ON u.id = m.user_id
                               GROUP BY u.id),
@@ -191,6 +197,7 @@ WITH less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsg
      spam_or_ham AS (SELECT x.text,
                             x.spam,
                             x.less_than_n_messages,
+                            x.custom_emoji_count,
                             MAX(x.created_at) AS created_at
                      FROM (SELECT DISTINCT COALESCE(m.text, re_id.message_text)                       AS text,
                                            CASE
@@ -210,6 +217,7 @@ WITH less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsg
                                                ELSE TRUE
                                                END                                                    AS spam,
                                            COALESCE(l.less_than_n_messages, TRUE)                     AS less_than_n_messages,
+                                           COALESCE(ce.custom_emoji_count, 0)                         AS custom_emoji_count,
                                            COALESCE(re_id.banned_at, re_text.banned_at, m.created_at) AS created_at
                            FROM (SELECT *
                                  FROM message
@@ -218,8 +226,9 @@ WITH less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsg
                                     FULL OUTER JOIN really_banned re_id
                                                     ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
                                     LEFT JOIN really_banned re_text ON m.text = re_text.message_text
+                                    LEFT JOIN custom_emojis ce ON m.id = ce.id
                                     LEFT JOIN less_than_n_messages l ON m.user_id = l.id) x
-                     GROUP BY text, spam, less_than_n_messages)
+                     GROUP BY text, spam, less_than_n_messages, custom_emoji_count)
 SELECT *
 FROM spam_or_ham
 ORDER BY created_at;
