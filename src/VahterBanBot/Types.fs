@@ -43,7 +43,20 @@ type BotConfiguration =
       MlWarningThreshold: single
       MlMaxNumberOfIterations: int
       MlCustomEmojiThreshold: int
-      MlStopWordsInChats: Dictionary<int64, string list> }
+      MlStopWordsInChats: Dictionary<int64, string list>
+      
+      HeuristicKeyboardDeletionEnabled: bool
+      // if user has X messages, the message won't be deleted
+      HeuristicKeyboardDeletionPreviousMessagesCountToSkip : int32
+      // if user created in bot X days ago, the message won't be deleted
+      HeuristicKeyboardDeletionMinimumDaysUserRegisteredInDbToSkip : int32
+      
+      HeuristicImageOrVideoDeletionEnabled: bool
+      // if user has X messages, the message won't be deleted
+      HeuristicImageOrVideoDeletionPreviousMessagesCountToSkip : int32
+      // if user created in bot X days ago, the message won't be deleted
+      HeuristicImageOrVideoDeletionMinimumDaysUserRegisteredInDbToSkip : int32
+    }
 
 [<CLIMutable>]
 type DbUser =

@@ -77,7 +77,16 @@ let botConf =
       MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
       MlMaxNumberOfIterations = getEnvOr "ML_MAX_NUMBER_OF_ITERATIONS" "50" |> int
       MlCustomEmojiThreshold = getEnvOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
-      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson }
+      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
+      
+      HeuristicKeyboardDeletionEnabled = getEnvOr "HEURISTIC_KEYBOARD_DELETION_ENABLED" "false" |> bool.Parse
+      HeuristicKeyboardDeletionPreviousMessagesCountToSkip = getEnvOr "HEURISTIC_KEYBOARD_DELETION_PREVIOUS_MESSAGES_COUNT_TO_SKIP" "5" |> int
+      HeuristicKeyboardDeletionMinimumDaysUserRegisteredInDbToSkip = getEnvOr "HEURISTIC_KEYBOARD_DELETION_MINIMUM_DAYS_USER_REGISTERED_IN_DB_TO_SKIP" "80" |> int
+      
+      HeuristicImageOrVideoDeletionEnabled = getEnvOr "HEURISTIC_IMAGE_OR_VIDEO_DELETION_ENABLED" "false" |> bool.Parse
+      HeuristicImageOrVideoDeletionPreviousMessagesCountToSkip = getEnvOr "HEURISTIC_IMAGE_OR_VIDEO_DELETION_PREVIOUS_MESSAGES_COUNT_TO_SKIP" "5" |> int
+      HeuristicImageOrVideoDeletionMinimumDaysUserRegisteredInDbToSkip = getEnvOr "HEURISTIC_IMAGE_OR_VIDEO_DELETION_MINIMUM_DAYS_USER_REGISTERED_IN_DB_TO_SKIP" "80" |> int
+    }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with

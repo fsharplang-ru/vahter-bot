@@ -446,6 +446,40 @@ let killSpammerAutomated
     logger.LogInformation logMsg
 }
 
+let killSpammerHeuristic
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (message: Message)
+    (logger: ILogger)
+    (deleteCause: string)
+    = task {
+    use banOnReplyActivity = botActivity.StartActivity("killHeuristic")
+    %banOnReplyActivity
+        .SetTag("spammerId", message.From.Id)
+        .SetTag("spammerUsername", message.From.Username)
+        
+    // delete message
+    do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+    // 0 here is the bot itself
+    do! DbBanned.banMessage 0 message
+        |> DB.banUserByBot
+
+    let logMsg = $"Deleted {deleteCause} spam in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
+
+    let! replyMarkup = task {
+        let data = CallbackMessage.NotASpam { message = message }
+        let! callback = DB.newCallback data
+        return InlineKeyboardMarkup [
+            InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
+        ]
+    }
+
+    // log both to logger and to logs channel
+    do! botClient.SendTextMessageAsync(ChatId(botConfig.LogsChannelId), logMsg, replyMarkup = replyMarkup) |> taskIgnore
+    logger.LogInformation logMsg
+}
+
 let autoBan
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
@@ -484,6 +518,9 @@ let justMessage
             .SetTag("fromUserId", message.From.Id)
             .SetTag("fromUsername", message.From.Username)
 
+    // set to true if spam deleted (by ML for example)
+    let mutable isSpamDeleted = false
+    
     // check if user got auto-banned already
     // that could happen due to the race condition between spammers mass messages
     // and the bot's processing queue
@@ -492,48 +529,75 @@ let justMessage
         // just delete message and move on
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
-
-    elif botConfig.MlEnabled && message.TextOrCaption <> null then
-        use mlActivity = botActivity.StartActivity("mlPrediction")
-        
-        let shouldBeSkipped =
-            // skip prediction for vahters or local admins
-            if botConfig.AllowedUsers.ContainsValue message.From.Id
-               || UpdateChatAdmins.Admins.Contains message.From.Id then
-                true
-            else
-
-            match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
-            | true, stopWords ->
-                stopWords
-                |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
-            | _ -> false
-        %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
-        
-        if not shouldBeSkipped then
-            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+    else
+        if botConfig.MlEnabled && message.TextOrCaption <> null then
+            use mlActivity = botActivity.StartActivity("mlPrediction")
             
-            match ml.Predict(message.TextOrCaption, usrMsgCount, message.Entities)  with
-            | Some prediction ->
-                %mlActivity.SetTag("spamScoreMl", prediction.Score)
-                
-                if prediction.Score >= botConfig.MlSpamThreshold then
-                    // delete message
-                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
-
-                    if botConfig.MlSpamAutobanEnabled then
-                        // trigger auto-ban check
-                        do! autoBan botUser botClient botConfig message logger
-                elif prediction.Score >= botConfig.MlWarningThreshold then
-                    // just warn
-                    do! killSpammerAutomated botClient botConfig message logger false prediction.Score
+            let shouldBeSkipped =
+                // skip prediction for vahters or local admins
+                if botConfig.AllowedUsers.ContainsValue message.From.Id
+                   || UpdateChatAdmins.Admins.Contains message.From.Id then
+                    true
                 else
-                    // not a spam
-                    ()
-            | None ->
-                // no prediction (error or not ready yet)
-                ()
 
+                match botConfig.MlStopWordsInChats.TryGetValue message.Chat.Id with
+                | true, stopWords ->
+                    stopWords
+                    |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
+                | _ -> false
+            %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
+            
+            if not shouldBeSkipped then
+                let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+                
+                match ml.Predict(message.TextOrCaption, usrMsgCount, message.Entities)  with
+                | Some prediction ->
+                    %mlActivity.SetTag("spamScoreMl", prediction.Score)
+                    
+                    if prediction.Score >= botConfig.MlSpamThreshold then
+                        // delete message
+                        do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
+                        isSpamDeleted <- true
+
+                        if botConfig.MlSpamAutobanEnabled then
+                            // trigger auto-ban check
+                            do! autoBan botUser botClient botConfig message logger
+                    elif prediction.Score >= botConfig.MlWarningThreshold then
+                        // just warn
+                        do! killSpammerAutomated botClient botConfig message logger false prediction.Score
+                    else
+                        // not a spam
+                        ()
+                | None ->
+                    // no prediction (error or not ready yet)
+                    ()
+
+        // ReplyMarkup InlineKeyboard
+        if not isSpamDeleted
+           && botConfig.HeuristicKeyboardDeletionEnabled
+           && message.ReplyMarkup <> null && message.ReplyMarkup.InlineKeyboard <> null && message.ReplyMarkup.InlineKeyboard |> Seq.isEmpty |> not
+           && botUser.created_at > DateTime.Now.AddDays(-botConfig.HeuristicKeyboardDeletionMinimumDaysUserRegisteredInDbToSkip)
+        then
+            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+            if usrMsgCount < botConfig.HeuristicKeyboardDeletionPreviousMessagesCountToSkip then
+                do! killSpammerHeuristic botClient botConfig message logger "InlineKeyboard"
+                isSpamDeleted <- true
+        
+        // ImageOrVideo
+        if not isSpamDeleted
+           && botConfig.HeuristicImageOrVideoDeletionEnabled
+           // переслано или не имеет текста
+           && (message.ForwardDate.HasValue || message.TextOrCaption = null)
+           // фото или видео
+           && (message.Type = Telegram.Bot.Types.Enums.MessageType.Photo || message.Type = Telegram.Bot.Types.Enums.MessageType.Video)
+           && botUser.created_at > DateTime.Now.AddDays(-botConfig.HeuristicImageOrVideoDeletionMinimumDaysUserRegisteredInDbToSkip)
+        then
+            let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
+            if usrMsgCount < botConfig.HeuristicImageOrVideoDeletionPreviousMessagesCountToSkip then
+                do! killSpammerHeuristic botClient botConfig message logger "ImageOrVideo"
+                isSpamDeleted <- true
+        
+        
     do!
         message
         |> DbMessage.newMessage
