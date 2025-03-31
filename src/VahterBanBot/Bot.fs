@@ -531,6 +531,13 @@ let justMessage
                     // not a spam
                     ()
             | None ->
+                let shouldDelete =
+                    message.Entities
+                     |> Array.exists (fun x -> (x.Type = Enums.MessageEntityType.TextMention || x.Type= Enums.MessageEntityType.Mention)  && x.Length = 0)
+                if shouldDelete then
+                    // delete message
+                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled 0.0
+                else
                 // no prediction (error or not ready yet)
                 ()
 
