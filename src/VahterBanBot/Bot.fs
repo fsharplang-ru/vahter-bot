@@ -531,6 +531,35 @@ let justMessage
                     // not a spam
                     ()
             | None ->
+                let checkEntity (entity:MessageEntity) =
+                    // Define all zero-width and whitespace-like characters to check
+                    let zeroWidthChars = 
+                        [|
+                            '\u200B' // Zero Width Space
+                            '\u200C' // Zero Width Non-Joiner
+                            '\u200D' // Zero Width Joiner
+                            '\u2060' // Word Joiner
+                            '\u200E' // Left-to-Right Mark
+                            '\u200F' // Right-to-Left Mark
+                            '\uFEFF' // Zero Width No-Break Space
+                            '\u2800' // Braille Pattern Blank
+                        |]
+                    
+                    match entity.Type with
+                    | Enums.MessageEntityType.TextMention | Enums.MessageEntityType.Mention ->
+                        let entityText = message.Text[entity.Offset..entity.Offset+entity.Length-1]
+                        entityText |> Seq.exists (fun c -> 
+                            Char.IsControl c ||  Array.contains c zeroWidthChars)
+                    | _ -> false
+                    
+                let shouldDelete =
+                    message.Entities
+                     |> Array.exists checkEntity
+                     
+                if shouldDelete then
+                    // delete message
+                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled 0.0
+                else
                 // no prediction (error or not ready yet)
                 ()
 
