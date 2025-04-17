@@ -50,7 +50,7 @@ jobs:
         migrate -schemas="${{ env.SCHEMAS }}"
 
     - name: Upload Flyway report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Database Report
         path: reports/
