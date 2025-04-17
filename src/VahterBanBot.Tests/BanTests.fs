@@ -129,5 +129,40 @@ type BanTests(fixture: VahterTestContainers) =
         let! msgBanned = fixture.MessageBanned msgUpdate.Message
         Assert.True msgBanned
     }
+    
+    [<Fact>]
+    let ``Spammers with the same username will be banned`` () = task {
+        // users with the same username, but different ids
+        let user1 = Tg.user(username = "spammer")
+        let user2 = Tg.user(username = "spammer")
+        
+        // record a message from USER1
+        let msgUpdate1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], from = user1)
+        let! _ = fixture.SendMessage msgUpdate1
+
+        // send the ban message
+        let! banResp1 =
+            Tg.replyMsg(msgUpdate1.Message, "/ban", fixture.Vahters[0])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp1.StatusCode)
+        
+        // assert that the message from USER1 got banned
+        let! msgBanned = fixture.MessageBanned msgUpdate1.Message
+        Assert.True msgBanned
+        
+        // record a message from USER2
+        let msgUpdate2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], from = user2)
+        let! _ = fixture.SendMessage msgUpdate2
+        
+        // send the ban message
+        let! banResp2 =
+            Tg.replyMsg(msgUpdate2.Message, "/ban", fixture.Vahters[0])
+            |> fixture.SendMessage
+        Assert.Equal(HttpStatusCode.OK, banResp2.StatusCode)
+
+        // assert that the message from USER2 got banned
+        let! msgBanned = fixture.MessageBanned msgUpdate2.Message
+        Assert.True msgBanned
+    }
 
     interface IAssemblyFixture<VahterTestContainers>
