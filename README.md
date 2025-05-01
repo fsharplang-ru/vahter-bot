@@ -22,3 +22,9 @@ Administrator Guide
 - `/unban <user_id>` — will unban the user with specified Telegram user id.
 
 Additionally, any administrators (**global** and **local**) enjoy immunity from message auto-filtering.
+
+Adding a Chat
+-------------
+To add a chat, a Telegram chat id (negative number) and its username is required.
+
+Monitoring of chats without public user names is not supported, yet.
