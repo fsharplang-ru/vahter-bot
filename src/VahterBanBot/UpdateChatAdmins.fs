@@ -33,11 +33,14 @@ type UpdateChatAdmins(
             for admin in admins do
                 if result.Add admin.User.Id then
                     %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
-        localAdmins <- result
+        UpdateChatAdmins.Admins <- result
         logger.LogInformation (sb.ToString())
     }
 
-    static member Admins = localAdmins
+    static member Admins
+        with get() = Volatile.Read &localAdmins
+        and private set(value: ISet<int64>) =
+            Volatile.Write(&localAdmins, value)
 
     interface IHostedService with
         member this.StartAsync _ =
