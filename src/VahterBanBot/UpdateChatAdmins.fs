@@ -21,23 +21,29 @@ type UpdateChatAdmins(
     static let mutable localAdmins: ISet<int64> = HashSet<int64>()
 
     let updateChatAdmins _ = task {
-        let sb = StringBuilder()
-        %sb.AppendLine("New chat admins:")
-        let result = HashSet<int64>()
-        for chatId in botConf.ChatsToMonitor.Values do
-            let! admins = telegramClient.GetChatAdministratorsAsync(ChatId chatId)
+        try
+            let sb = StringBuilder()
+            %sb.AppendLine("New chat admins:")
+            let result = HashSet<int64>()
+            for chatId in botConf.ChatsToMonitor.Values do
+                let! admins = telegramClient.GetChatAdministratorsAsync(ChatId chatId)
 
-            // wait a bit so we don't get rate limited
-            do! Task.Delay 100
+                // wait a bit so we don't get rate limited
+                do! Task.Delay 100
 
-            for admin in admins do
-                if result.Add admin.User.Id then
-                    %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
-        localAdmins <- result
-        logger.LogInformation (sb.ToString())
+                for admin in admins do
+                    if result.Add admin.User.Id then
+                        %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
+            UpdateChatAdmins.Admins <- result
+            logger.LogInformation (sb.ToString())
+        with
+        | ex -> logger.LogError(ex, "Error while updating chat admins.")
     }
 
-    static member Admins = localAdmins
+    static member Admins
+        with get() = Volatile.Read &localAdmins
+        and private set(value: ISet<int64>) =
+            Volatile.Write(&localAdmins, value)
 
     interface IHostedService with
         member this.StartAsync _ =
