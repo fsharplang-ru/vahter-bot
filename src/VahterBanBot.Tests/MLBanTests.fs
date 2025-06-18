@@ -249,5 +249,18 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         Assert.True msgBanned
     }
 
+    [<Fact>]
+    let ``Bans in chat without username should work`` () = task {
+        // record a message in a chat without username
+        let chat = Tg.chat(id = fixture.ChatsToMonitor[0].Id, username = null)
+        
+        let msgUpdate = Tg.quickMsg(chat = chat, text = "2222222")
+        let! _ = fixture.SendMessage msgUpdate
+
+        // assert that the message got auto banned
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
     interface IAssemblyFixture<VahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
