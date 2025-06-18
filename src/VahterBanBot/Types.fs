@@ -79,7 +79,7 @@ module DbBanned =
           banned_user_id = message.From.Id
           banned_at = DateTime.UtcNow
           banned_in_chat_id = Some message.Chat.Id
-          banned_in_chat_username = Some message.Chat.Username
+          banned_in_chat_username = Option.ofObj message.Chat.Username
           banned_by = vahter }
 
 [<CLIMutable>]
