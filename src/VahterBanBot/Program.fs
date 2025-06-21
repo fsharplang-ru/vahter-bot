@@ -176,15 +176,20 @@ let webApp = choose [
 
         use scope = ctx.RequestServices.CreateScope()
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
+        let chats = botConf.ChatsToMonitor.Values
+        let chatsInfo = ResizeArray<ChatFullInfo>()
+        for chat in chats do
+            let! chatInfo = telegramClient.GetChatAsync(ChatId(chat))
+            chatsInfo.Add(chatInfo)
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
+            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml (chatsInfo.ToArray()) update
             %topActivity.SetTag("update-error", false)
         with e ->
-            logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
-            %topActivity.SetTag("update-error", true)
-
+             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
+             %topActivity.SetTag("update-error", true)
+ 
         return! Successful.OK() next ctx
     })
 ]
@@ -197,6 +202,8 @@ let server = app.RunAsync()
 // Dev mode only
 if botConf.UsePolling then
     let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
+
+        
     let pollingHandler = {
         new IUpdateHandler with
           member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
@@ -206,7 +213,7 @@ if botConf.UsePolling then
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate botUser client botConf logger ml update
+                    do! onUpdate botUser client botConf logger ml [||] update
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask
