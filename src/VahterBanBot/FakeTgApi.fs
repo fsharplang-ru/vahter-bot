@@ -62,6 +62,12 @@ let fakeTgApi (botConf: BotConfiguration) =
                         |]
                         |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
                     apiResult message
+                    
+                elif url.EndsWith("/getChat") then
+                    let message =
+                        ChatFullInfo()
+                    apiResult message
+                    
                 else
                     // return 500 for any other request
                     // TODO pass fucking ILogger here somehow -_-
