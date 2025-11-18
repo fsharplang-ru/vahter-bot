@@ -11,6 +11,7 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
+open Serilog.Enrichers.Span
 open Telegram.Bot
 open Telegram.Bot.Polling
 open Telegram.Bot.Types
@@ -29,8 +30,11 @@ open VahterBanBot.FakeTgApi
 open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
 open OpenTelemetry.Resources
+open OpenTelemetry.Exporter
 open Npgsql
 open Azure.Monitor.OpenTelemetry.AspNetCore
+open Serilog
+open Serilog.Formatting.Compact
 
 type Root = class end
 
@@ -88,6 +92,16 @@ let accessDenied = setStatusCode 401 >=> text "Access Denied"
 let requiresApiKey = authorizeRequest validateApiKey accessDenied
 
 let builder = WebApplication.CreateBuilder()
+
+// Configure Serilog for structured logging with trace correlation
+%builder.Host.UseSerilog(fun context services configuration ->
+    %configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .Enrich.WithSpan()
+        .WriteTo.Console(CompactJsonFormatter())
+)
+
 %builder.Services
     .AddSingleton(botConf)
     .AddGiraffe()
@@ -129,6 +143,7 @@ let otelBuilder =
             getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
                 %builder.AddOtlpExporter(fun options ->
                     options.Endpoint <- Uri(endpoint)
+                    options.Protocol <- OtlpExportProtocol.Grpc
                 )
             )
             getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
@@ -157,8 +172,6 @@ getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
         )
     )
 )
-
-%builder.Logging.AddJsonConsole()
 
 let botUser =
     DbUser.newUser(botConf.BotUserId, botConf.BotUserName)
