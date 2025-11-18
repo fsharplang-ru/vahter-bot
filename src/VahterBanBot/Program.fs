@@ -179,7 +179,20 @@ let botUser =
     |> fun x -> x.Result
 
 let webApp = choose [
-    // need for Azure health checks on any route
+    // Readiness check for ML model (used by startupProbe)
+    GET >=> route "/ready" >=> fun next ctx -> task {
+        let ml = ctx.GetService<MachineLearning>()
+        if ml.IsReady then
+            return! text "READY" next ctx
+        else
+            ctx.SetStatusCode 503
+            return! text "ML model not ready yet" next ctx
+    }
+    
+    // Health check (Azure compatibility - always returns OK if process is alive)
+    GET >=> route "/health" >=> text "OK"
+    
+    // Fallback for any GET (Azure health checks on any route)
     GET >=> text "OK"
 
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
