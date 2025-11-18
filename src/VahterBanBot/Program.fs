@@ -133,7 +133,7 @@ let otelBuilder =
                 .AddNpgsql()
                 .ConfigureResource(fun res ->
                     %res.AddAttributes [
-                        KeyValuePair("service.name", "vahter-ban-bot")
+                        KeyValuePair("service.name", getEnvOr "OTEL_SERVICE_NAME" "vahter-bot")
                     ]
                 )
                 .AddSource(botActivity.Name)
