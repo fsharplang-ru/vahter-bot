@@ -123,6 +123,9 @@ type MachineLearning(
             logger.LogError(ex, "Error training model")
     }
 
+    // if ML is ready (either disabled or model is trained)
+    member _.IsReady = not botConf.MlEnabled || predictionEngine.IsSome
+
     member _.Predict(text: string, userMsgCount: int, entities: MessageEntity array) =
         try
             match predictionEngine with
