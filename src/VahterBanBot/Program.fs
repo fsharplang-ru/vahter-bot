@@ -126,6 +126,11 @@ let otelBuilder =
             getEnvWith "OTEL_EXPORTER_ZIPKIN_ENDPOINT" (fun _ ->
                 %builder.AddZipkinExporter()
             )
+            getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
+                %builder.AddOtlpExporter(fun options ->
+                    options.Endpoint <- Uri(endpoint)
+                )
+            )
             getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
                 if otelConsole then %builder.AddConsoleExporter()
             )
@@ -153,7 +158,7 @@ getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
     )
 )
 
-%builder.Logging.AddConsole()
+%builder.Logging.AddJsonConsole()
 
 let botUser =
     DbUser.newUser(botConf.BotUserId, botConf.BotUserName)
