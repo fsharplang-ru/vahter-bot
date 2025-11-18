@@ -96,10 +96,12 @@ let builder = WebApplication.CreateBuilder()
 // Configure Serilog for structured logging with trace correlation
 %builder.Host.UseSerilog(fun context services configuration ->
     %configuration
-        .ReadFrom.Configuration(context.Configuration)
+        .MinimumLevel.Information()
+        .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Information)
+        .MinimumLevel.Override("System", Serilog.Events.LogEventLevel.Warning)
         .Enrich.FromLogContext()
         .Enrich.WithSpan()
-        .WriteTo.Console(CompactJsonFormatter())
+        .WriteTo.Console(RenderedCompactJsonFormatter())
 )
 
 %builder.Services
@@ -133,7 +135,7 @@ let otelBuilder =
                 .AddNpgsql()
                 .ConfigureResource(fun res ->
                     %res.AddAttributes [
-                        KeyValuePair("service.name", "vahter-ban-bot")
+                        KeyValuePair("service.name", getEnvOr "OTEL_SERVICE_NAME" "vahter-bot")
                     ]
                 )
                 .AddSource(botActivity.Name)
