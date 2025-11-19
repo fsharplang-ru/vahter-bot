@@ -1,6 +1,4 @@
-﻿#nowarn "44" // open telemetry is going crazy with warnings
-
-open System
+﻿open System
 open System.Collections.Generic
 open System.Text.Json
 open System.Text.Json.Serialization
@@ -32,7 +30,6 @@ open OpenTelemetry.Metrics
 open OpenTelemetry.Resources
 open OpenTelemetry.Exporter
 open Npgsql
-open Azure.Monitor.OpenTelemetry.AspNetCore
 open Serilog
 open Serilog.Formatting.Compact
 
@@ -158,20 +155,6 @@ let otelBuilder =
                 if otelConsole then %builder.AddConsoleExporter()
             )
         )
-
-getEnvWith "APPLICATIONINSIGHTS_CONNECTION_STRING" (fun appInsightKey ->
-    %otelBuilder.UseAzureMonitor(fun options ->
-        options.ConnectionString <- appInsightKey
-    )
-    %builder.Logging.AddApplicationInsights(
-        configureTelemetryConfiguration = (fun config ->
-            config.ConnectionString <- appInsightKey
-        ),
-        configureApplicationInsightsLoggerOptions = (fun config ->
-            ()
-        )
-    )
-)
 
 let botUser =
     DbUser.newUser(botConf.BotUserId, botConf.BotUserName)
