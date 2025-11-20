@@ -641,6 +641,7 @@ let onMessage
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
+    (chats: ChatFullInfo[])
     (message: Message) = task {
     use banOnReplyActivity = botActivity.StartActivity("onMessage")
 
@@ -664,7 +665,13 @@ let onMessage
         |> DB.upsertUser
 
     // check if message comes from channel, we should delete it immediately
-    if botConfig.ShouldDeleteChannelMessages && isChannelMessage message then
+    let isRelatedChannelMessage =
+        let chat = chats |> Array.tryFind(fun x-> x.Id = message.Chat.Id)
+        match chat with
+        | Some chat when (chat.LinkedChatId.HasValue && chat.LinkedChatId.Value = message.From.Id) -> true
+        | _ -> false
+        
+    if botConfig.ShouldDeleteChannelMessages && isChannelMessage message && (not isRelatedChannelMessage) then
         do! deleteChannelMessage botClient message logger
 
     // check if message is a known command from authorized user
@@ -770,10 +777,11 @@ let onUpdate
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
+    (info: ChatFullInfo[])
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
     else
-        do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
+        do! onMessage botUser botClient botConfig logger ml info update.EditedOrMessage
 }
