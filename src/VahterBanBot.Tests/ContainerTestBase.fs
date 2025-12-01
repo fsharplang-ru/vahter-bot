@@ -18,7 +18,8 @@ open VahterBanBot.Utils
 open Xunit
 open Dapper
 
-type VahterTestContainers() =
+[<AbstractClass>]
+type VahterTestContainers(mlEnabled: bool) =
     let solutionDir = CommonDirectoryPath.GetSolutionDirectory()
     let dbAlias = "vahter-db"
     let internalConnectionString = $"Server={dbAlias};Database=vahter_bot_ban;Port=5432;User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
@@ -81,41 +82,48 @@ type VahterTestContainers() =
     // the app container
     // we'll pass all the necessary environment variables to it
     let appContainer =
-        ContainerBuilder()
-            .WithImage(image)
-            .WithNetwork(network)
-            .WithPortBinding(80, true)
-            .WithEnvironment("BOT_USER_ID", "1337")
-            .WithEnvironment("BOT_USER_NAME", "test_bot")
-            .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
-            .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
-            .WithEnvironment("LOGS_CHANNEL_ID", "-123")
-            .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
-            .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
-            .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
-            .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
-            .WithEnvironment("USE_FAKE_TG_API", "true")
-            .WithEnvironment("USE_POLLING", "false")
-            .WithEnvironment("DATABASE_URL", internalConnectionString)
-            .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
-            .WithEnvironment("ML_ENABLED", "true")
-            .WithEnvironment("ML_SEED", "42")
-            .WithEnvironment("ML_TRAIN_RANDOM_SORT_DATA", "false")
-            .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
-            .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
-            .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
-            .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
-            .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
-            .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
-            // .net 8.0 upgrade has a breaking change
-            // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
-            // Azure default port for containers is 80, se we need explicitly set it
-            .WithEnvironment("ASPNETCORE_HTTP_PORTS", "80")
-            .WithEnvironment("UPDATE_CHAT_ADMINS", "true")
-            .WithEnvironment("UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400")
-            .DependsOn(flywayContainer)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
-            .Build()
+        let builder = 
+            ContainerBuilder()
+                .WithImage(image)
+                .WithNetwork(network)
+                .WithPortBinding(80, true)
+                .WithEnvironment("BOT_USER_ID", "1337")
+                .WithEnvironment("BOT_USER_NAME", "test_bot")
+                .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
+                .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
+                .WithEnvironment("LOGS_CHANNEL_ID", "-123")
+                .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
+                .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
+                .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
+                .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
+                .WithEnvironment("USE_FAKE_TG_API", "true")
+                .WithEnvironment("USE_POLLING", "false")
+                .WithEnvironment("DATABASE_URL", internalConnectionString)
+                .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
+                // .net 8.0 upgrade has a breaking change
+                // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
+                // Azure default port for containers is 80, se we need explicitly set it
+                .WithEnvironment("ASPNETCORE_HTTP_PORTS", "80")
+                .WithEnvironment("UPDATE_CHAT_ADMINS", "true")
+                .WithEnvironment("UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400")
+                .DependsOn(flywayContainer)
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
+        if mlEnabled then
+            builder
+                .WithEnvironment("ML_ENABLED", "true")
+                .WithEnvironment("ML_SEED", "42")
+                .WithEnvironment("ML_TRAIN_RANDOM_SORT_DATA", "false")
+                .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
+                .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
+                .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
+                .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
+                .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
+                .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
+                .Build()
+        else
+            builder
+                .WithEnvironment("ML_ENABLED", "false")
+                .Build()
             
     let startContainers() = task {
         try
@@ -263,6 +271,12 @@ WHERE text = @text
         let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text |})
         return result > 0
     }
+
+type MlEnabledVahterTestContainers() =
+    inherit VahterTestContainers(mlEnabled = true)
+
+type MlDisabledVahterTestContainers() =
+    inherit VahterTestContainers(mlEnabled = false)
 
 // workaround to wait for ML to be ready
 type MlAwaitFixture() =

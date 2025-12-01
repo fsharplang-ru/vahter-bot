@@ -6,7 +6,7 @@ open VahterBanBot.Tests.TgMessageUtils
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
-type PingTests(fixture: VahterTestContainers) =
+type PingTests(fixture: MlDisabledVahterTestContainers) =
     [<Fact>]
     let ``Message got recorded`` () = task {
         // chat from the allowed list
@@ -43,4 +43,4 @@ type PingTests(fixture: VahterTestContainers) =
         Assert.False dbMsg.IsSome
     }
 
-    interface IAssemblyFixture<VahterTestContainers>
+    interface IAssemblyFixture<MlDisabledVahterTestContainers>

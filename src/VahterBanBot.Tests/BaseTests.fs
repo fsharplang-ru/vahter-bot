@@ -8,7 +8,7 @@ open VahterBanBot.Tests.ContainerTestBase
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
-type BaseTests(fixture: VahterTestContainers) =
+type BaseTests(fixture: MlDisabledVahterTestContainers) =
     [<Fact>]
     let ``Random path returns OK`` () = task {
         let! resp = fixture.Http.GetAsync("/" + Guid.NewGuid().ToString())
@@ -34,4 +34,4 @@ type BaseTests(fixture: VahterTestContainers) =
         Assert.Equal("null", body)
     }
 
-    interface IAssemblyFixture<VahterTestContainers>
+    interface IAssemblyFixture<MlDisabledVahterTestContainers>

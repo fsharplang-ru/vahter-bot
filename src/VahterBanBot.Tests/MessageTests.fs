@@ -10,7 +10,7 @@ open VahterBanBot.Tests.TgMessageUtils
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
-type MessageTests(fixture: VahterTestContainers) =
+type MessageTests(fixture: MlDisabledVahterTestContainers) =
 
     [<Fact>]
     let ``All data from the message being saved`` () = task {
@@ -38,4 +38,4 @@ type MessageTests(fixture: VahterTestContainers) =
         )                 
     }
 
-    interface IAssemblyFixture<VahterTestContainers>
+    interface IAssemblyFixture<MlDisabledVahterTestContainers>

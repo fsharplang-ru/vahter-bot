@@ -6,7 +6,7 @@ open VahterBanBot.Tests.TgMessageUtils
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
-type BanTests(fixture: VahterTestContainers) =
+type BanTests(fixture: MlDisabledVahterTestContainers) =
 
     [<Fact>]
     let ``Vahter can ban on reply`` () = task {
@@ -165,4 +165,4 @@ type BanTests(fixture: VahterTestContainers) =
         Assert.True msgBanned
     }
 
-    interface IAssemblyFixture<VahterTestContainers>
+    interface IAssemblyFixture<MlDisabledVahterTestContainers>
