@@ -6,7 +6,7 @@ open VahterBanBot.Types
 open Xunit
 open Xunit.Extensions.AssemblyFixture
 
-type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
+type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
 
     [<Fact>]
     let ``Message IS autobanned if it looks like a spam`` () = task {
@@ -262,5 +262,5 @@ type MLBanTests(fixture: VahterTestContainers, _unused: MlAwaitFixture) =
         Assert.True msgBanned
     }
 
-    interface IAssemblyFixture<VahterTestContainers>
+    interface IAssemblyFixture<MlEnabledVahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
