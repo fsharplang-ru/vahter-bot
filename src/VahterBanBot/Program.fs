@@ -195,8 +195,10 @@ let webApp = choose [
         try
             do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
             %topActivity.SetTag("update-error", false)
+            topActivity.SetStatus(Status.Ok)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
+            topActivity.SetStatus(Status.Error)
             %topActivity.SetTag("update-error", true)
 
         return! Successful.OK() next ctx

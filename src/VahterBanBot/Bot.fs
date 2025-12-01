@@ -224,7 +224,7 @@ let deleteChannelMessage
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
     do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-        |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+        |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     let probablyChannelName =
         if message.SenderChat <> null then
@@ -257,7 +257,7 @@ let totalBan
                 .SetTag("chatId", message.Chat.Id)
                 .SetTag("chatUsername", message.Chat.Username)
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+            |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
     }
 
     // update user in DB
@@ -283,7 +283,7 @@ let totalBan
                             .SetTag("chatId", msg.chat_id)
                     do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
                 with e ->
-                    logger.LogError ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
+                    logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
             })
             |> Task.WhenAll
             |> taskIgnore
@@ -354,7 +354,7 @@ let softBanMsg
                     .SetTag("chatId", messageToRemove.Chat.Id)
                     .SetTag("chatUsername", messageToRemove.Chat.Username)
             do! botClient.DeleteMessageAsync(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
+                |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
         }
         
         let maybeDurationString = commandMessage.Text.Split " " |> Seq.last
@@ -418,7 +418,7 @@ let killSpammerAutomated
     if deleteMessage then
         // delete message
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+            |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
         // 0 here is the bot itself
         do! DbBanned.banMessage 0 message
             |> DB.banUserByBot
@@ -491,7 +491,7 @@ let justMessage
     if isAutoBanned then
         // just delete message and move on
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
+            |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     elif botConfig.MlEnabled && message.TextOrCaption <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
@@ -620,7 +620,7 @@ let adminCommand
                     .SetTag("chatId", message.Chat.Id)
                     .SetTag("chatUsername", message.Chat.Username)
             do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogError ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
+                |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
         // check that user is allowed to (un)ban others
         if isBanOnReplyCommand message then
