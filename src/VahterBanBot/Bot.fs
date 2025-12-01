@@ -548,14 +548,18 @@ let justMessage
                     match entity.Type with
                     | Enums.MessageEntityType.TextMention | Enums.MessageEntityType.Mention ->
                         let entityText = message.Text[entity.Offset..entity.Offset+entity.Length-1]
-                        entityText |> Seq.exists (fun c -> 
-                            Char.IsControl c ||  Array.contains c zeroWidthChars)
+                        entityText
+                        |> Seq.exists (fun c -> 
+                            Char.IsControl c || Array.contains c zeroWidthChars
+                        )
                     | _ -> false
                     
                 let shouldDelete =
                     message.Entities
-                     |> Array.exists checkEntity
-                     
+                    |> Option.ofObj
+                    |> Option.defaultValue [||]
+                    |> Array.exists checkEntity
+
                 if shouldDelete then
                     // delete message
                     do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled 0.0

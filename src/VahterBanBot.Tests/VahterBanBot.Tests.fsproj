@@ -18,6 +18,7 @@
         <Compile Include="MLBanTests.fs" />
         <Compile Include="BanTests.fs" />
         <Compile Include="PingTests.fs" />
+        <Compile Include="AutoBanTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
