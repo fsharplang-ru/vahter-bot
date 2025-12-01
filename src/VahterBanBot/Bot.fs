@@ -493,9 +493,48 @@ let justMessage
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
+    let containsInvisibleMention =
+        // Define all zero-width and whitespace-like characters to check
+        let zeroWidthChars =
+            [|
+                '\u200B' // Zero Width Space
+                '\u200C' // Zero Width Non-Joiner
+                '\u200D' // Zero Width Joiner
+                '\u2060' // Word Joiner
+                '\u200E' // Left-to-Right Mark
+                '\u200F' // Right-to-Left Mark
+                '\uFEFF' // Zero Width No-Break Space
+                '\u2800' // Braille Pattern Blank
+            |]
+
+        let checkEntity (text: string) (entity: MessageEntity) =
+            match entity.Type with
+            | Enums.MessageEntityType.TextMention | Enums.MessageEntityType.Mention ->
+                let startIdx = entity.Offset
+                let endIdx = entity.Offset + entity.Length - 1
+
+                if startIdx < 0 || endIdx >= text.Length then
+                    false
+                else
+                    let entityText = text[startIdx..endIdx]
+                    entityText
+                    |> Seq.exists (fun c ->
+                        Char.IsControl c || Array.contains c zeroWidthChars
+                    )
+            | _ -> false
+
+        match Option.ofObj message.Text, Option.ofObj message.Entities with
+        | Some text, Some entities ->
+            entities |> Array.exists (checkEntity text)
+        | _ -> false
+
+    if containsInvisibleMention then
+        // delete message
+        do! killSpammerAutomated botClient botConfig message logger true 0.0
+
     elif botConfig.MlEnabled && message.TextOrCaption <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
-        
+
         let shouldBeSkipped =
             // skip prediction for vahters or local admins
             if botConfig.AllowedUsers.ContainsValue message.From.Id
@@ -509,14 +548,14 @@ let justMessage
                 |> Seq.exists (fun sw -> message.TextOrCaption.Contains(sw, StringComparison.OrdinalIgnoreCase))
             | _ -> false
         %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
-        
+
         if not shouldBeSkipped then
             let! usrMsgCount = DB.countUniqueUserMsg message.From.Id
-            
+
             match ml.Predict(message.TextOrCaption, usrMsgCount, message.Entities)  with
             | Some prediction ->
                 %mlActivity.SetTag("spamScoreMl", prediction.Score)
-                
+
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message
                     do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
@@ -531,35 +570,6 @@ let justMessage
                     // not a spam
                     ()
             | None ->
-                let checkEntity (entity:MessageEntity) =
-                    // Define all zero-width and whitespace-like characters to check
-                    let zeroWidthChars = 
-                        [|
-                            '\u200B' // Zero Width Space
-                            '\u200C' // Zero Width Non-Joiner
-                            '\u200D' // Zero Width Joiner
-                            '\u2060' // Word Joiner
-                            '\u200E' // Left-to-Right Mark
-                            '\u200F' // Right-to-Left Mark
-                            '\uFEFF' // Zero Width No-Break Space
-                            '\u2800' // Braille Pattern Blank
-                        |]
-                    
-                    match entity.Type with
-                    | Enums.MessageEntityType.TextMention | Enums.MessageEntityType.Mention ->
-                        let entityText = message.Text[entity.Offset..entity.Offset+entity.Length-1]
-                        entityText |> Seq.exists (fun c -> 
-                            Char.IsControl c ||  Array.contains c zeroWidthChars)
-                    | _ -> false
-                    
-                let shouldDelete =
-                    message.Entities
-                     |> Array.exists checkEntity
-                     
-                if shouldDelete then
-                    // delete message
-                    do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled 0.0
-                else
                 // no prediction (error or not ready yet)
                 ()
 
