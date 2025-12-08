@@ -270,6 +270,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("2222222", dbMsg.Value.text)
     }
 
     [<Fact>]
@@ -280,6 +283,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("b", dbMsg.Value.text)
     }
 
     [<Fact>]
@@ -297,6 +303,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("2222222", dbMsg.Value.text)
     }
 
     [<Fact>]
@@ -314,6 +323,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("b", dbMsg.Value.text)
     }
 
     interface IAssemblyFixture<MlEnabledVahterTestContainers>
