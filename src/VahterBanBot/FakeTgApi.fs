@@ -12,113 +12,129 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot.Types
 open VahterBanBot.Utils
 
-let fakeTgApi (botConf: BotConfiguration) =
-    { new DelegatingHandler() with
-        member x.SendAsync(request, cancellationToken) =
-            let apiResult text =
-                let resp = new HttpResponseMessage(HttpStatusCode.OK)
-                resp.Content <- new StringContent($"""{{"ok":true,"result":{text}}}""", Encoding.UTF8, "application/json")
-                resp
+let tryParseFileIdFromBodyValue(request: HttpRequestMessage) =
+    let mutable fileId: string option = None
+    if request.Method = HttpMethod.Post && not(isNull request.Content) then
+        let body = request.Content.ReadAsStringAsync().Result
+        let jsonDoc = JsonDocument.Parse(body)
+        match jsonDoc.RootElement.TryGetProperty("file_id") with
+        | true, parsedFileId ->
+            fileId <- Some (parsedFileId.GetString())
+        | _ -> ()
+    fileId
 
-            let parseQueryValue (key: string) =
-                request.RequestUri.Query.TrimStart('?').Split('&')
-                |> Array.choose (fun part ->
-                    let kv = part.Split('=')
-                    if kv.Length = 2 && kv[0] = key then Some(Uri.UnescapeDataString kv[1]) else None)
-                |> Array.tryHead
+let fakeTgApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
+    let apiResult text =
+        let resp = new HttpResponseMessage(HttpStatusCode.OK)
+        resp.Content <- new StringContent($"""{{"ok":true,"result":{text}}}""", Encoding.UTF8, "application/json")
+        resp
 
-            let url = request.RequestUri.ToString()
-            let resp =
-                if not(url.StartsWith("https://api.telegram.org/bot" + botConf.BotToken))
-                   && not(url.StartsWith("https://api.telegram.org/file/bot" + botConf.BotToken)) then
-                   // return 404 for any other request
-                   new HttpResponseMessage(HttpStatusCode.NotFound)
-                elif url.Contains "/getFile" then
-                    let fileId = parseQueryValue "file_id" |> Option.defaultValue "file_id"
-                    let filePath = $"photos/{fileId}.jpg"
-                    apiResult $"""{{"file_id":"{fileId}","file_unique_id":"{fileId}-unique","file_size":1024,"file_path":"{filePath}"}}"""
-                elif url.Contains "/file/bot" then
-                    let content = Encoding.UTF8.GetBytes(url)
-                    let resp = new HttpResponseMessage(HttpStatusCode.OK)
-                    resp.Content <- new ByteArrayContent(content)
-                    resp.Content.Headers.ContentType <- MediaTypeHeaderValue("application/octet-stream")
-                    resp
-                elif url.EndsWith "/deleteMessage" || url.EndsWith "/banChatMember" then
-                    // respond with "true"
-                   apiResult "true"
-                elif url.EndsWith "/sendMessage" then
-                    // respond with the request body as a string
-                    let message =
-                        Message(
-                            MessageId = 1,
-                            Date = DateTime.UtcNow,
-                            Chat = Chat(
-                                Id = 1L,
-                                Type = ChatType.Private
-                            )
+    let url = request.RequestUri.ToString()
+    let resp =
+        if not(url.StartsWith("https://api.telegram.org/bot" + botConf.BotToken))
+           && not(url.StartsWith("https://api.telegram.org/file/bot" + botConf.BotToken)) then
+           // return 404 for any other request
+           new HttpResponseMessage(HttpStatusCode.NotFound)
+        elif url.Contains "/getFile" then
+            tryParseFileIdFromBodyValue request
+            |> Option.map (fun fileId ->
+                let filePath = $"photos/{fileId}.jpg"
+                apiResult $"""{{"file_id":"{fileId}","file_unique_id":"{fileId}-unique","file_size":1024,"file_path":"{filePath}"}}"""
+            )
+            |> Option.defaultWith (fun () ->
+                new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            )
+
+        elif url.Contains "/file/bot" then
+            let content = Encoding.UTF8.GetBytes(url)
+            let resp = new HttpResponseMessage(HttpStatusCode.OK)
+            resp.Content <- new ByteArrayContent(content)
+            resp.Content.Headers.ContentType <- MediaTypeHeaderValue("application/octet-stream")
+            resp
+        elif url.EndsWith "/deleteMessage" || url.EndsWith "/banChatMember" then
+            // respond with "true"
+           apiResult "true"
+        elif url.EndsWith "/sendMessage" then
+            // respond with the request body as a string
+            let message =
+                Message(
+                    MessageId = 1,
+                    Date = DateTime.UtcNow,
+                    Chat = Chat(
+                        Id = 1L,
+                        Type = ChatType.Private
+                    )
+                )
+                |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
+            apiResult message
+        elif url.EndsWith "/getChatAdministrators" then
+            // respond with the request body as a string
+            let message =
+                [|
+                    ChatMemberAdministrator(
+                        CanBeEdited = false,
+                        IsAnonymous = false,
+                        CanDeleteMessages = false,
+                        CanManageVideoChats = false,
+                        CanRestrictMembers = false,
+                        CanPromoteMembers = false,
+                        CanChangeInfo = false,
+                        CanInviteUsers = false,
+                        User = User(
+                            Id = 42L,
+                            FirstName = "just_admin",
+                            Username = "just_admin"
                         )
-                        |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
-                    apiResult message
-                elif url.EndsWith "/getChatAdministrators" then
-                    // respond with the request body as a string
-                    let message =
-                        [|
-                            ChatMemberAdministrator(
-                                CanBeEdited = false,
-                                IsAnonymous = false,
-                                CanDeleteMessages = false,
-                                CanManageVideoChats = false,
-                                CanRestrictMembers = false,
-                                CanPromoteMembers = false,
-                                CanChangeInfo = false,
-                                CanInviteUsers = false,
-                                User = User(
-                                    Id = 42L,
-                                    FirstName = "just_admin",
-                                    Username = "just_admin"
-                                )
-                            )
-                        |]
-                        |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
-                    apiResult message
+                    )
+                |]
+                |> fun x -> JsonSerializer.Serialize(x, options = jsonOptions)
+            apiResult message
+        else
+            // return 500 for any other request
+            // TODO pass fucking ILogger here somehow -_-
+            Console.WriteLine $"Unhandled request: {url}"
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+    resp
+
+let fakeOcrApi (botConf: BotConfiguration) (request: HttpRequestMessage)=
+    task {
+        let url = request.RequestUri.ToString()
+
+        if botConf.AzureOcrEndpoint <> "" && url.StartsWith(botConf.AzureOcrEndpoint) then
+            if request.Method <> HttpMethod.Post then
+                return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed)
+            elif isNull request.Content then
+                return new HttpResponseMessage(HttpStatusCode.BadRequest)
+            elif not(request.Headers.Contains("Ocp-Apim-Subscription-Key")) then
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            elif request.Headers.GetValues("Ocp-Apim-Subscription-Key")
+                 |> Seq.head <> botConf.AzureOcrKey then
+                return new HttpResponseMessage(HttpStatusCode.Forbidden)
+            else
+
+            let! payload =
+                if isNull request.Content then
+                    Task.FromResult String.Empty
                 else
-                    // return 500 for any other request
-                    // TODO pass fucking ILogger here somehow -_-
-                    Console.WriteLine $"Unhandled request: {url}"
-                    new HttpResponseMessage(HttpStatusCode.InternalServerError)
-            Task.FromResult resp
-    }
+                    request.Content.ReadAsStringAsync()
 
-let fakeOcrApi (botConf: BotConfiguration) =
-    { new DelegatingHandler() with
-        member _.SendAsync(request, cancellationToken) =
-            task {
-                let url = request.RequestUri.ToString()
+            let detectedFileId =
+                let marker = "/photos/"
+                let idx = payload.IndexOf(marker, StringComparison.OrdinalIgnoreCase)
+                if idx >= 0 then
+                    let remainder = payload.Substring(idx + marker.Length)
+                    remainder.Split([|'/' ; '.'|], StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.tryHead
+                else
+                    None
 
-                if botConf.AzureOcrEndpoint <> "" && url.StartsWith(botConf.AzureOcrEndpoint) then
-                    let! payload =
-                        if isNull request.Content then
-                            Task.FromResult String.Empty
-                        else
-                            request.Content.ReadAsStringAsync()
+            let text =
+                match detectedFileId with
+                | Some "spam" -> "2222222"
+                | _ -> "b"
 
-                    let detectedFileId =
-                        let marker = "/photos/"
-                        let idx = payload.IndexOf(marker, StringComparison.OrdinalIgnoreCase)
-                        if idx >= 0 then
-                            let remainder = payload.Substring(idx + marker.Length)
-                            remainder.Split([|'/' ; '.'|], StringSplitOptions.RemoveEmptyEntries)
-                            |> Array.tryHead
-                        else
-                            None
-
-                    let text =
-                        match detectedFileId with
-                        | Some "spam" -> "2222222"
-                        | _ -> "b"
-
-                    let sampleAzureResponse =
-                        $"""{{
+            let sampleAzureResponse =
+                $"""{{
   "modelVersion": "2023-10-01",
   "metadata": {{
     "width": 1020,
@@ -146,10 +162,22 @@ let fakeOcrApi (botConf: BotConfiguration) =
   }}
 }}"""
 
-                    let r = new HttpResponseMessage(HttpStatusCode.OK)
-                    r.Content <- new StringContent(sampleAzureResponse, Encoding.UTF8, "application/json")
-                    return r
-                else
-                    return new HttpResponseMessage(HttpStatusCode.NotFound)
-            }
+            let r = new HttpResponseMessage(HttpStatusCode.OK)
+            r.Content <- new StringContent(sampleAzureResponse, Encoding.UTF8, "application/json")
+            return r
+        else
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+    }
+
+let fakeApi (botConf: BotConfiguration) =
+    { new DelegatingHandler() with
+        member x.SendAsync(request, cancellationToken) = task {
+            let url = request.RequestUri.ToString()
+            if url.StartsWith("https://api.telegram.org") then
+                return fakeTgApi botConf request
+            elif url.StartsWith(botConf.AzureOcrEndpoint) then
+                return! fakeOcrApi botConf request
+            else
+                return new HttpResponseMessage(HttpStatusCode.NotFound)
+        }
     }

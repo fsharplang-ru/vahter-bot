@@ -712,7 +712,8 @@ let tryEnrichMessageWithOcr
                 else
                     let largestPhoto =
                         candidatePhotos
-                        |> Array.maxBy (fun p -> p.FileSize)
+                        |> Seq.filter (fun p -> p.FileSize.HasValue)
+                        |> Seq.maxBy (fun p -> p.FileSize.Value)
 
                     %activity.SetTag("photoId", largestPhoto.FileId)
 
@@ -732,7 +733,12 @@ let tryEnrichMessageWithOcr
                                     ocrText
                                 else
                                     $"{baseText}\n{ocrText}"
-
+                            logger.LogDebug (
+                                "Enriched message {MessageId} with OCR text {EnrichedText} of length {OcrTextLength}",
+                                update.EditedOrMessage.MessageId,
+                                enrichedText,
+                                ocrText.Length
+                            )
                             message.Text <- enrichedText
                             %activity.SetTag("ocrTextLength", enrichedText.Length)
             with ex ->

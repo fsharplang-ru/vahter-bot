@@ -21,8 +21,7 @@ type BotConfiguration =
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
-      UseFakeTgApi: bool
-      UseFakeOcrApi: bool
+      UseFakeApi: bool
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan

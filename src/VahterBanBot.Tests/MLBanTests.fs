@@ -1,6 +1,5 @@
 module VahterBanBot.Tests.MLBanTests
 
-open Telegram.Bot.Types
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
@@ -265,9 +264,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Spam detected in OCR text is auto deleted`` () = task {
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
-        msgUpdate.Message.Text <- null
-        msgUpdate |> Tg.withSpamPhoto |> ignore
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [| Tg.spamPhoto |])
 
         let! _ = fixture.SendMessage msgUpdate
 
@@ -277,9 +274,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Ham photo text does not trigger autoban`` () = task {
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
-        msgUpdate.Message.Text <- null
-        msgUpdate |> Tg.withHamPhoto |> ignore
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [| Tg.hamPhoto |])
 
         let! _ = fixture.SendMessage msgUpdate
 
@@ -289,13 +284,14 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Spam photo chosen under size limit when oversized image exists`` () = task {
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
-        msgUpdate.Message.Text <- null
-        msgUpdate
-        |> Tg.withPhotos
-            [| Tg.spamPhoto(fileSize = 15 * 1024 * 1024)
-               PhotoSize(FileId = "too-big", Width = 30, Height = 30, FileSize = 25 * 1024 * 1024) |]
-        |> ignore
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = null,
+            photos = [|
+                Tg.spamPhoto
+                Tg.bigPhoto
+            |]
+        )
 
         let! _ = fixture.SendMessage msgUpdate
 
@@ -305,14 +301,14 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Ham photo survives when only larger image is too big`` () = task {
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
-        msgUpdate.Message.Text <- null
-
-        msgUpdate
-        |> Tg.withPhotos
-            [| Tg.hamPhoto(fileSize = 10 * 1024 * 1024)
-               PhotoSize(FileId = "too-big", Width = 30, Height = 30, FileSize = 25 * 1024 * 1024) |]
-        |> ignore
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = null,
+            photos = [|
+                Tg.hamPhoto
+                Tg.bigPhoto
+            |]
+        )
 
         let! _ = fixture.SendMessage msgUpdate
 

@@ -58,8 +58,10 @@ let botConf =
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
-      UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
-      UseFakeOcrApi = getEnvOr "USE_FAKE_OCR_API" "false" |> bool.Parse
+      UseFakeApi =
+          getEnvOr "USE_FAKE_TG_API" "false" // use old name for backward compatibility
+          |> getEnvOr "USE_FAKE_API"
+          |> bool.Parse
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
       CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds
@@ -120,10 +122,8 @@ let builder = WebApplication.CreateBuilder()
 builder.Services
     .AddHttpClient<IComputerVision, AzureComputerVision>()
     .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeTgApi then
-            handlers.Add(fakeTgApi botConf)
-        if botConf.UseFakeOcrApi then
-            handlers.Add(fakeOcrApi botConf)
+        if botConf.UseFakeApi then
+            handlers.Add(fakeApi botConf)
     )
     |> ignore
 
@@ -134,8 +134,8 @@ builder.Services
         TelegramBotClient(options, httpClient) :> ITelegramBotClient
     )
     .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeTgApi then
-            handlers.Add(fakeTgApi botConf)
+        if botConf.UseFakeApi then
+            handlers.Add(fakeApi botConf)
     )
 
 let otelBuilder =
@@ -241,7 +241,8 @@ if botConf.UsePolling then
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate botUser client botConf logger ml update
+                    let ocr = ctx.ServiceProvider.GetRequiredService<IComputerVision>()
+                    do! onUpdate botUser client botConf logger ml ocr update
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask

@@ -54,45 +54,41 @@ let private extractTextFromAzureResponse (json: string) =
 type IComputerVision =
     abstract member TextFromImageUrl: url: string -> Task<string>
 
-/// <summary>
-/// Azure Computer Vision implementation. Uses streaming to avoid loading images into memory.
-/// </summary>
 type AzureComputerVision(httpClient: HttpClient, botConf: BotConfiguration, logger: ILogger<AzureComputerVision>) =
     interface IComputerVision with
         member _.TextFromImageUrl(url: string) = task {
-            if not botConf.OcrEnabled then
-                return null
-            else
-                if String.IsNullOrWhiteSpace botConf.AzureOcrEndpoint || String.IsNullOrWhiteSpace botConf.AzureOcrKey then
-                    logger.LogWarning("OCR is enabled but Azure configuration is missing")
+                if not botConf.OcrEnabled then
                     return null
-
-                try
-                    use! fileResponse = httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead)
-                    fileResponse.EnsureSuccessStatusCode() |> ignore
-
-                    use! fileStream = fileResponse.Content.ReadAsStreamAsync()
-                    use streamContent = new StreamContent(fileStream)
-                    streamContent.Headers.ContentType <- MediaTypeHeaderValue("application/octet-stream")
-                    match fileResponse.Content.Headers.ContentLength with
-                    | Nullable length when length.HasValue ->
-                        streamContent.Headers.ContentLength <- Nullable length.Value
-                    | _ -> ()
-
-                    use request = new HttpRequestMessage(HttpMethod.Post, botConf.AzureOcrEndpoint)
-                    request.Headers.Add("Ocp-Apim-Subscription-Key", botConf.AzureOcrKey)
-                    request.Content <- streamContent
-
-                    use! response = httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
-                    let! responseContent = response.Content.ReadAsStringAsync()
-
-                    if response.IsSuccessStatusCode then
-                        let text = extractTextFromAzureResponse responseContent
-                        return text
-                    else
-                        logger.LogWarning("Azure OCR returned status {Status}. Response: {Body}", response.StatusCode, responseContent)
+                else
+                    if String.IsNullOrWhiteSpace botConf.AzureOcrEndpoint || String.IsNullOrWhiteSpace botConf.AzureOcrKey then
+                        logger.LogWarning("OCR is enabled but Azure configuration is missing")
                         return null
-                with ex ->
-                    logger.LogError(ex, "Failed to extract text via Azure OCR")
-                    return null
+                    else
+
+                    try
+                        use! fileResponse = httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead)
+                        fileResponse.EnsureSuccessStatusCode() |> ignore
+
+                        use! fileStream = fileResponse.Content.ReadAsStreamAsync()
+                        use streamContent = new StreamContent(fileStream)
+                        streamContent.Headers.ContentType <- MediaTypeHeaderValue("application/octet-stream")
+                        if fileResponse.Content.Headers.ContentLength.HasValue then
+                            streamContent.Headers.ContentLength <- fileResponse.Content.Headers.ContentLength.Value
+
+                        use request = new HttpRequestMessage(HttpMethod.Post, botConf.AzureOcrEndpoint)
+                        request.Headers.Add("Ocp-Apim-Subscription-Key", botConf.AzureOcrKey)
+                        request.Content <- streamContent
+
+                        use! response = httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+                        let! responseContent = response.Content.ReadAsStringAsync()
+
+                        if response.IsSuccessStatusCode then
+                            let text = extractTextFromAzureResponse responseContent
+                            return text
+                        else
+                            logger.LogWarning("Azure OCR returned status {Status}. Response: {Body}", response.StatusCode, responseContent)
+                            return null
+                    with ex ->
+                        logger.LogError(ex, "Failed to extract text via Azure OCR")
+                        return null
         }

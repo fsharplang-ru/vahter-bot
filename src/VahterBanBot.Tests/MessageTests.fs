@@ -38,12 +38,9 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
         )                 
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>
-
     [<Fact>]
     let ``Photo messages are processed without OCR when disabled`` () = task {
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo")
-        Tg.withHamPhoto(msgUpdate) |> ignore
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo", photos = [|Tg.hamPhoto|])
 
         let! _ = fixture.SendMessage msgUpdate
 
@@ -54,9 +51,7 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
 
     [<Fact>]
     let ``Spammy photo content is ignored when OCR disabled`` () = task {
-        let spamOnly = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
-        spamOnly.Message.Text <- null
-        Tg.withSpamPhoto(spamOnly) |> ignore
+        let spamOnly = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [|Tg.spamPhoto|])
 
         let! _ = fixture.SendMessage spamOnly
 
@@ -64,3 +59,5 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
 
         Assert.Null(dbMsg.Value.text)
     }
+    
+    interface IAssemblyFixture<MlDisabledVahterTestContainers>
