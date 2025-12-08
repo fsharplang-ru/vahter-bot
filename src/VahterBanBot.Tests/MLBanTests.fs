@@ -327,6 +327,23 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
         Assert.Equal("b", dbMsg.Value.text)
     }
+    
+    [<Fact>]
+    let ``Original text and parsed text from photo should be combined`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "Hello!",
+            photos = [| Tg.hamPhoto |]
+        )
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("Hello!\nb", dbMsg.Value.text)
+    }
 
     interface IAssemblyFixture<MlEnabledVahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
