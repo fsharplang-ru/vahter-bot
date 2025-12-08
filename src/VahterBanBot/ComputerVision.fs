@@ -84,6 +84,8 @@ type AzureComputerVision(httpClient: HttpClient, botConf: BotConfiguration, logg
 
                         if response.IsSuccessStatusCode then
                             let text = extractTextFromAzureResponse responseContent
+                            if isNull text then
+                                logger.LogWarning("Couldn't extract text from Azure OCR response: {Body}", responseContent)
                             return text
                         else
                             logger.LogWarning("Azure OCR returned status {Status}. Response: {Body}", response.StatusCode, responseContent)

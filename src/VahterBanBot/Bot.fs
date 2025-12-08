@@ -695,7 +695,7 @@ let tryEnrichMessageWithOcr
     (update: Update) = task {
     if botConfig.OcrEnabled then
         let message = update.EditedOrMessage
-        if not (isNull message) && not (isNull message.Photo) && message.Photo.Length > 0 then
+        if not (isNull message.Photo) && message.Photo.Length > 0 then
             use activity = botActivity.StartActivity("ocrEnrichment")
             try
                 let candidatePhotos =
