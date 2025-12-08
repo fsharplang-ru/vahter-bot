@@ -4,6 +4,7 @@ open System
 open System.Net.Http
 open System.Net.Http.Headers
 open System.Text.Json
+open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open VahterBanBot.Types
@@ -12,25 +13,40 @@ let private extractTextFromAzureResponse (json: string) =
     try
         use doc = JsonDocument.Parse(json)
         let root = doc.RootElement
+
+        let sb = StringBuilder()
+
+        let addLine (text: string) =
+            if not (String.IsNullOrWhiteSpace text) then
+                sb.AppendLine(text) |> ignore
+
+        let linesFromBlocks (readResult: JsonElement) =
+            match readResult.TryGetProperty("blocks") with
+            | true, blocks ->
+                blocks.EnumerateArray()
+                |> Seq.iter (fun block ->
+                    match block.TryGetProperty("lines") with
+                    | true, lines ->
+                        lines.EnumerateArray()
+                        |> Seq.iter (fun lineElement ->
+                            match lineElement.TryGetProperty("text") with
+                            | true, text -> addLine (text.GetString())
+                            | _ ->
+                                match lineElement.TryGetProperty("content") with
+                                | true, content -> addLine (content.GetString())
+                                | _ -> ())
+                    | _ -> ())
+            | _ -> ()
+
         match root.TryGetProperty("readResult") with
         | true, readResult ->
             match readResult.TryGetProperty("content") with
-            | true, content -> content.GetString()
-            | _ ->
-                if readResult.TryGetProperty("blocks") |> fst then
-                    readResult.GetProperty("blocks")
-                    |> Seq.collect (fun block ->
-                        match block.TryGetProperty("lines") with
-                        | true, lines ->
-                            lines
-                            |> Seq.choose (fun line ->
-                                match line.TryGetProperty("content") with
-                                | true, content -> Some(content.GetString())
-                                | _ -> None)
-                        | _ -> Seq.empty)
-                    |> String.concat "\n"
-                    |> fun text -> if String.IsNullOrWhiteSpace text then null else text
-                else null
+            | true, content -> addLine (content.GetString())
+            | _ -> ()
+
+            linesFromBlocks readResult
+
+            if sb.Length = 0 then null else sb.ToString().TrimEnd([|'\r'; '\n'|])
         | _ -> null
     with _ -> null
 

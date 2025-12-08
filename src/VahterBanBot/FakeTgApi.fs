@@ -117,8 +117,37 @@ let fakeOcrApi (botConf: BotConfiguration) =
                         | Some "spam" -> "2222222"
                         | _ -> "b"
 
+                    let sampleAzureResponse =
+                        $"""{{
+  "modelVersion": "2023-10-01",
+  "metadata": {{
+    "width": 1020,
+    "height": 638
+  }},
+  "readResult": {{
+    "blocks": [
+      {{
+        "lines": [
+          {{
+            "text": "{text}",
+            "boundingPolygon": [
+              {{ "x": 1, "y": 24 }},
+              {{ "x": 1005, "y": 27 }},
+              {{ "x": 1004, "y": 377 }},
+              {{ "x": 0, "y": 371 }}
+            ],
+            "words": [
+              {{ "text": "{text}", "confidence": 0.9 }}
+            ]
+          }}
+        ]
+      }}
+    ]
+  }}
+}}"""
+
                     let r = new HttpResponseMessage(HttpStatusCode.OK)
-                    r.Content <- new StringContent($"""{{"readResult":{{"content":"{text}"}}}}""", Encoding.UTF8, "application/json")
+                    r.Content <- new StringContent(sampleAzureResponse, Encoding.UTF8, "application/json")
                     return r
                 else
                     return new HttpResponseMessage(HttpStatusCode.NotFound)
