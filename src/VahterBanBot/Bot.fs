@@ -698,18 +698,16 @@ let tryEnrichMessageWithOcr
         if not (isNull message) && not (isNull message.Photo) && message.Photo.Length > 0 then
             use activity = botActivity.StartActivity("ocrEnrichment")
             try
-                let maxOcrFileSize = 20L * 1024L * 1024L // 20 MB
-
                 let candidatePhotos =
                     message.Photo
                     |> Array.filter (fun p ->
                         let size = int64 p.FileSize
-                        size = 0L || size <= maxOcrFileSize)
+                        size = 0L || size <= botConfig.OcrMaxFileSizeBytes)
 
                 if candidatePhotos.Length = 0 then
                     logger.LogWarning(
                         "No photos under OCR limit of {LimitBytes} bytes for message {MessageId}",
-                        maxOcrFileSize,
+                        botConfig.OcrMaxFileSizeBytes,
                         message.MessageId)
                 else
                     let largestPhoto =

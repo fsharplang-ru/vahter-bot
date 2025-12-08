@@ -121,12 +121,14 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
                 .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
                 .WithEnvironment("OCR_ENABLED", "true")
+                .WithEnvironment("OCR_MAX_FILE_SIZE_BYTES", (20L * 1024L * 1024L).ToString())
                 .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
                 .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
                 .Build()
         else
             builder
                 .WithEnvironment("ML_ENABLED", "false")
+                .WithEnvironment("OCR_ENABLED", "false")
                 .Build()
             
     let startContainers() = task {

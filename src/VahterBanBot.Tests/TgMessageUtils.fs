@@ -108,3 +108,16 @@ type Tg() =
 
     static member withHamPhoto(update: Update, ?fileSize: int, ?width: int, ?height: int) =
         Tg.withPhotos(update, [| Tg.hamPhoto(?fileSize = fileSize, ?width = width, ?height = height) |])
+
+    static member withBigPhoto(update: Update, ?fileSize: int, ?width: int, ?height: int) =
+        let size = defaultArg fileSize (25 * 1024 * 1024)
+        let bigPhoto =
+            PhotoSize(
+                FileId = "too-big",
+                FileUniqueId = "too-big-uid",
+                FileSize = size,
+                Width = defaultArg width 30,
+                Height = defaultArg height 30
+            )
+
+        Tg.withPhotos(update, [| bigPhoto |])

@@ -267,10 +267,33 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``Spam detected in OCR text is auto deleted`` () = task {
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
         msgUpdate.Message.Text <- null
+        msgUpdate |> Tg.withSpamPhoto |> ignore
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Ham photo text does not trigger autoban`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        msgUpdate.Message.Text <- null
+        msgUpdate |> Tg.withHamPhoto |> ignore
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+    }
+
+    [<Fact>]
+    let ``Spam photo chosen under size limit when oversized image exists`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        msgUpdate.Message.Text <- null
         msgUpdate
         |> Tg.withPhotos
-            [| Tg.hamPhoto(fileSize = 10 * 1024 * 1024)
-               Tg.spamPhoto(fileSize = 15 * 1024 * 1024)
+            [| Tg.spamPhoto(fileSize = 15 * 1024 * 1024)
                PhotoSize(FileId = "too-big", Width = 30, Height = 30, FileSize = 25 * 1024 * 1024) |]
         |> ignore
 
@@ -278,6 +301,23 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Ham photo survives when only larger image is too big`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        msgUpdate.Message.Text <- null
+
+        msgUpdate
+        |> Tg.withPhotos
+            [| Tg.hamPhoto(fileSize = 10 * 1024 * 1024)
+               PhotoSize(FileId = "too-big", Width = 30, Height = 30, FileSize = 25 * 1024 * 1024) |]
+        |> ignore
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
     }
 
     interface IAssemblyFixture<MlEnabledVahterTestContainers>

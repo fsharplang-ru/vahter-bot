@@ -51,3 +51,16 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
 
         Assert.Equal("hello-from-photo", dbMsg.Value.text)
     }
+
+    [<Fact>]
+    let ``Spammy photo content is ignored when OCR disabled`` () = task {
+        let spamOnly = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        spamOnly.Message.Text <- null
+        Tg.withSpamPhoto(spamOnly) |> ignore
+
+        let! _ = fixture.SendMessage spamOnly
+
+        let! dbMsg = fixture.TryGetDbMessage spamOnly.Message
+
+        Assert.Null(dbMsg.Value.text)
+    }

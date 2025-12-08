@@ -66,6 +66,7 @@ let botConf =
       UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
       UpdateChatAdmins = getEnvOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
       OcrEnabled = getEnvOr "OCR_ENABLED" "false" |> bool.Parse
+      OcrMaxFileSizeBytes = getEnvOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
       AzureOcrEndpoint = getEnvOr "AZURE_OCR_ENDPOINT" ""
       AzureOcrKey = getEnvOr "AZURE_OCR_KEY" ""
       MlEnabled = getEnvOr "ML_ENABLED" "false" |> bool.Parse
