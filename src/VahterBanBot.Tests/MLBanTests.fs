@@ -1,5 +1,6 @@
 module VahterBanBot.Tests.MLBanTests
 
+open Telegram.Bot.Types
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
@@ -253,11 +254,25 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``Bans in chat without username should work`` () = task {
         // record a message in a chat without username
         let chat = Tg.chat(id = fixture.ChatsToMonitor[0].Id, username = null)
-        
+
         let msgUpdate = Tg.quickMsg(chat = chat, text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Spam detected in OCR text is auto deleted`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        msgUpdate.Message.Text <- null
+        msgUpdate.Message.Photo <-
+            [| PhotoSize(FileId = "photo-small", Width = 10, Height = 10, FileSize = 10)
+               PhotoSize(FileId = "photo-large", Width = 20, Height = 20, FileSize = 20) |]
+
+        let! _ = fixture.SendMessage msgUpdate
+
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
     }

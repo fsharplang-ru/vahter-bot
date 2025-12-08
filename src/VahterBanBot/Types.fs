@@ -22,12 +22,17 @@ type BotConfiguration =
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
       UseFakeTgApi: bool
+      UseFakeOcrApi: bool
+      FakeOcrText: string
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupOldLimit: TimeSpan
       UpdateChatAdminsInterval: TimeSpan option
       UpdateChatAdmins: bool
+      OcrEnabled: bool
+      AzureOcrEndpoint: string
+      AzureOcrKey: string
       MlEnabled: bool
       MlRetrainInterval: TimeSpan option
       MlSeed: Nullable<int>

@@ -39,3 +39,15 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
     }
 
     interface IAssemblyFixture<MlDisabledVahterTestContainers>
+
+    [<Fact>]
+    let ``Photo messages are processed without OCR when disabled`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo")
+        msgUpdate.Message.Photo <- [| PhotoSize(FileId = "photo-1", Width = 10, Height = 10, FileSize = 1) |]
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+
+        Assert.Equal("hello-from-photo", dbMsg.Value.text)
+    }

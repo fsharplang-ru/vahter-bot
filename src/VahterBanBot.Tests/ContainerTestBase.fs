@@ -97,6 +97,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
                 .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
                 .WithEnvironment("USE_FAKE_TG_API", "true")
+                .WithEnvironment("USE_FAKE_OCR_API", "true")
                 .WithEnvironment("USE_POLLING", "false")
                 .WithEnvironment("DATABASE_URL", internalConnectionString)
                 .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
@@ -119,6 +120,10 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
                 .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
                 .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
+                .WithEnvironment("OCR_ENABLED", "true")
+                .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
+                .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
+                .WithEnvironment("FAKE_OCR_TEXT", "2222222")
                 .Build()
         else
             builder
