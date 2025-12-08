@@ -23,7 +23,6 @@ type BotConfiguration =
       IgnoreSideEffects: bool
       UseFakeTgApi: bool
       UseFakeOcrApi: bool
-      FakeOcrText: string
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan

@@ -267,9 +267,12 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``Spam detected in OCR text is auto deleted`` () = task {
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
         msgUpdate.Message.Text <- null
-        msgUpdate.Message.Photo <-
-            [| PhotoSize(FileId = "photo-small", Width = 10, Height = 10, FileSize = 10)
-               PhotoSize(FileId = "photo-large", Width = 20, Height = 20, FileSize = 20) |]
+        msgUpdate
+        |> Tg.withPhotos
+            [| Tg.hamPhoto(fileSize = 10 * 1024 * 1024)
+               Tg.spamPhoto(fileSize = 15 * 1024 * 1024)
+               PhotoSize(FileId = "too-big", Width = 30, Height = 30, FileSize = 25 * 1024 * 1024) |]
+        |> ignore
 
         let! _ = fixture.SendMessage msgUpdate
 

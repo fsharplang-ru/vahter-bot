@@ -92,13 +92,35 @@ let fakeTgApi (botConf: BotConfiguration) =
 let fakeOcrApi (botConf: BotConfiguration) =
     { new DelegatingHandler() with
         member _.SendAsync(request, cancellationToken) =
-            let url = request.RequestUri.ToString()
-            let resp =
+            task {
+                let url = request.RequestUri.ToString()
+
                 if botConf.AzureOcrEndpoint <> "" && url.StartsWith(botConf.AzureOcrEndpoint) then
+                    let! payload =
+                        if isNull request.Content then
+                            Task.FromResult String.Empty
+                        else
+                            request.Content.ReadAsStringAsync()
+
+                    let detectedFileId =
+                        let marker = "/photos/"
+                        let idx = payload.IndexOf(marker, StringComparison.OrdinalIgnoreCase)
+                        if idx >= 0 then
+                            let remainder = payload.Substring(idx + marker.Length)
+                            remainder.Split([|'/' ; '.'|], StringSplitOptions.RemoveEmptyEntries)
+                            |> Array.tryHead
+                        else
+                            None
+
+                    let text =
+                        match detectedFileId with
+                        | Some "spam" -> "2222222"
+                        | _ -> "b"
+
                     let r = new HttpResponseMessage(HttpStatusCode.OK)
-                    r.Content <- new StringContent($"""{{"readResult":{{"content":"{botConf.FakeOcrText}"}}}}""", Encoding.UTF8, "application/json")
-                    r
+                    r.Content <- new StringContent($"""{{"readResult":{{"content":"{text}"}}}}""", Encoding.UTF8, "application/json")
+                    return r
                 else
-                    new HttpResponseMessage(HttpStatusCode.NotFound)
-            Task.FromResult resp
+                    return new HttpResponseMessage(HttpStatusCode.NotFound)
+            }
     }

@@ -80,3 +80,31 @@ type Tg() =
                     ReplyToMessage = msg
                 )
             )
+
+    static member spamPhoto(?fileSize: int, ?width: int, ?height: int) =
+        PhotoSize(
+            FileId = "spam",
+            FileUniqueId = "spam-uid",
+            FileSize = defaultArg fileSize 1024,
+            Width = defaultArg width 10,
+            Height = defaultArg height 10
+        )
+
+    static member hamPhoto(?fileSize: int, ?width: int, ?height: int) =
+        PhotoSize(
+            FileId = "ham",
+            FileUniqueId = "ham-uid",
+            FileSize = defaultArg fileSize 1024,
+            Width = defaultArg width 10,
+            Height = defaultArg height 10
+        )
+
+    static member withPhotos(update: Update, photos: PhotoSize array) =
+        update.Message.Photo <- photos
+        update
+
+    static member withSpamPhoto(update: Update, ?fileSize: int, ?width: int, ?height: int) =
+        Tg.withPhotos(update, [| Tg.spamPhoto(?fileSize = fileSize, ?width = width, ?height = height) |])
+
+    static member withHamPhoto(update: Update, ?fileSize: int, ?width: int, ?height: int) =
+        Tg.withPhotos(update, [| Tg.hamPhoto(?fileSize = fileSize, ?width = width, ?height = height) |])

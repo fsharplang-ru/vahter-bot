@@ -60,7 +60,6 @@ let botConf =
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
       UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
       UseFakeOcrApi = getEnvOr "USE_FAKE_OCR_API" "false" |> bool.Parse
-      FakeOcrText = getEnvOr "FAKE_OCR_TEXT" "fake-ocr-text"
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
       CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds

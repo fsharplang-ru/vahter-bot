@@ -698,31 +698,45 @@ let tryEnrichMessageWithOcr
         if not (isNull message) && not (isNull message.Photo) && message.Photo.Length > 0 then
             use activity = botActivity.StartActivity("ocrEnrichment")
             try
-                let largestPhoto =
+                let maxOcrFileSize = 20L * 1024L * 1024L // 20 MB
+
+                let candidatePhotos =
                     message.Photo
-                    |> Array.maxBy (fun p -> p.FileSize)
+                    |> Array.filter (fun p ->
+                        let size = int64 p.FileSize
+                        size = 0L || size <= maxOcrFileSize)
 
-                %activity.SetTag("photoId", largestPhoto.FileId)
-
-                let! file = botClient.GetFileAsync(largestPhoto.FileId)
-
-                if String.IsNullOrWhiteSpace file.FilePath then
-                    logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+                if candidatePhotos.Length = 0 then
+                    logger.LogWarning(
+                        "No photos under OCR limit of {LimitBytes} bytes for message {MessageId}",
+                        maxOcrFileSize,
+                        message.MessageId)
                 else
-                    let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
-                    %activity.SetTag("fileUrl", fileUrl)
-                    let! ocrText = computerVision.TextFromImageUrl fileUrl
+                    let largestPhoto =
+                        candidatePhotos
+                        |> Array.maxBy (fun p -> p.FileSize)
 
-                    if not (String.IsNullOrWhiteSpace ocrText) then
-                        let baseText = message.TextOrCaption
-                        let enrichedText =
-                            if String.IsNullOrWhiteSpace baseText then
-                                ocrText
-                            else
-                                $"{baseText}\n{ocrText}"
+                    %activity.SetTag("photoId", largestPhoto.FileId)
 
-                        message.Text <- enrichedText
-                        %activity.SetTag("ocrTextLength", enrichedText.Length)
+                    let! file = botClient.GetFileAsync(largestPhoto.FileId)
+
+                    if String.IsNullOrWhiteSpace file.FilePath then
+                        logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+                    else
+                        let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
+                        %activity.SetTag("fileUrl", fileUrl)
+                        let! ocrText = computerVision.TextFromImageUrl fileUrl
+
+                        if not (String.IsNullOrWhiteSpace ocrText) then
+                            let baseText = message.TextOrCaption
+                            let enrichedText =
+                                if String.IsNullOrWhiteSpace baseText then
+                                    ocrText
+                                else
+                                    $"{baseText}\n{ocrText}"
+
+                            message.Text <- enrichedText
+                            %activity.SetTag("ocrTextLength", enrichedText.Length)
             with ex ->
                 logger.LogError(ex, "Failed to process OCR for message {MessageId}", update.EditedOrMessage.MessageId)
 }

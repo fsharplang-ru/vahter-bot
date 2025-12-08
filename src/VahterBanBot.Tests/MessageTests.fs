@@ -43,7 +43,7 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
     [<Fact>]
     let ``Photo messages are processed without OCR when disabled`` () = task {
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo")
-        msgUpdate.Message.Photo <- [| PhotoSize(FileId = "photo-1", Width = 10, Height = 10, FileSize = 1) |]
+        Tg.withHamPhoto(msgUpdate) |> ignore
 
         let! _ = fixture.SendMessage msgUpdate
 

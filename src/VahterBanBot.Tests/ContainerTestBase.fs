@@ -123,7 +123,6 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("OCR_ENABLED", "true")
                 .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
                 .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
-                .WithEnvironment("FAKE_OCR_TEXT", "2222222")
                 .Build()
         else
             builder
