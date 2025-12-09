@@ -4,6 +4,12 @@ This is a Telegram bot that deletes spam from chats and performs administrative 
 
 Deployment
 ----------
+### Container images
+The Dockerfile pins architecture-specific .NET base images (for example `mcr.microsoft.com/dotnet/aspnet:8.0-jammy-amd64`) to avoid pulling mismatched manifests on AMD64 hosts.
+
+* **Pros:** reproducible builds that cannot accidentally resolve to a different architecture when Docker defaults change; clearer compatibility expectations for operators.
+* **Cons:** the image cannot be reused on non-AMD64 builders/runtimes without editing the tags; tags such as `8.0-jammy-arm64v8` would be needed for Arm64 targets instead.
+
 Database setup
 - run init.sql
 
