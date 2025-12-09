@@ -11,8 +11,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/arm64
+
     steps:
     - uses: actions/checkout@v4
+
+    - name: Set up QEMU for Arm64 containers
+      uses: docker/setup-qemu-action@v3
+
     - uses: actions/setup-dotnet@v4
       with:
         global-json-file: global.json

@@ -17,10 +17,15 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/arm64
 
     steps:
     - name: Checkout
       uses: actions/checkout@v2
+
+    - name: Set up QEMU for Arm64 containers
+      uses: docker/setup-qemu-action@v3
 
     # run tests
     - uses: actions/setup-dotnet@v4
