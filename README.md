@@ -10,6 +10,8 @@ The Dockerfile pins architecture-specific .NET base images (for example `mcr.mic
 * **Pros:** reproducible builds that cannot accidentally resolve to a different architecture when Docker defaults change; clearer compatibility expectations for operators.
 * **Cons:** the image cannot be reused on non-AMD64 builders/runtimes without editing the tags; tags such as `8.0-jammy-arm64v8` would be needed for Arm64 targets instead.
 
+GitHub Actions already runs the CI/CD workflows on AMD64 `ubuntu-latest` runners, so the image can be built and pushed there without changing machines. The deploy workflow explicitly sets `platforms: linux/amd64` to guard against future defaults changing; to produce Arm64 images you would need to switch the platform and runner (or enable cross-building).
+
 Database setup
 - run init.sql
 

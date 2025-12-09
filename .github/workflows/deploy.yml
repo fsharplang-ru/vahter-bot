@@ -69,3 +69,4 @@ jobs:
         push: true
         tags: ghcr.io/fsharplang-ru/vahter-bot:${{ github.sha }}, ghcr.io/fsharplang-ru/vahter-bot:latest
         file: ./Dockerfile
+        platforms: linux/amd64
