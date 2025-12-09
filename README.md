@@ -5,12 +5,12 @@ This is a Telegram bot that deletes spam from chats and performs administrative 
 Deployment
 ----------
 ### Container images
-The Dockerfile pins architecture-specific .NET base images (for example `mcr.microsoft.com/dotnet/aspnet:8.0-jammy-amd64`) to avoid pulling mismatched manifests on AMD64 hosts.
+The Dockerfile pins architecture-specific .NET base images (`mcr.microsoft.com/dotnet/sdk:8.0-jammy-arm64v8` and `mcr.microsoft.com/dotnet/aspnet:8.0-jammy-arm64v8`) to avoid pulling mismatched manifests on Arm64 hosts such as Ampere VMs.
 
 * **Pros:** reproducible builds that cannot accidentally resolve to a different architecture when Docker defaults change; clearer compatibility expectations for operators.
-* **Cons:** the image cannot be reused on non-AMD64 builders/runtimes without editing the tags; tags such as `8.0-jammy-arm64v8` would be needed for Arm64 targets instead.
+* **Cons:** the image cannot be reused on non-Arm64 builders/runtimes without editing the tags; AMD64 targets would require switching tags to variants such as `8.0-jammy-amd64`.
 
-GitHub Actions already runs the CI/CD workflows on AMD64 `ubuntu-latest` runners, so the image can be built and pushed there without changing machines. The deploy workflow explicitly sets `platforms: linux/amd64` to guard against future defaults changing; to produce Arm64 images you would need to switch the platform and runner (or enable cross-building).
+GitHub Actions runs the CI/CD workflows on AMD64 `ubuntu-latest` runners. The deploy workflow cross-builds and pushes an Arm64 image with QEMU and Buildx (`platforms: linux/arm64`). If you later need AMD64 images, switch the platform and tags accordingly or run the workflow on Arm64 runners.
 
 Database setup
 - run init.sql
