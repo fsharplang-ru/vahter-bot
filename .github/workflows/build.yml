@@ -10,9 +10,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-arm
+
     steps:
     - uses: actions/checkout@v4
+
     - uses: actions/setup-dotnet@v4
       with:
         global-json-file: global.json
