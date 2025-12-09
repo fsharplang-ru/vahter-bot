@@ -11,7 +11,7 @@ permissions:
 
 env:
   SQLFLUFF_DIALECT: postgres
-  DOCKER_IMAGE: redgate/flyway
+  DOCKER_IMAGE: flyway/flyway
   SCHEMAS: public
 
 jobs:

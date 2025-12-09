@@ -62,7 +62,7 @@ type VahterTestContainers(mlEnabled: bool) =
     // Flyway container to run migrations
     let flywayContainer =
         ContainerBuilder()
-            .WithImage("redgate/flyway")
+            .WithImage("flyway/flyway")
             .WithNetwork(network)
             .WithBindMount(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/src/migrations", "/flyway/sql", AccessMode.ReadOnly)
             .WithEnvironment("FLYWAY_URL", "jdbc:postgresql://vahter-db:5432/vahter_bot_ban")
