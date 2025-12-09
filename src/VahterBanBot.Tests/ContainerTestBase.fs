@@ -96,7 +96,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
                 .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
                 .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
-                .WithEnvironment("USE_FAKE_TG_API", "true")
+                .WithEnvironment("USE_FAKE_API", "true")
                 .WithEnvironment("USE_POLLING", "false")
                 .WithEnvironment("DATABASE_URL", internalConnectionString)
                 .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
@@ -119,10 +119,15 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
                 .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
                 .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
+                .WithEnvironment("OCR_ENABLED", "true")
+                .WithEnvironment("OCR_MAX_FILE_SIZE_BYTES", (20L * 1024L * 1024L).ToString())
+                .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
+                .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
                 .Build()
         else
             builder
                 .WithEnvironment("ML_ENABLED", "false")
+                .WithEnvironment("OCR_ENABLED", "false")
                 .Build()
             
     let startContainers() = task {

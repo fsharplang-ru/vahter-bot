@@ -19,6 +19,7 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
+open VahterBanBot.ComputerVision
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
@@ -57,12 +58,19 @@ let botConf =
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
-      UseFakeTgApi = getEnvOr "USE_FAKE_TG_API" "false" |> bool.Parse
+      UseFakeApi =
+          getEnvOr "USE_FAKE_TG_API" "false" // use old name for backward compatibility
+          |> getEnvOr "USE_FAKE_API"
+          |> bool.Parse
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
       CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds
       UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
       UpdateChatAdmins = getEnvOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
+      OcrEnabled = getEnvOr "OCR_ENABLED" "false" |> bool.Parse
+      OcrMaxFileSizeBytes = getEnvOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
+      AzureOcrEndpoint = getEnvOr "AZURE_OCR_ENDPOINT" ""
+      AzureOcrKey = getEnvOr "AZURE_OCR_KEY" ""
       MlEnabled = getEnvOr "ML_ENABLED" "false" |> bool.Parse
       MlRetrainInterval = getEnvOrWith "ML_RETRAIN_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
       MlSeed = getEnvOrWith "ML_SEED" (Nullable<int>()) (int >> Nullable)
@@ -110,14 +118,24 @@ let builder = WebApplication.CreateBuilder()
     .AddHostedService<UpdateChatAdmins>()
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
+
+builder.Services
+    .AddHttpClient<IComputerVision, AzureComputerVision>()
+    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
+        if botConf.UseFakeApi then
+            handlers.Add(fakeApi botConf)
+    )
+    |> ignore
+
+%builder.Services
     .AddHttpClient("telegram_bot_client")
     .AddTypedClient(fun httpClient sp ->
         let options = TelegramBotClientOptions(botConf.BotToken)
         TelegramBotClient(options, httpClient) :> ITelegramBotClient
     )
     .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeTgApi then
-            handlers.Add(fakeTgApi botConf)
+        if botConf.UseFakeApi then
+            handlers.Add(fakeApi botConf)
     )
 
 let otelBuilder =
@@ -191,9 +209,10 @@ let webApp = choose [
         use scope = ctx.RequestServices.CreateScope()
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
+        let computerVision = scope.ServiceProvider.GetRequiredService<IComputerVision>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml update
+            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision update
             %topActivity.SetTag("update-error", false)
             topActivity.SetStatus(Status.Ok)
         with e ->
@@ -222,7 +241,8 @@ if botConf.UsePolling then
                     let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    do! onUpdate botUser client botConf logger ml update
+                    let ocr = ctx.ServiceProvider.GetRequiredService<IComputerVision>()
+                    do! onUpdate botUser client botConf logger ml ocr update
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask

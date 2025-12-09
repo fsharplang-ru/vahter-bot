@@ -21,13 +21,17 @@ type BotConfiguration =
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
-      UseFakeTgApi: bool
+      UseFakeApi: bool
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupOldLimit: TimeSpan
       UpdateChatAdminsInterval: TimeSpan option
       UpdateChatAdmins: bool
+      OcrEnabled: bool
+      OcrMaxFileSizeBytes: int64
+      AzureOcrEndpoint: string
+      AzureOcrKey: string
       MlEnabled: bool
       MlRetrainInterval: TimeSpan option
       MlSeed: Nullable<int>

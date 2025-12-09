@@ -9,6 +9,7 @@ open Telegram.Bot
 open Telegram.Bot.Types
 open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
+open VahterBanBot.ComputerVision
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.UpdateChatAdmins
@@ -686,6 +687,64 @@ let onMessage
         do! justMessage botUser botClient botConfig logger ml message
 }
 
+let tryEnrichMessageWithOcr
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (computerVision: IComputerVision)
+    (logger: ILogger)
+    (update: Update) = task {
+    if botConfig.OcrEnabled then
+        let message = update.EditedOrMessage
+        if not (isNull message.Photo) && message.Photo.Length > 0 then
+            use activity = botActivity.StartActivity("ocrEnrichment")
+            try
+                let candidatePhotos =
+                    message.Photo
+                    |> Array.filter (fun p ->
+                        let size = int64 p.FileSize
+                        size = 0L || size <= botConfig.OcrMaxFileSizeBytes)
+
+                if candidatePhotos.Length = 0 then
+                    logger.LogWarning(
+                        "No photos under OCR limit of {LimitBytes} bytes for message {MessageId}",
+                        botConfig.OcrMaxFileSizeBytes,
+                        message.MessageId)
+                else
+                    let largestPhoto =
+                        candidatePhotos
+                        |> Seq.filter (fun p -> p.FileSize.HasValue)
+                        |> Seq.maxBy (fun p -> p.FileSize.Value)
+
+                    %activity.SetTag("photoId", largestPhoto.FileId)
+
+                    let! file = botClient.GetFileAsync(largestPhoto.FileId)
+
+                    if String.IsNullOrWhiteSpace file.FilePath then
+                        logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+                    else
+                        let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
+                        %activity.SetTag("fileUrl", fileUrl)
+                        let! ocrText = computerVision.TextFromImageUrl fileUrl
+
+                        if not (String.IsNullOrWhiteSpace ocrText) then
+                            let baseText = message.TextOrCaption
+                            let enrichedText =
+                                if String.IsNullOrWhiteSpace baseText then
+                                    ocrText
+                                else
+                                    $"{baseText}\n{ocrText}"
+                            logger.LogDebug (
+                                "Enriched message {MessageId} with OCR text {EnrichedText} of length {OcrTextLength}",
+                                update.EditedOrMessage.MessageId,
+                                enrichedText,
+                                ocrText.Length
+                            )
+                            message.Text <- enrichedText
+                            %activity.SetTag("ocrTextLength", enrichedText.Length)
+            with ex ->
+                logger.LogError(ex, "Failed to process OCR for message {MessageId}", update.EditedOrMessage.MessageId)
+}
+
 let vahterMarkedAsNotSpam
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -780,10 +839,12 @@ let onUpdate
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
+    (computerVision: IComputerVision)
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
     else
+        do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
 }

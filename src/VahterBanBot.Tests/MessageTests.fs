@@ -38,4 +38,26 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
         )                 
     }
 
+    [<Fact>]
+    let ``Photo messages are processed without OCR when disabled`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo", photos = [|Tg.hamPhoto|])
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+
+        Assert.Equal("hello-from-photo", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Spammy photo content is ignored when OCR disabled`` () = task {
+        let spamOnly = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [|Tg.spamPhoto|])
+
+        let! _ = fixture.SendMessage spamOnly
+
+        let! dbMsg = fixture.TryGetDbMessage spamOnly.Message
+
+        Assert.Null(dbMsg.Value.text)
+    }
+    
     interface IAssemblyFixture<MlDisabledVahterTestContainers>

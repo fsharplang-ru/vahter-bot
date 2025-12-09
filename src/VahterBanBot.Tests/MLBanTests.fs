@@ -253,13 +253,96 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``Bans in chat without username should work`` () = task {
         // record a message in a chat without username
         let chat = Tg.chat(id = fixture.ChatsToMonitor[0].Id, username = null)
-        
+
         let msgUpdate = Tg.quickMsg(chat = chat, text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
         let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
         Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Spam detected in OCR text is auto deleted`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [| Tg.spamPhoto |])
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("2222222", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Ham photo text does not trigger autoban`` () = task {
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [| Tg.hamPhoto |])
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("b", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Spam photo chosen under size limit when oversized image exists`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = null,
+            photos = [|
+                Tg.spamPhoto
+                Tg.bigPhoto
+            |]
+        )
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("2222222", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Ham photo survives when only larger image is too big`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = null,
+            photos = [|
+                Tg.hamPhoto
+                Tg.bigPhoto
+            |]
+        )
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("b", dbMsg.Value.text)
+    }
+    
+    [<Fact>]
+    let ``Original text and parsed text from photo should be combined`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "Hello!",
+            photos = [| Tg.hamPhoto |]
+        )
+
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+        
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.Equal("Hello!\nb", dbMsg.Value.text)
     }
 
     interface IAssemblyFixture<MlEnabledVahterTestContainers>
