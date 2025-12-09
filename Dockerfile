@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0.416-jammy-arm64v8 AS build-env
+FROM --platform=linux/arm64 mcr.microsoft.com/dotnet/sdk:8.0.416-jammy-arm64v8 AS build-env
 
 ### workaround for testcontainers resource reaper issue
 ARG RESOURCE_REAPER_SESSION_ID="00000000-0000-0000-0000-000000000000"
@@ -13,7 +13,7 @@ COPY src/VahterBanBot .
 COPY global.json .
 RUN dotnet publish -c Release -o /publish
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0.22-jammy-arm64v8 AS runtime
+FROM --platform=linux/arm64 mcr.microsoft.com/dotnet/aspnet:8.0.22-jammy-arm64v8 AS runtime
 WORKDIR /publish
 COPY --from=build-env /publish .
 ENTRYPOINT ["dotnet", "VahterBanBot.dll"]

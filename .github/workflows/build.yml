@@ -11,8 +11,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      DOCKER_DEFAULT_PLATFORM: linux/arm64
 
     steps:
     - uses: actions/checkout@v4
@@ -25,6 +23,8 @@ jobs:
         global-json-file: global.json
     - name: Tests
       run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx"
+      env:
+        DOCKER_DEFAULT_PLATFORM: linux/arm64
       
     # upload test results
     - name: Upload dotnet test results
