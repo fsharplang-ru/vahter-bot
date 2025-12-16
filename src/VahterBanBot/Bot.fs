@@ -303,15 +303,9 @@ let totalBan
     // produce aggregated log message
     let logMsg = aggregateBanResultInLogMsg message.Chat vahter updatedUser logger deletedUserMessages banResults
 
-    // metrics: count banned users per chat and per vahter for successful bans
+    // metrics: count banned user per vahter for successful bans
     let vahterUsername = defaultArg vahter.username null
-    banResults
-    |> Array.iter (fun result ->
-        match result with
-        | Ok (chatUsername, chatId) ->
-            bannedUsersCounter.Add(1L, tagsForChatAndVahter chatId chatUsername vahter.id vahterUsername)
-        | Error _ -> ()
-    )
+    bannedUsersCounter.Add(1L, tagsForVahter vahter.id vahterUsername)
     
     // add ban record to DB
     do! message
