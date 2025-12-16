@@ -169,8 +169,15 @@ let otelBuilder =
             %builder
                 .AddHttpClientInstrumentation()
                 .AddAspNetCoreInstrumentation()
+                .AddMeter("VahterBanBot.Metrics")
             getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
                 if otelConsole then %builder.AddConsoleExporter()
+            )
+            getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
+                %builder.AddOtlpExporter(fun options ->
+                    options.Endpoint <- Uri(endpoint)
+                    options.Protocol <- OtlpExportProtocol.Grpc
+                )
             )
         )
 
