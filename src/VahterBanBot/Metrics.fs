@@ -41,10 +41,8 @@ let tagsForDeletedMessage (chatId: int64) (chatUsername: string) (reason: string
         KeyValuePair("reason", box reason)
     |]
 
-let tagsForChatAndVahter (chatId: int64) (chatUsername: string) (vahterId: int64) (vahterUsername: string) =
+let tagsForVahter (vahterId: int64) (vahterUsername: string) =
     [|
-        KeyValuePair("chat_id", box chatId)
-        KeyValuePair("chat_username", box (if isNull chatUsername then "" else chatUsername))
         KeyValuePair("vahter_id", box vahterId)
         KeyValuePair("vahter_username", box (if isNull vahterUsername then "" else vahterUsername))
     |]
