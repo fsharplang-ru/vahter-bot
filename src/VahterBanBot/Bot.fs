@@ -13,6 +13,7 @@ open VahterBanBot.ComputerVision
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.UpdateChatAdmins
+open VahterBanBot.Metrics
 
 let botActivity = new ActivitySource("VahterBanBot")
 
@@ -224,6 +225,7 @@ let deleteChannelMessage
     (message: Message)
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
+    recordDeletedMessage message.Chat.Id message.Chat.Username "channelMessage"
     do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
         |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
@@ -257,6 +259,7 @@ let totalBan
                 .SetTag("msgId", message.MessageId)
                 .SetTag("chatId", message.Chat.Id)
                 .SetTag("chatUsername", message.Chat.Username)
+        recordDeletedMessage message.Chat.Id message.Chat.Username "totalBan_initial"
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
     }
@@ -282,6 +285,7 @@ let totalBan
                             .StartActivity("deleteMsg")
                             .SetTag("msgId", msg.message_id)
                             .SetTag("chatId", msg.chat_id)
+                    recordDeletedMessage msg.chat_id null "totalBan_history"
                     do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
                 with e ->
                     logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
@@ -298,6 +302,16 @@ let totalBan
     
     // produce aggregated log message
     let logMsg = aggregateBanResultInLogMsg message.Chat vahter updatedUser logger deletedUserMessages banResults
+
+    // metrics: count banned users per chat and per vahter for successful bans
+    let vahterUsername = defaultArg vahter.username null
+    banResults
+    |> Array.iter (fun result ->
+        match result with
+        | Ok (chatUsername, chatId) ->
+            bannedUsersCounter.Add(1L, tagsForChatAndVahter chatId chatUsername vahter.id vahterUsername)
+        | Error _ -> ()
+    )
     
     // add ban record to DB
     do! message
@@ -354,6 +368,7 @@ let softBanMsg
                     .SetTag("msgId", messageToRemove.MessageId)
                     .SetTag("chatId", messageToRemove.Chat.Id)
                     .SetTag("chatUsername", messageToRemove.Chat.Username)
+            recordDeletedMessage messageToRemove.Chat.Id messageToRemove.Chat.Username "softBan"
             do! botClient.DeleteMessageAsync(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
         }
@@ -418,6 +433,7 @@ let killSpammerAutomated
         
     if deleteMessage then
         // delete message
+        recordDeletedMessage message.Chat.Id message.Chat.Username "spamDeletion"
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
         // 0 here is the bot itself
@@ -491,6 +507,7 @@ let justMessage
     let! isAutoBanned = DB.isBannedByVahter botUser.id message.From.Id 
     if isAutoBanned then
         // just delete message and move on
+        recordDeletedMessage message.Chat.Id message.Chat.Username "alreadyAutoBanned"
         do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
@@ -630,6 +647,7 @@ let adminCommand
                     .SetTag("msgId", message.MessageId)
                     .SetTag("chatId", message.Chat.Id)
                     .SetTag("chatUsername", message.Chat.Username)
+            recordDeletedMessage message.Chat.Id message.Chat.Username "adminCommand"
             do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
@@ -668,6 +686,9 @@ let onMessage
     %banOnReplyActivity
         .SetTag("chatId", message.Chat.Id)
         .SetTag("chatUsername", message.Chat.Username)
+
+    // metrics: count every processed message per chat
+    messagesProcessedCounter.Add(1L, tagsForChat message.Chat.Id message.Chat.Username)
 
     // upserting user to DB
     let! user =
