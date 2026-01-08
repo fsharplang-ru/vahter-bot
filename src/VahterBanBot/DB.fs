@@ -9,7 +9,6 @@ open Dapper
 open VahterBanBot.Utils
 
 let private connString = getEnv "DATABASE_URL"
-let private truncateTextLimit = getEnvOr "DATABASE_TRUNCATE_TEXT_LIMIT" "3000" |> int
 
 let upsertUser (user: DbUser): Task<DbUser> =
     task {
@@ -257,11 +256,8 @@ WHERE banned_user_id = @userId
 let markMessageAsFalsePositive (message: DbMessage): Task =
     task {
         use conn = new NpgsqlConnection(connString)
-        
-        // we need to truncate the text to work around the fact that
-        // text is being indexed and btree index has a limit of 2704 bytes
-        // https://dba.stackexchange.com/questions/25138/index-max-row-size-error/25139
-        let message = { message with text = message.text.Substring(0, Math.Min(truncateTextLimit, message.text.Length)) }
+
+        let message = { message with text = message.text }
 
         //language=postgresql
         let sql =
