@@ -267,14 +267,19 @@ WHERE data ->> 'Case' = @caseName
     }
     
     member _.IsMessageFalsePositive(msg: Message) = task {
+        if String.IsNullOrWhiteSpace(msg.Text) then return false else
+        
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
         let sql = """
-SELECT COUNT(*) FROM false_positive_messages
-WHERE text = @text
-"""
-        let! result = conn.QuerySingleAsync<int>(sql, {| text = msg.Text |})
-        return result > 0
+            SELECT EXISTS (
+                SELECT 1 
+                FROM false_positive_messages 
+                WHERE text_hash = md5(@text)::uuid 
+                  AND text = @text
+            )
+        """
+        return! conn.QuerySingleAsync<bool>(sql, {| text = msg.Text |})
     }
 
 type MlEnabledVahterTestContainers() =

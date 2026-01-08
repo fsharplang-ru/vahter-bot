@@ -191,7 +191,8 @@ WITH custom_emojis AS (SELECT message.id, COUNT(*) FILTER (WHERE entities ->> 't
                        WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
                          AND NOT EXISTS(SELECT 1
                                         FROM false_positive_messages fpm
-                                        WHERE b.message_text LIKE fpm.text || '%')
+                                        WHERE fpm.text_hash = md5(b.message_text)::uuid
+                                          AND fpm.text = b.message_text)
                          AND b.message_text IS NOT NULL
                          AND b.banned_at >= @criticalDate),
      spam_or_ham AS (SELECT x.text,
@@ -351,7 +352,8 @@ WITH stats AS (SELECT m.message_id,
                                   ON m.message_id = bbb.message_id AND m.chat_id = bbb.banned_in_chat_id
                         LEFT JOIN public.false_negative_messages fnm
                                   ON m.message_id = fnm.message_id AND m.chat_id = fnm.chat_id
-                        LEFT JOIN false_positive_messages fpm ON m.text LIKE fpm.text || '%'
+                        LEFT JOIN false_positive_messages fpm ON fpm.text_hash = md5(m.text)::uuid
+                                                             AND fpm.text = m.text
                WHERE m.user_id = @userId
                ORDER BY m.created_at DESC
                LIMIT @n),
