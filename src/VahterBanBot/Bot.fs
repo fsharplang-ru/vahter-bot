@@ -879,7 +879,10 @@ let onUpdate
         do! onCallback botClient botConfig logger update.CallbackQuery
     elif update.MessageReaction <> null then
         onMessageReaction logger update.MessageReaction
-    else
+    elif update.EditedOrMessage <> null then
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
+    else
+        // unknown update type, just log and ignore
+        logger.LogWarning("Unknown update type: {UpdateType}", update.Type)
 }
