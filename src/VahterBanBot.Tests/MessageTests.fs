@@ -59,5 +59,21 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
 
         Assert.Null(dbMsg.Value.text)
     }
+
+    [<Fact>]
+    let ``Message reaction update returns OK`` () = task {
+        // first send a message to have a valid message_id
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0])
+        let! _ = fixture.SendMessage msgUpdate
+
+        // send a reaction update for that message
+        let reactionUpdate = Tg.quickReaction(
+            chat = fixture.ChatsToMonitor[0],
+            messageId = msgUpdate.Message.MessageId,
+            from = Tg.user()
+        )
+        let! resp = fixture.SendMessage reactionUpdate
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
+    }
     
     interface IAssemblyFixture<MlDisabledVahterTestContainers>

@@ -82,6 +82,20 @@ type Tg() =
                 )
             )
 
+    static member quickReaction(chat: Chat, messageId: int, from: User, ?emoji: string) =
+        let reactionEmoji = emoji |> Option.defaultValue "👍"
+        Update(
+            Id = next(),
+            MessageReaction = MessageReactionUpdated(
+                Chat = chat,
+                MessageId = messageId,
+                User = from,
+                Date = DateTime.UtcNow,
+                OldReaction = [||],
+                NewReaction = [| ReactionTypeEmoji(Emoji = reactionEmoji) |]
+            )
+        )
+
     static member spamPhoto =
         PhotoSize(
             FileId = "spam",

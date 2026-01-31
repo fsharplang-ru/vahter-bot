@@ -1,4 +1,4 @@
-﻿module VahterBanBot.Bot
+module VahterBanBot.Bot
 
 open System
 open System.Diagnostics
@@ -848,6 +848,24 @@ let onCallback
     do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id)
 }
 
+let onMessageReaction (logger: ILogger) (reaction: MessageReactionUpdated) =
+    use _ =
+        botActivity
+            .StartActivity("messageReaction")
+            .SetTag("chatId", reaction.Chat.Id)
+            .SetTag("chatUsername", reaction.Chat.Username)
+            .SetTag("messageId", reaction.MessageId)
+            .SetTag("userId", reaction.User.Id)
+            .SetTag("userUsername", reaction.User.Username)
+    logger.LogInformation(
+        "Reaction from {Username} ({UserId}) on message {MessageId} in {ChatUsername} ({ChatId})",
+        reaction.User.Username,
+        reaction.User.Id,
+        reaction.MessageId,
+        reaction.Chat.Username,
+        reaction.Chat.Id
+    )
+
 let onUpdate
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
@@ -859,6 +877,8 @@ let onUpdate
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
+    elif update.MessageReaction <> null then
+        onMessageReaction logger update.MessageReaction
     else
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
