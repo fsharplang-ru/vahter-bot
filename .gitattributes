@@ -1,17 +1,13 @@
-# По умолчанию: все текстовые файлы в репе = LF
 * text=auto eol=lf
 
-# Windows-скрипты пусть будут CRLF (иначе может быть больно)
 *.bat  text eol=crlf
 *.cmd  text eol=crlf
 *.ps1  text eol=crlf
 *.psm1 text eol=crlf
 *.psd1 text eol=crlf
 
-# Опционально: solution-файлы часто удобнее держать CRLF под Windows
 *.sln  text eol=crlf
 
-# Бинарники — не трогать окончания строк
 *.png  binary
 *.jpg  binary
 *.jpeg binary
