@@ -1,4 +1,4 @@
-﻿module VahterBanBot.DB
+module VahterBanBot.DB
 
 open System
 open System.Threading.Tasks
@@ -148,7 +148,7 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
             """
 
         let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
-        return { interval = banInterval; stats = Array.ofSeq stats }
+        return { VahterStats.interval = banInterval; stats = Array.ofSeq stats }
     }
 
 let getUserById (userId: int64): Task<DbUser option> =
@@ -270,19 +270,44 @@ ON CONFLICT DO NOTHING;
         return! conn.ExecuteAsync(sql, message)
     }
 
-let newCallback (data: CallbackMessage): Task<DbCallback> =
+/// Creates a callback without action_message_id (first phase of two-phase insert)
+let newCallbackPending (data: CallbackMessage) (targetUserId: int64) (topicId: int): Task<DbCallback> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
         let sql =
             """
-INSERT INTO callback (data)
-VALUES (@data::JSONB)
+INSERT INTO callback (data, target_user_id, action_topic_id)
+VALUES (@data::JSONB, @targetUserId, @topicId)
 RETURNING *;
             """
 
-        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data |})
+        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data; targetUserId = targetUserId; topicId = topicId |})
+    }
+
+/// Updates callback with action_message_id (second phase of two-phase insert)
+let updateCallbackMessageId (id: Guid) (messageId: int): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "UPDATE callback SET action_message_id = @messageId WHERE id = @id"
+
+        let! _ = conn.ExecuteAsync(sql, {| id = id; messageId = messageId |})
+        return ()
+    }
+
+/// Atomically gets and deletes a callback (protection against race condition between button clicks)
+let getCallbackAtomic (id: Guid): Task<DbCallback option> = 
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "DELETE FROM callback WHERE id = @id RETURNING *"
+
+        let! result = conn.QueryAsync<DbCallback>(sql, {| id = id |})
+        return Seq.tryHead result
     }
 
 let getCallback (id: Guid): Task<DbCallback option> = 
@@ -303,8 +328,54 @@ let deleteCallback (id: Guid): Task =
         //language=postgresql
         let sql = "DELETE FROM callback WHERE id = @id"
 
-        let! _ = conn.QueryAsync<DbCallback>(sql, {| id = id |})
+        let! _ = conn.ExecuteAsync(sql, {| id = id |})
         return ()
+    }
+
+/// Gets all callbacks for a user (for cleanup when user is banned via /ban)
+let getCallbacksByUserId (userId: int64): Task<DbCallback array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT * FROM callback WHERE target_user_id = @userId"
+
+        let! result = conn.QueryAsync<DbCallback>(sql, {| userId = userId |})
+        return Array.ofSeq result
+    }
+
+/// Gets callbacks without action_message_id older than specified age (failed posts)
+let getCallbacksWithoutMessageId (age: TimeSpan): Task<DbCallback array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = 
+            """
+SELECT * FROM callback 
+WHERE action_message_id IS NULL 
+  AND created_at < @cutoff
+            """
+
+        let! result = conn.QueryAsync<DbCallback>(sql, {| cutoff = DateTime.UtcNow.Subtract age |})
+        return Array.ofSeq result
+    }
+
+/// Gets old callbacks from Detected Spam topic for cleanup
+let getOldDetectedSpamCallbacks (age: TimeSpan) (detectedTopicId: int): Task<DbCallback array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = 
+            """
+SELECT * FROM callback 
+WHERE action_topic_id = @topicId 
+  AND created_at < @cutoff
+            """
+
+        let! result = conn.QueryAsync<DbCallback>(sql, {| topicId = detectedTopicId; cutoff = DateTime.UtcNow.Subtract age |})
+        return Array.ofSeq result
     }
 
 let countUniqueUserMsg (userId: int64): Task<int> =
@@ -364,4 +435,58 @@ FROM stats_count;
 
         let! result = conn.QuerySingleAsync<UserStats>(sql, {| userId = userId; n = n |})
         return result
+    }
+
+/// Records a vahter action. Returns true if recorded, false if already exists (race condition protection)
+let tryRecordVahterAction 
+    (vahterId: int64) 
+    (actionType: string) 
+    (targetUserId: int64) 
+    (chatId: int64) 
+    (msgId: int): Task<bool> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO vahter_actions (vahter_id, action_type, target_user_id, target_chat_id, target_message_id)
+VALUES (@vahterId, @actionType, @targetUserId, @chatId, @msgId)
+ON CONFLICT (target_chat_id, target_message_id) DO NOTHING
+RETURNING id;
+            """
+
+        let! result = conn.QueryAsync<int64>(sql, {| 
+            vahterId = vahterId
+            actionType = actionType
+            targetUserId = targetUserId
+            chatId = chatId
+            msgId = msgId 
+        |})
+        return Seq.length result > 0
+    }
+
+/// Gets vahter action stats
+let getVahterActionStats (interval: TimeSpan option): Task<VahterActionStats> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT u.username AS vahter,
+       COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban')) AS killsTotal,
+       COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban') 
+                          AND va.created_at > NOW() - @interval::INTERVAL) AS killsInterval,
+       COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam')) AS notSpamTotal,
+       COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam') 
+                          AND va.created_at > NOW() - @interval::INTERVAL) AS notSpamInterval
+FROM vahter_actions va
+JOIN "user" u ON u.id = va.vahter_id
+GROUP BY u.id, u.username
+ORDER BY killsTotal + notSpamTotal DESC;
+            """
+
+        let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval |})
+        return { interval = interval; stats = Array.ofSeq stats }
     }

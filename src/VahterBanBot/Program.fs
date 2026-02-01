@@ -1,4 +1,4 @@
-﻿open System
+open System
 open System.Collections.Generic
 open System.Text.Json
 open System.Text.Json.Serialization
@@ -52,7 +52,12 @@ let botConf =
       SecretToken = getEnv "BOT_AUTH_TOKEN"
       BotUserId = getEnv "BOT_USER_ID" |> int64
       BotUserName = getEnv "BOT_USER_NAME"
-      LogsChannelId = getEnv "LOGS_CHANNEL_ID" |> int64
+      // Action Channel (forum with topics)
+      ActionChannelId = getEnv "ACTION_CHANNEL_ID" |> int64
+      ActionPotentialTopicId = getEnv "ACTION_POTENTIAL_TOPIC_ID" |> int
+      ActionDetectedTopicId = getEnv "ACTION_DETECTED_TOPIC_ID" |> int
+      ActionAllLogsTopicId = getEnv "ACTION_ALL_LOGS_TOPIC_ID" |> int
+      DetectedSpamCleanupAge = getEnvOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> fromJson
       AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
       ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse

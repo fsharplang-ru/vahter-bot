@@ -1,4 +1,4 @@
-﻿module VahterBanBot.Types
+module VahterBanBot.Types
 
 open System
 open System.Collections.Generic
@@ -16,7 +16,12 @@ type BotConfiguration =
       SecretToken: string
       BotUserId: int64
       BotUserName: string
-      LogsChannelId: int64
+      // Action Channel (forum with topics) for vahter actions
+      ActionChannelId: int64
+      ActionPotentialTopicId: int
+      ActionDetectedTopicId: int
+      ActionAllLogsTopicId: int
+      DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
       ShouldDeleteChannelMessages: bool
@@ -149,7 +154,10 @@ type CallbackMessage =
 type DbCallback =
     { id: Guid
       data: CallbackMessage
-      created_at: DateTime }
+      created_at: DateTime
+      action_message_id: int option
+      action_topic_id: int option
+      target_user_id: int64 option }
 
 type CallbackMessageTypeHandler() =
     inherit SqlMapper.TypeHandler<CallbackMessage>()
@@ -167,3 +175,48 @@ type CallbackMessageTypeHandler() =
 type UserStats =
     { good: int
       bad: int }
+
+[<CLIMutable>]
+type VahterActionStat =
+    { Vahter: string
+      KillsTotal: int
+      KillsInterval: int
+      NotSpamTotal: int
+      NotSpamInterval: int }
+
+type VahterActionStats =
+    { stats: VahterActionStat array
+      interval: TimeSpan option }
+    override this.ToString() =
+        let sb = StringBuilder()
+        if this.stats.Length > 0 then
+            if this.interval.IsSome then
+                let intervalActions =
+                    this.stats
+                    |> Array.filter (fun x -> x.KillsInterval + x.NotSpamInterval > 0)
+                    
+                if intervalActions.Length > 0 then
+                    %sb.AppendLine $"Vahter actions for the last {timeSpanAsHumanReadable this.interval.Value}:"
+                    
+                    intervalActions
+                    |> Array.sortByDescending (fun x -> x.KillsInterval + x.NotSpamInterval)
+                    |> Array.iteri (fun i stat ->
+                        let total = stat.KillsInterval + stat.NotSpamInterval
+                        let medal = match i with 0 -> "🏆" | 1 -> "🥈" | 2 -> "🥉" | _ -> $"%d{i+1}."
+                        %sb.AppendLine $"  {medal} {prependUsername stat.Vahter} - {total} (🚫 {stat.KillsInterval} | ✅ {stat.NotSpamInterval})")
+                    
+                    let totalActions = intervalActions |> Array.sumBy (fun x -> x.KillsInterval + x.NotSpamInterval)
+                    %sb.AppendLine ""
+                    %sb.AppendLine $"Legend: 🚫 kills | ✅ not_spam"
+                    %sb.AppendLine $"Total actions: {totalActions}"
+                else
+                    %sb.AppendLine $"No actions in the last {timeSpanAsHumanReadable this.interval.Value}"
+                
+            %sb.AppendLine ""
+            %sb.AppendLine "Vahter actions all time:"
+            this.stats
+            |> Array.sortByDescending (fun x -> x.KillsTotal + x.NotSpamTotal)
+            |> Array.iteri (fun i stat ->
+                let total = stat.KillsTotal + stat.NotSpamTotal
+                %sb.AppendLine $"  %d{i+1}. {prependUsername stat.Vahter} - {total}")
+        sb.ToString()
