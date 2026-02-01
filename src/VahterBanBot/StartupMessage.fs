@@ -31,8 +31,11 @@ type StartupMessage(
             if not botConf.IgnoreSideEffects then
                 let startLogMsg = getStartLogMsg()
                 logger.LogInformation startLogMsg
-                do! telegramClient.SendTextMessageAsync(ChatId(botConf.LogsChannelId), startLogMsg)
-                    |> taskIgnore
+                do! telegramClient.SendTextMessageAsync(
+                        chatId = ChatId(botConf.ActionChannelId),
+                        text = startLogMsg,
+                        messageThreadId = botConf.ActionAllLogsTopicId
+                    ) |> taskIgnore
         }
 
         member this.StopAsync _ =

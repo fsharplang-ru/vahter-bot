@@ -91,7 +91,12 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("BOT_USER_NAME", "test_bot")
                 .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
                 .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
-                .WithEnvironment("LOGS_CHANNEL_ID", "-123")
+                // Action Channel (forum with topics)
+                .WithEnvironment("ACTION_CHANNEL_ID", "-123")
+                .WithEnvironment("ACTION_POTENTIAL_TOPIC_ID", "1")
+                .WithEnvironment("ACTION_DETECTED_TOPIC_ID", "2")
+                .WithEnvironment("ACTION_ALL_LOGS_TOPIC_ID", "3")
+                .WithEnvironment("DETECTED_SPAM_CLEANUP_AGE_HOURS", "24")
                 .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
                 .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
                 .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
@@ -220,7 +225,7 @@ type VahterTestContainers(mlEnabled: bool) =
         Tg.user(id = 42, username = "just_admin")
     ]
 
-    member _.LogChat = Tg.chat(id = -123, username = "logs")
+    member _.ActionChannel = Tg.chat(id = -123, username = "action_channel")
     member _.ChatsToMonitor = [
         Tg.chat(id = -666, username = "pro.hell")
         Tg.chat(id = -42, username = "dotnetru")
