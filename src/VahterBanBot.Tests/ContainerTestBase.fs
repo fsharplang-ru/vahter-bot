@@ -247,6 +247,14 @@ type VahterTestContainers(mlEnabled: bool) =
         return count > 0
     }
     
+    member _.UserBanned(userId: int64) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM banned WHERE banned_user_id = @userId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+    
     member _.MessageIsAutoDeleted(msg: Message) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql

@@ -332,6 +332,18 @@ let deleteCallback (id: Guid): Task =
         return ()
     }
 
+/// Deletes all callbacks with the same action_message_id (for potential spam with two buttons)
+let deleteCallbacksByMessageId (actionMessageId: int): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "DELETE FROM callback WHERE action_message_id = @msgId"
+
+        let! _ = conn.ExecuteAsync(sql, {| msgId = actionMessageId |})
+        return ()
+    }
+
 /// Gets all callbacks for a user (for cleanup when user is banned via /ban)
 let getCallbacksByUserId (userId: int64): Task<DbCallback array> =
     task {
