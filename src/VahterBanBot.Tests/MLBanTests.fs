@@ -47,6 +47,32 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     }
     
     [<Fact>]
+    let ``Message is NOT autobanned if it is an automatic forward from linked channel`` () = task {
+        // Automatic forwards from linked channels have:
+        // - from.id = 777000 (Telegram system user)
+        // - sender_chat = the channel
+        // - is_automatic_forward = true
+        // These should be skipped even if they contain spam-like text
+        let linkedChannel = Tg.channel(username = "linked_channel", title = "Linked Channel")
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "2222222", // spam text
+            from = Tg.telegramUser(), // Telegram system user (id 777000)
+            senderChat = linkedChannel,
+            isAutomaticForward = true
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        // assert that the message was NOT auto banned (because it's an automatic forward)
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+        
+        // verify the message was saved to DB
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.True dbMsg.IsSome
+    }
+    
+    [<Fact>]
     let ``Message is NOT autobanned if it has a stopword in specific chat`` () = task {
         // record a message, where 2 is in a training set as spam word
         // ChatsToMonitor[1] does have a stopword 2
