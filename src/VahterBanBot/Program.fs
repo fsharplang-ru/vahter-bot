@@ -52,11 +52,10 @@ let botConf =
       SecretToken = getEnv "BOT_AUTH_TOKEN"
       BotUserId = getEnv "BOT_USER_ID" |> int64
       BotUserName = getEnv "BOT_USER_NAME"
-      // Action Channel (forum with topics)
-      ActionChannelId = getEnv "ACTION_CHANNEL_ID" |> int64
-      ActionPotentialTopicId = getEnv "ACTION_POTENTIAL_TOPIC_ID" |> int
-      ActionDetectedTopicId = getEnv "ACTION_DETECTED_TOPIC_ID" |> int
-      ActionAllLogsTopicId = getEnv "ACTION_ALL_LOGS_TOPIC_ID" |> int
+      // Channels for vahter actions
+      PotentialSpamChannelId = getEnv "POTENTIAL_SPAM_CHANNEL_ID" |> int64
+      DetectedSpamChannelId = getEnv "DETECTED_SPAM_CHANNEL_ID" |> int64
+      AllLogsChannelId = getEnv "ALL_LOGS_CHANNEL_ID" |> int64
       DetectedSpamCleanupAge = getEnvOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> fromJson
       AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson

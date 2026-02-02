@@ -117,9 +117,8 @@ type MachineLearning(
             let metricsStr = metricsToString metrics sw.Elapsed
             logger.LogInformation metricsStr
             do! telegramClient.SendTextMessageAsync(
-                    chatId = ChatId(botConf.ActionChannelId),
+                    chatId = ChatId(botConf.AllLogsChannelId),
                     text = metricsStr,
-                    messageThreadId = botConf.ActionAllLogsTopicId,
                     parseMode = ParseMode.Markdown
                 ) |> taskIgnore
             logger.LogInformation "Model trained"

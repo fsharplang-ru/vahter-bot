@@ -16,11 +16,10 @@ type BotConfiguration =
       SecretToken: string
       BotUserId: int64
       BotUserName: string
-      // Action Channel (forum with topics) for vahter actions
-      ActionChannelId: int64
-      ActionPotentialTopicId: int
-      ActionDetectedTopicId: int
-      ActionAllLogsTopicId: int
+      // Channels for vahter actions
+      PotentialSpamChannelId: int64
+      DetectedSpamChannelId: int64
+      AllLogsChannelId: int64
       DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
@@ -156,7 +155,7 @@ type DbCallback =
       data: CallbackMessage
       created_at: DateTime
       action_message_id: int option
-      action_topic_id: int option
+      action_channel_id: int64 option
       target_user_id: int64 option }
 
 type CallbackMessageTypeHandler() =
