@@ -90,7 +90,11 @@ let botConf =
       MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
       MlMaxNumberOfIterations = getEnvOr "ML_MAX_NUMBER_OF_ITERATIONS" "50" |> int
       MlCustomEmojiThreshold = getEnvOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
-      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson }
+      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
+      // Reaction spam detection
+      ReactionSpamEnabled = getEnvOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
+      ReactionSpamMinMessages = getEnvOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
+      ReactionSpamMaxReactions = getEnvOr "REACTION_SPAM_MAX_REACTIONS" "5" |> int }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with

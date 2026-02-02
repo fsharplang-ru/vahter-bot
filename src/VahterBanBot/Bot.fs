@@ -553,6 +553,104 @@ let autoBan
             ) |> taskIgnore
 }
 
+let totalBanByReaction
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (reaction: MessageReactionUpdated)
+    (targetUser: DbUser)
+    (logger: ILogger) = task {
+    use activity = botActivity.StartActivity("totalBanByReaction")
+    %activity
+        .SetTag("targetId", targetUser.id)
+        .SetTag("targetUsername", (defaultArg targetUser.username null))
+        .SetTag("reactionCount", targetUser.reaction_count)
+        
+    let deletedUserMessagesTask = task {
+        let! allUserMessages = DB.getUserMessages targetUser.id
+        logger.LogInformation($"Deleting {allUserMessages.Length} messages from reaction spammer {targetUser.id}")
+        
+        // delete all recorded messages from user in all chats
+        do!
+            allUserMessages
+            |> Seq.map (fun msg -> task {
+                try
+                    use _ =
+                        botActivity
+                            .StartActivity("deleteMsg")
+                            .SetTag("msgId", msg.message_id)
+                            .SetTag("chatId", msg.chat_id)
+                    recordDeletedMessage msg.chat_id null "totalBanByReaction_history"
+                    do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
+                with e ->
+                    logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
+            })
+            |> Task.WhenAll
+            |> taskIgnore
+
+        return allUserMessages.Length
+    }
+    
+    // Clean up ALL callbacks for this user
+    let cleanupCallbacksTask = task {
+        let! userCallbacks = DB.getCallbacksByUserId targetUser.id
+        logger.LogInformation($"Cleaning up {userCallbacks.Length} callbacks for banned reaction spammer {targetUser.id}")
+        
+        do!
+            userCallbacks
+            |> Seq.map (fun callback -> task {
+                match callback.action_message_id with
+                | Some msgId ->
+                    do! botClient.DeleteMessageAsync(ChatId(callback.action_channel_id.Value), msgId)
+                        |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete callback message {msgId} from action channel", e))
+                | None -> ()
+                do! DB.deleteCallback callback.id
+            })
+            |> Task.WhenAll
+            |> taskIgnore
+    }
+    
+    // ban user in all monitored chats
+    let! banResults = banInAllChats botConfig botClient targetUser.id
+    let! deletedUserMessages = deletedUserMessagesTask
+    do! cleanupCallbacksTask
+    
+    // record ban in banned_by_bot table
+    let dbBanned = {
+        message_id = None
+        message_text = $"Reaction spam: {targetUser.reaction_count} reactions"
+        banned_user_id = targetUser.id
+        banned_at = DateTime.UtcNow
+        banned_in_chat_id = Some reaction.Chat.Id
+        banned_in_chat_username = Option.ofObj reaction.Chat.Username
+        banned_by = botConfig.BotUserId
+    }
+    do! DB.banUserByBot dbBanned
+    
+    // metrics
+    bannedUsersCounter.Add(1L, tagsForVahter botConfig.BotUserId botConfig.BotUserName)
+    
+    // produce log message
+    let sanitizedUsername = defaultArg targetUser.username null |> prependUsername
+    let allChatsOk = banResults |> Array.forall Result.isOk
+    let logMsgBuilder = StringBuilder()
+    %logMsgBuilder.Append $"🤖 Auto-banned reaction spammer {sanitizedUsername} ({targetUser.id})"
+    %logMsgBuilder.AppendLine $" with {targetUser.reaction_count} reactions and {deletedUserMessages} messages"
+    if not allChatsOk then
+        %logMsgBuilder.AppendLine "Ban results:"
+        for result in banResults do
+            match result with
+            | Ok(chatName, _) -> %logMsgBuilder.AppendLine $"  ✅ {prependUsername chatName}"
+            | Error(chatName, _, e) -> %logMsgBuilder.AppendLine $"  ❌ {prependUsername chatName}: {e.Message}"
+    let logMsg = string logMsgBuilder
+    
+    // log both to logger and to All Logs channel
+    do! botClient.SendTextMessageAsync(
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
+        ) |> taskIgnore
+    logger.LogInformation logMsg
+}
+
 let justMessage
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
@@ -986,8 +1084,12 @@ let onCallback
                         callbackQuery
 }
 
-let onMessageReaction (logger: ILogger) (reaction: MessageReactionUpdated) =
-    use _ =
+let onMessageReaction
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (reaction: MessageReactionUpdated) = task {
+    use activity =
         botActivity
             .StartActivity("messageReaction")
             .SetTag("chatId", reaction.Chat.Id)
@@ -995,6 +1097,7 @@ let onMessageReaction (logger: ILogger) (reaction: MessageReactionUpdated) =
             .SetTag("messageId", reaction.MessageId)
             .SetTag("userId", reaction.User.Id)
             .SetTag("userUsername", reaction.User.Username)
+    
     logger.LogInformation(
         "Reaction from {Username} ({UserId}) on message {MessageId} in {ChatUsername} ({ChatId})",
         reaction.User.Username,
@@ -1003,6 +1106,51 @@ let onMessageReaction (logger: ILogger) (reaction: MessageReactionUpdated) =
         reaction.Chat.Username,
         reaction.Chat.Id
     )
+    
+    // Check if reaction spam detection is enabled
+    if not botConfig.ReactionSpamEnabled then
+        %activity.SetTag("skipped", "reactionSpamDisabled")
+    // Check if chat is monitored
+    elif not (botConfig.ChatsToMonitor.ContainsValue reaction.Chat.Id) then
+        %activity.SetTag("skipped", "chatNotMonitored")
+    else
+        // Calculate added reactions (new - old)
+        let oldCount = if isNull reaction.OldReaction then 0 else reaction.OldReaction.Length
+        let newCount = if isNull reaction.NewReaction then 0 else reaction.NewReaction.Length
+        let added = newCount - oldCount
+        
+        %activity.SetTag("oldReactionCount", oldCount)
+        %activity.SetTag("newReactionCount", newCount)
+        %activity.SetTag("addedReactions", added)
+        
+        // Only process if reactions were added (not removed)
+        if added > 0 then
+            // Upsert user and increment reaction count atomically
+            let! updatedUser =
+                reaction.User
+                |> DbUser.newUser
+                |> fun u -> DB.upsertUserAndIncrementReactions u added
+            
+            %activity.SetTag("totalReactionCount", updatedUser.reaction_count)
+            
+            // Check heuristics: if user has few messages but many reactions -> ban
+            let! msgCount = DB.countUniqueUserMsg updatedUser.id
+            %activity.SetTag("messageCount", msgCount)
+            
+            if msgCount < botConfig.ReactionSpamMinMessages && 
+               updatedUser.reaction_count >= botConfig.ReactionSpamMaxReactions then
+                logger.LogWarning(
+                    "Reaction spam detected: {Username} ({UserId}) has {MsgCount} messages but {ReactionCount} reactions",
+                    reaction.User.Username,
+                    reaction.User.Id,
+                    msgCount,
+                    updatedUser.reaction_count
+                )
+                %activity.SetTag("action", "ban")
+                do! totalBanByReaction botClient botConfig reaction updatedUser logger
+            else
+                %activity.SetTag("action", "none")
+}
 
 let onUpdate
     (botUser: DbUser)
@@ -1016,7 +1164,7 @@ let onUpdate
     if update.CallbackQuery <> null then
         do! onCallback botClient botConfig logger update.CallbackQuery
     elif update.MessageReaction <> null then
-        onMessageReaction logger update.MessageReaction
+        do! onMessageReaction botClient botConfig logger update.MessageReaction
     elif update.EditedOrMessage <> null then
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage

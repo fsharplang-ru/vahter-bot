@@ -51,18 +51,24 @@ type BotConfiguration =
       MlWarningThreshold: single
       MlMaxNumberOfIterations: int
       MlCustomEmojiThreshold: int
-      MlStopWordsInChats: Dictionary<int64, string list> }
+      MlStopWordsInChats: Dictionary<int64, string list>
+      // Reaction spam detection
+      ReactionSpamEnabled: bool
+      ReactionSpamMinMessages: int
+      ReactionSpamMaxReactions: int }
 
 [<CLIMutable>]
 type DbUser =
     { id: int64
       username: string option
+      reaction_count: int
       updated_at: DateTime
       created_at: DateTime }
 
     static member newUser(id, ?username: string) =
         { id = id
           username = username
+          reaction_count = 0
           updated_at = DateTime.UtcNow
           created_at = DateTime.UtcNow }
 
