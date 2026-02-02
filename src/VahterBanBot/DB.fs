@@ -297,6 +297,24 @@ ON CONFLICT DO NOTHING;
         return! conn.ExecuteAsync(sql, message)
     }
 
+/// Marks a message as false negative (spam that was not auto-detected)
+/// Used for soft spam marking - counts toward karma but doesn't ban
+let markMessageAsFalseNegative (chatId: int64) (messageId: int): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO false_negative_messages (chat_id, message_id)
+VALUES (@chatId, @messageId)
+ON CONFLICT DO NOTHING;
+            """
+
+        let! _ = conn.ExecuteAsync(sql, {| chatId = chatId; messageId = messageId |})
+        return ()
+    }
+
 /// Creates a callback without action_message_id (first phase of two-phase insert)
 let newCallbackPending (data: CallbackMessage) (targetUserId: int64) (channelId: int64): Task<DbCallback> =
     task {

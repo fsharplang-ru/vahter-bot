@@ -153,7 +153,8 @@ type MessageWrapper= { message: Message }
 // as it is used to (de)serialize the button callback data
 type CallbackMessage =
     | NotASpam of MessageWrapper
-    | Spam of MessageWrapper
+    | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
+    | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
 
 [<CLIMutable>]
 type DbCallback =

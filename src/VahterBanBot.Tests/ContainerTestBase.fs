@@ -316,6 +316,25 @@ WHERE data ->> 'Case' = @caseName
         let! result = conn.QueryAsync<int>(sql, {| userId = userId |})
         return result |> Seq.tryHead |> Option.defaultValue 0
     }
+    
+    member _.IsMessageFalseNegative(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM false_negative_messages WHERE chat_id = @chatId AND message_id = @messageId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count > 0
+    }
+    
+    /// Checks if message was deleted (exists in fake API deleted list)
+    member _.MessageWasDeleted(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        // Check if message is in banned_by_bot (for auto-deleted) or was manually deleted
+        // For soft spam, we check the fake API's deleted messages
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count > 0
+    }
 
 type MlEnabledVahterTestContainers() =
     inherit VahterTestContainers(mlEnabled = true)
