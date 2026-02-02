@@ -22,7 +22,7 @@ open Dapper
 type VahterTestContainers(mlEnabled: bool) =
     let solutionDir = CommonDirectoryPath.GetSolutionDirectory()
     let dbAlias = "vahter-db"
-    let internalConnectionString = $"Server={dbAlias};Database=vahter_bot_ban;Port=5432;User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
+    let internalConnectionString = $"Server={dbAlias};Database=vahter_db;Port=5432;User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
     let pgImage = "postgres:15.6" // same as in Azure
     
     // will be filled in IAsyncLifetime.InitializeAsync
@@ -65,9 +65,9 @@ type VahterTestContainers(mlEnabled: bool) =
             .WithImage("flyway/flyway")
             .WithNetwork(network)
             .WithBindMount(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/src/migrations", "/flyway/sql", AccessMode.ReadOnly)
-            .WithEnvironment("FLYWAY_URL", "jdbc:postgresql://vahter-db:5432/vahter_bot_ban")
-            .WithEnvironment("FLYWAY_USER", "vahter_bot_ban_service")
-            .WithEnvironment("FLYWAY_PASSWORD", "vahter_bot_ban_service")
+            .WithEnvironment("FLYWAY_URL", "jdbc:postgresql://vahter-db:5432/vahter_db")
+            .WithEnvironment("FLYWAY_USER", "admin")
+            .WithEnvironment("FLYWAY_PASSWORD", "admin")
             .WithCommand("migrate", "-schemas=public")
             .WithWaitStrategy(Wait.ForUnixContainer().AddCustomWaitStrategy(
                 { new IWaitUntil  with
@@ -154,7 +154,7 @@ type VahterTestContainers(mlEnabled: bool) =
         member this.InitializeAsync() = task {
             try
                 do! startContainers()
-                publicConnectionString <- $"Server=127.0.0.1;Database=vahter_bot_ban;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
+                publicConnectionString <- $"Server=127.0.0.1;Database=vahter_db;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
                 
                 // initialize DB with the schema, database and a DB user
                 let script = File.ReadAllText(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/init.sql")
@@ -174,7 +174,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 let script = File.ReadAllText(CommonDirectoryPath.GetCallerFileDirectory().DirectoryPath + "/test_seed.sql")
                 let scriptFilePath = String.Join("/", String.Empty, "tmp", Guid.NewGuid().ToString("D"), Path.GetRandomFileName())
                 do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, Unix.FileMode644)
-                let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_bot_ban"; "--file"; scriptFilePath |]
+                let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_db"; "--file"; scriptFilePath |]
 
                 if scriptResult.Stderr <> "" then
                     failwith scriptResult.Stderr
