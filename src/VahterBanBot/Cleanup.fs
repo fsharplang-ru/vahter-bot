@@ -32,20 +32,20 @@ type CleanupService(
         if failedPosts.Length > 0 then
             %sb.AppendLine $"Cleaned up {failedPosts.Length} failed callback posts"
         
-        // Cleanup old Detected Spam messages from action channel
-        let! oldDetectedSpam = DB.getOldDetectedSpamCallbacks botConf.DetectedSpamCleanupAge botConf.ActionDetectedTopicId
+        // Cleanup old Detected Spam messages from detected spam channel
+        let! oldDetectedSpam = DB.getOldDetectedSpamCallbacks botConf.DetectedSpamCleanupAge botConf.DetectedSpamChannelId
         let mutable deletedFromChannel = 0
         for callback in oldDetectedSpam do
             match callback.action_message_id with
             | Some msgId ->
                 try
                     do! telegramClient.DeleteMessageAsync(
-                        ChatId(botConf.ActionChannelId),
+                        ChatId(botConf.DetectedSpamChannelId),
                         msgId
                     )
                     deletedFromChannel <- deletedFromChannel + 1
                 with ex ->
-                    logger.LogWarning(ex, $"Failed to delete message {msgId} from Detected Spam topic")
+                    logger.LogWarning(ex, $"Failed to delete message {msgId} from Detected Spam channel")
             | None -> ()
             do! DB.deleteCallback callback.id
         if oldDetectedSpam.Length > 0 then
@@ -66,9 +66,8 @@ type CleanupService(
 
         let msg = sb.ToString()
         do! telegramClient.SendTextMessageAsync(
-                chatId = ChatId(botConf.ActionChannelId),
-                text = msg,
-                messageThreadId = botConf.ActionAllLogsTopicId
+                chatId = ChatId(botConf.AllLogsChannelId),
+                text = msg
             ) |> taskIgnore
         logger.LogInformation msg
     }

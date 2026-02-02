@@ -32,9 +32,8 @@ type StartupMessage(
                 let startLogMsg = getStartLogMsg()
                 logger.LogInformation startLogMsg
                 do! telegramClient.SendTextMessageAsync(
-                        chatId = ChatId(botConf.ActionChannelId),
-                        text = startLogMsg,
-                        messageThreadId = botConf.ActionAllLogsTopicId
+                        chatId = ChatId(botConf.AllLogsChannelId),
+                        text = startLogMsg
                     ) |> taskIgnore
         }
 

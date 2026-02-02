@@ -271,19 +271,19 @@ ON CONFLICT DO NOTHING;
     }
 
 /// Creates a callback without action_message_id (first phase of two-phase insert)
-let newCallbackPending (data: CallbackMessage) (targetUserId: int64) (topicId: int): Task<DbCallback> =
+let newCallbackPending (data: CallbackMessage) (targetUserId: int64) (channelId: int64): Task<DbCallback> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
         let sql =
             """
-INSERT INTO callback (data, target_user_id, action_topic_id)
-VALUES (@data::JSONB, @targetUserId, @topicId)
+INSERT INTO callback (data, target_user_id, action_channel_id)
+VALUES (@data::JSONB, @targetUserId, @channelId)
 RETURNING *;
             """
 
-        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data; targetUserId = targetUserId; topicId = topicId |})
+        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data; targetUserId = targetUserId; channelId = channelId |})
     }
 
 /// Updates callback with action_message_id (second phase of two-phase insert)
@@ -373,8 +373,8 @@ WHERE action_message_id IS NULL
         return Array.ofSeq result
     }
 
-/// Gets old callbacks from Detected Spam topic for cleanup
-let getOldDetectedSpamCallbacks (age: TimeSpan) (detectedTopicId: int): Task<DbCallback array> =
+/// Gets old callbacks from Detected Spam channel for cleanup
+let getOldDetectedSpamCallbacks (age: TimeSpan) (detectedChannelId: int64): Task<DbCallback array> =
     task {
         use conn = new NpgsqlConnection(connString)
 
@@ -382,11 +382,11 @@ let getOldDetectedSpamCallbacks (age: TimeSpan) (detectedTopicId: int): Task<DbC
         let sql = 
             """
 SELECT * FROM callback 
-WHERE action_topic_id = @topicId 
+WHERE action_channel_id = @channelId 
   AND created_at < @cutoff
             """
 
-        let! result = conn.QueryAsync<DbCallback>(sql, {| topicId = detectedTopicId; cutoff = DateTime.UtcNow.Subtract age |})
+        let! result = conn.QueryAsync<DbCallback>(sql, {| channelId = detectedChannelId; cutoff = DateTime.UtcNow.Subtract age |})
         return Array.ofSeq result
     }
 

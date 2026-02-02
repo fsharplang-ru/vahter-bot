@@ -91,11 +91,10 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("BOT_USER_NAME", "test_bot")
                 .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
                 .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
-                // Action Channel (forum with topics)
-                .WithEnvironment("ACTION_CHANNEL_ID", "-123")
-                .WithEnvironment("ACTION_POTENTIAL_TOPIC_ID", "1")
-                .WithEnvironment("ACTION_DETECTED_TOPIC_ID", "2")
-                .WithEnvironment("ACTION_ALL_LOGS_TOPIC_ID", "3")
+                // Channels for vahter actions
+                .WithEnvironment("POTENTIAL_SPAM_CHANNEL_ID", "-101")
+                .WithEnvironment("DETECTED_SPAM_CHANNEL_ID", "-102")
+                .WithEnvironment("ALL_LOGS_CHANNEL_ID", "-103")
                 .WithEnvironment("DETECTED_SPAM_CLEANUP_AGE_HOURS", "24")
                 .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
                 .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
@@ -225,7 +224,9 @@ type VahterTestContainers(mlEnabled: bool) =
         Tg.user(id = 42, username = "just_admin")
     ]
 
-    member _.ActionChannel = Tg.chat(id = -123, username = "action_channel")
+    member _.PotentialSpamChannel = Tg.chat(id = -101, username = "potential_spam_channel")
+    member _.DetectedSpamChannel = Tg.chat(id = -102, username = "detected_spam_channel")
+    member _.AllLogsChannel = Tg.chat(id = -103, username = "all_logs_channel")
     member _.ChatsToMonitor = [
         Tg.chat(id = -666, username = "pro.hell")
         Tg.chat(id = -42, username = "dotnetru")

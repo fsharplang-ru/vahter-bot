@@ -308,7 +308,7 @@ let totalBan
                 // Delete message from action channel
                 match callback.action_message_id with
                 | Some msgId ->
-                    do! botClient.DeleteMessageAsync(ChatId(botConfig.ActionChannelId), msgId)
+                    do! botClient.DeleteMessageAsync(ChatId(callback.action_channel_id.Value), msgId)
                         |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete callback message {msgId} from action channel", e))
                 | None -> ()
                 // Delete callback from DB
@@ -335,11 +335,10 @@ let totalBan
         |> DbBanned.banMessage vahter.id
         |> DB.banUser
 
-    // log both to logger and to All Logs topic
+    // log both to logger and to All Logs channel
     do! botClient.SendTextMessageAsync(
-            chatId = ChatId(botConfig.ActionChannelId),
-            text = logMsg,
-            messageThreadId = botConfig.ActionAllLogsTopicId
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
         ) |> taskIgnore
     logger.LogInformation logMsg
 
@@ -419,9 +418,8 @@ let softBanMsg
         do! deleteMsgTask
         
         do! botClient.SendTextMessageAsync(
-                chatId = ChatId(botConfig.ActionChannelId),
-                text = logText,
-                messageThreadId = botConfig.ActionAllLogsTopicId
+                chatId = ChatId(botConfig.AllLogsChannelId),
+                text = logText
             ) |> taskIgnore
         logger.LogInformation logText
 }
@@ -451,11 +449,10 @@ let unban
     // produce aggregated log message
     let logMsg = aggregateUnbanResultInLogMsg message.Chat vahter userToUnban logger 0 unbanResults
 
-    // log both to logger and to All Logs topic
+    // log both to logger and to All Logs channel
     do! botClient.SendTextMessageAsync(
-            chatId = ChatId(botConfig.ActionChannelId),
-            text = logMsg,
-            messageThreadId = botConfig.ActionAllLogsTopicId
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
         ) |> taskIgnore
     logger.LogInformation logMsg
 }
@@ -484,10 +481,10 @@ let killSpammerAutomated
     let msgType = if deleteMessage then "Deleted" else "Detected"
     let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
 
-    // Determine which topic
-    let topicId =
-        if deleteMessage then botConfig.ActionDetectedTopicId
-        else botConfig.ActionPotentialTopicId
+    // Determine which channel
+    let channelId =
+        if deleteMessage then botConfig.DetectedSpamChannelId
+        else botConfig.PotentialSpamChannelId
 
     // Phase 1: Create callback(s) without message_id
     // For detected spam: one NotASpam callback
@@ -495,25 +492,24 @@ let killSpammerAutomated
     let! callbackIds, markup = task {
         if deleteMessage then
             // Detected spam → one NotASpam callback
-            let! callback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id topicId
+            let! callback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id channelId
             return [callback.id], InlineKeyboardMarkup [
                 InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
             ]
         else
             // Potential spam → two callbacks
-            let! killCallback = DB.newCallbackPending (CallbackMessage.Spam { message = message }) message.From.Id topicId
-            let! notSpamCallback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id topicId
+            let! killCallback = DB.newCallbackPending (CallbackMessage.Spam { message = message }) message.From.Id channelId
+            let! notSpamCallback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id channelId
             return [killCallback.id; notSpamCallback.id], InlineKeyboardMarkup [|
                 InlineKeyboardButton.WithCallbackData("🚫 KILL", string killCallback.id);
                 InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string notSpamCallback.id)
             |]
     }
     
-    // Phase 2: Post to action channel topic
+    // Phase 2: Post to action channel
     let! sent = botClient.SendTextMessageAsync(
-        chatId = ChatId(botConfig.ActionChannelId),
+        chatId = ChatId(channelId),
         text = logMsg,
-        messageThreadId = topicId,
         replyMarkup = markup
     )
     
@@ -521,11 +517,10 @@ let killSpammerAutomated
     for callbackId in callbackIds do
         do! DB.updateCallbackMessageId callbackId sent.MessageId
     
-    // Send to All Logs topic (readonly, no buttons)
+    // Send to All Logs channel (readonly, no buttons)
     do! botClient.SendTextMessageAsync(
-            chatId = ChatId(botConfig.ActionChannelId),
-            text = logMsg,
-            messageThreadId = botConfig.ActionAllLogsTopicId
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
         ) |> taskIgnore
     
     logger.LogInformation logMsg
@@ -553,9 +548,8 @@ let autoBan
         let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
         logger.LogInformation msg
         do! botClient.SendTextMessageAsync(
-                chatId = ChatId(botConfig.ActionChannelId),
-                text = msg,
-                messageThreadId = botConfig.ActionAllLogsTopicId
+                chatId = ChatId(botConfig.AllLogsChannelId),
+                text = msg
             ) |> taskIgnore
 }
 
@@ -860,9 +854,8 @@ let vahterMarkedAsNotSpam
     
     let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.TextOrCaption}"
     do! botClient.SendTextMessageAsync(
-            chatId = ChatId(botConfig.ActionChannelId),
-            text = logMsg,
-            messageThreadId = botConfig.ActionAllLogsTopicId
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
         ) |> taskIgnore
     logger.LogInformation logMsg
 }
@@ -903,12 +896,12 @@ let onCallbackAux
     let callback = dbCallback.data
     let msg = match callback with NotASpam m | Spam m -> m
     
-    // Determine action type based on callback data and topic
+    // Determine action type based on callback data and channel
     let actionType = 
         match callback with
         | Spam _ -> "potential_kill"
         | NotASpam _ -> 
-            if dbCallback.action_topic_id = Some botConfig.ActionDetectedTopicId 
+            if dbCallback.action_channel_id = Some botConfig.DetectedSpamChannelId 
             then "detected_not_spam"
             else "potential_not_spam"
     
@@ -937,16 +930,16 @@ let onCallbackAux
     
     // Always delete message from action channel (empty inbox)
     // and cleanup related callbacks (for potential spam with two buttons)
-    match dbCallback.action_message_id with
-    | Some msgId ->
+    match dbCallback.action_message_id, dbCallback.action_channel_id with
+    | Some msgId, Some channelId ->
         // Delete other callbacks with same message_id (the other button)
         do! DB.deleteCallbacksByMessageId msgId
         // Delete message from channel
         do! botClient.DeleteMessageAsync(
-                ChatId(botConfig.ActionChannelId),
+                ChatId(channelId),
                 msgId
             ) |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msgId} from action channel", e))
-    | None -> ()
+    | _ -> ()
 }
 
 let onCallback
