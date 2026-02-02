@@ -30,6 +30,33 @@ RETURNING *;
         return insertedUser |> Seq.head
     }
 
+let upsertUserAndIncrementReactions (user: DbUser) (reactionIncrement: int): Task<DbUser> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO "user" (id, username, reaction_count, created_at, updated_at)
+VALUES (@id, @username, @reactionIncrement, @created_at, @updated_at)
+ON CONFLICT (id) DO UPDATE
+    SET username       = COALESCE("user".username, EXCLUDED.username),
+        reaction_count = "user".reaction_count + @reactionIncrement,
+        updated_at     = GREATEST(EXCLUDED.updated_at, "user".updated_at)
+RETURNING *;
+"""
+
+        let! insertedUser = conn.QueryAsync<DbUser>(sql, {| 
+            id = user.id
+            username = user.username
+            reactionIncrement = reactionIncrement
+            created_at = user.created_at
+            updated_at = user.updated_at 
+        |})
+
+        return insertedUser |> Seq.head
+    }
+
 let insertMessage (message: DbMessage): Task<DbMessage> =
     task {
         use conn = new NpgsqlConnection(connString)

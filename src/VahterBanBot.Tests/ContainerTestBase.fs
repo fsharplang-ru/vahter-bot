@@ -127,11 +127,16 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("OCR_MAX_FILE_SIZE_BYTES", (20L * 1024L * 1024L).ToString())
                 .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
                 .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
+                // Reaction spam detection
+                .WithEnvironment("REACTION_SPAM_ENABLED", "true")
+                .WithEnvironment("REACTION_SPAM_MIN_MESSAGES", "3")
+                .WithEnvironment("REACTION_SPAM_MAX_REACTIONS", "5")
                 .Build()
         else
             builder
                 .WithEnvironment("ML_ENABLED", "false")
                 .WithEnvironment("OCR_ENABLED", "false")
+                .WithEnvironment("REACTION_SPAM_ENABLED", "false")
                 .Build()
             
     let startContainers() = task {
@@ -294,6 +299,22 @@ WHERE data ->> 'Case' = @caseName
             )
         """
         return! conn.QuerySingleAsync<bool>(sql, {| text = msg.Text |})
+    }
+
+    member _.UserBannedByBot(userId: int64) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_user_id = @userId"
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+    
+    member _.GetUserReactionCount(userId: int64) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = """SELECT reaction_count FROM "user" WHERE id = @userId"""
+        let! result = conn.QueryAsync<int>(sql, {| userId = userId |})
+        return result |> Seq.tryHead |> Option.defaultValue 0
     }
 
 type MlEnabledVahterTestContainers() =
