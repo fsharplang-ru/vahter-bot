@@ -497,11 +497,13 @@ let killSpammerAutomated
                 InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
             ]
         else
-            // Potential spam → two callbacks
+            // Potential spam → three callbacks
             let! killCallback = DB.newCallbackPending (CallbackMessage.Spam { message = message }) message.From.Id channelId
+            let! softSpamCallback = DB.newCallbackPending (CallbackMessage.MarkAsSpam { message = message }) message.From.Id channelId
             let! notSpamCallback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id channelId
-            return [killCallback.id; notSpamCallback.id], InlineKeyboardMarkup [|
+            return [killCallback.id; softSpamCallback.id; notSpamCallback.id], InlineKeyboardMarkup [|
                 InlineKeyboardButton.WithCallbackData("🚫 KILL", string killCallback.id);
+                InlineKeyboardButton.WithCallbackData("⚠️ SPAM", string softSpamCallback.id);
                 InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string notSpamCallback.id)
             |]
     }
@@ -526,31 +528,45 @@ let killSpammerAutomated
     logger.LogInformation logMsg
 }
 
-let autoBan
+/// Checks user's social score and triggers auto-ban if below threshold
+/// Returns true if user was auto-banned, false otherwise
+let checkAndAutoBan
     (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (message: Message)
     (logger: ILogger) = task {
-    use banOnReplyActivity = botActivity.StartActivity("autoBan")
-    %banOnReplyActivity
-        .SetTag("spammerId", message.From.Id)
-        .SetTag("spammerUsername", message.From.Username)
-    
-    let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount message.From.Id
-    let socialScore = userStats.good - userStats.bad
-    
-    %banOnReplyActivity.SetTag("socialScore", socialScore)
-    
-    if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
-        // ban user in all monitored chats
-        do! totalBan botClient botConfig message botUser logger
-        let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
-        logger.LogInformation msg
-        do! botClient.SendTextMessageAsync(
-                chatId = ChatId(botConfig.AllLogsChannelId),
-                text = msg
-            ) |> taskIgnore
+    if not botConfig.MlSpamAutobanEnabled then
+        return false
+    else
+        use banOnReplyActivity = botActivity.StartActivity("checkAndAutoBan")
+        %banOnReplyActivity
+            .SetTag("spammerId", message.From.Id)
+            .SetTag("spammerUsername", message.From.Username)
+        
+        let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount message.From.Id
+        let socialScore = userStats.good - userStats.bad
+        
+        %banOnReplyActivity.SetTag("socialScore", socialScore)
+        
+        if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
+            // ban user in all monitored chats
+            do! totalBan botClient botConfig message botUser logger
+            let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
+            logger.LogInformation msg
+            do! botClient.SendTextMessageAsync(
+                    chatId = ChatId(botConfig.AllLogsChannelId),
+                    text = msg
+                ) |> taskIgnore
+            return true
+        else
+            return false
+}
+
+/// Wrapper for backward compatibility - calls checkAndAutoBan and ignores result
+let autoBan botUser botClient botConfig message logger = task {
+    let! _ = checkAndAutoBan botUser botClient botConfig message logger
+    return ()
 }
 
 let totalBanByReaction
@@ -744,10 +760,8 @@ let justMessage
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message
                     do! killSpammerAutomated botClient botConfig message logger botConfig.MlSpamDeletionEnabled prediction.Score
-
-                    if botConfig.MlSpamAutobanEnabled then
-                        // trigger auto-ban check
-                        do! autoBan botUser botClient botConfig message logger
+                    // trigger auto-ban check (checkAndAutoBan handles MlSpamAutobanEnabled internally)
+                    do! autoBan botUser botClient botConfig message logger
                 elif prediction.Score >= botConfig.MlWarningThreshold then
                     // just warn
                     do! killSpammerAutomated botClient botConfig message logger false prediction.Score
@@ -985,8 +999,50 @@ let vahterMarkedAsSpam
                 logger
 }
 
+/// Soft spam handler - deletes message and marks as spam for ML, but does NOT ban user
+/// User may get auto-banned if karma threshold is reached
+let vahterSoftSpam
+    (botUser: DbUser)
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (vahter: DbUser)
+    (message: MessageWrapper) = task {
+    let msg = message.message
+    let msgId = msg.MessageId
+    let chatId = msg.Chat.Id
+    let chatName = msg.Chat.Username
+    use _ =
+        botActivity
+            .StartActivity("vahterSoftSpam")
+            .SetTag("messageId", msgId)
+            .SetTag("chatId", chatId)
+    
+    // 1. Delete the message from original chat
+    recordDeletedMessage chatId chatName "softSpam"
+    do! botClient.DeleteMessageAsync(ChatId(chatId), msgId)
+        |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to delete message {msgId} from chat {chatId}", e))
+    
+    // 2. Mark as false negative (for ML training + karma)
+    do! DB.markMessageAsFalseNegative chatId msgId
+    
+    // 3. Log the action
+    let vahterUsername = vahter.username |> Option.defaultValue null
+    let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as SPAM (soft, no ban)\n{msg.TextOrCaption}"
+    do! botClient.SendTextMessageAsync(
+            chatId = ChatId(botConfig.AllLogsChannelId),
+            text = logMsg
+        ) |> taskIgnore
+    logger.LogInformation logMsg
+    
+    // 4. Check auto-ban using shared logic (karma system)
+    let! _ = checkAndAutoBan botUser botClient botConfig msg logger
+    ()
+}
+
 // just an aux function to reduce indentation in onCallback and prevent FS3511
 let onCallbackAux
+    (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -995,12 +1051,13 @@ let onCallbackAux
     (dbCallback: DbCallback)
     (callbackQuery: CallbackQuery)= task {
     let callback = dbCallback.data
-    let msg = match callback with NotASpam m | Spam m -> m
+    let msg = match callback with NotASpam m | Spam m | MarkAsSpam m -> m
     
     // Determine action type based on callback data and channel
     let actionType = 
         match callback with
         | Spam _ -> "potential_kill"
+        | MarkAsSpam _ -> "potential_soft_spam"
         | NotASpam _ -> 
             if dbCallback.action_channel_id = Some botConfig.DetectedSpamChannelId 
             then "detected_not_spam"
@@ -1021,6 +1078,9 @@ let onCallbackAux
         | Spam msg ->
             %onCallbackActivity.SetTag("type", "Spam")
             do! vahterMarkedAsSpam botClient botConfig logger vahter msg
+        | MarkAsSpam msg ->
+            %onCallbackActivity.SetTag("type", "MarkAsSpam")
+            do! vahterSoftSpam botUser botClient botConfig logger vahter msg
         
         do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Done! +1 🎯")
     else
@@ -1044,6 +1104,7 @@ let onCallbackAux
 }
 
 let onCallback
+    (botUser: DbUser)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -1078,6 +1139,7 @@ let onCallback
                 do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Not authorized")
             else
                 do! onCallbackAux
+                        botUser
                         botClient
                         botConfig
                         logger
@@ -1165,7 +1227,7 @@ let onUpdate
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
-        do! onCallback botClient botConfig logger update.CallbackQuery
+        do! onCallback botUser botClient botConfig logger update.CallbackQuery
     elif update.MessageReaction <> null then
         do! onMessageReaction botClient botConfig logger update.MessageReaction
     elif update.EditedOrMessage <> null then

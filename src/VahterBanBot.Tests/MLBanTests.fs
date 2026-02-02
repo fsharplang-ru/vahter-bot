@@ -405,6 +405,90 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
         Assert.Equal("Hello!\nb", dbMsg.Value.text)
     }
+    
+    [<Fact>]
+    let ``MarkAsSpam (soft spam) button does NOT ban user`` () = task {
+        // This test verifies the critical behavior that MarkAsSpam (soft spam)
+        // deletes the message and marks it as spam for ML, but does NOT ban the user
+        let user = Tg.user()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage msgUpdate
+        
+        // User should NOT be banned initially
+        let! userBannedBefore = fixture.UserBanned user.Id
+        Assert.False(userBannedBefore, "User should not be banned initially")
+        
+        // Click MarkAsSpam button (soft spam) - uses the new third button
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
+        let! _ = fixture.SendMessage msgCallback
+        
+        // CRITICAL: User should still NOT be banned after MarkAsSpam button
+        // This is the main assertion - soft spam should NOT ban the user
+        let! userBannedAfter = fixture.UserBanned user.Id
+        Assert.False(userBannedAfter, "User should NOT be banned after MarkAsSpam - this is soft delete only!")
+        
+        // Message should be marked as false negative (spam for ML training)
+        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message
+        Assert.True(isFalseNegative, "Message should be marked as false negative for ML")
+    }
+    
+    [<Fact>]
+    let ``Only vahter can click MarkAsSpam button`` () = task {
+        // Similar to "Only vahter can press THE BUTTON(s)" test
+        // Verifies non-vahter clicking MarkAsSpam has no effect
+        let user = Tg.user()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage msgUpdate
+        
+        // Try to click MarkAsSpam as regular user (not vahter)
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+        let msgCallback = Tg.callback(string callbackId, from = user) // regular user, not vahter
+        let! _ = fixture.SendMessage msgCallback
+        
+        // Message should NOT be marked as false negative (action was rejected)
+        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message
+        Assert.False(isFalseNegative, "Non-vahter should not be able to mark message as spam")
+    }
+    
+    [<Fact>]
+    let ``User will be autobanned after consecutive MarkAsSpam clicks`` () = task {
+        // Tests that karma system works with MarkAsSpam
+        // After enough soft spam marks, user gets auto-banned
+        // ML_SPAM_AUTOBAN_SCORE_THRESHOLD is -4.0
+        // socialScore <= threshold triggers ban, so:
+        // - After 1st: score=-1, -1 > -4 → no ban
+        // - After 2nd: score=-2, -2 > -4 → no ban
+        // - After 3rd: score=-3, -3 > -4 → no ban
+        // - After 4th: score=-4, -4 <= -4 → BAN!
+        let user = Tg.user()
+        
+        // First 3 messages should NOT trigger ban
+        for i in 1..3 do
+            let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+            let! _ = fixture.SendMessage msgUpdate
+            
+            // Click MarkAsSpam (soft spam)
+            let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+            let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
+            let! _ = fixture.SendMessage msgCallback
+            
+            // User should not be banned yet (score is -1, -2, -3)
+            let! userBanned = fixture.UserBanned user.Id
+            Assert.False(userBanned, $"User should not be banned after {i} soft spam marks (score={-i})")
+        
+        // 4th soft spam should trigger auto-ban (score becomes -4 which is <= -4.0 threshold)
+        let finalMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage finalMsg
+        
+        let! callbackId = fixture.GetCallbackId finalMsg.Message "MarkAsSpam"
+        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
+        let! _ = fixture.SendMessage msgCallback
+        
+        // Now user should be auto-banned due to low karma (score=-4 <= threshold=-4)
+        let! userBanned = fixture.UserBanned user.Id
+        Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
+    }
 
     interface IAssemblyFixture<MlEnabledVahterTestContainers>
     interface IClassFixture<MlAwaitFixture>
