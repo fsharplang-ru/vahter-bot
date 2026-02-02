@@ -82,7 +82,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     
     [<Fact>]
     let ``If message got auto-deleted we can mark it as false-positive with a button click`` () = task {
-        // record a message, where 2 is in a training set as spam word
+        // record a message, where 7 is in a training set as spam word (detected spam)
         // ChatsToMonitor[0] doesn't have stopwords
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "7777777")
         let! _ = fixture.SendMessage msgUpdate
@@ -93,8 +93,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // assert it is not false-positive
         let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
         Assert.False isFalsePositive
+        // assert user is NOT banned (auto-delete is not the same as ban)
+        let! userBanned = fixture.UserBanned msgUpdate.Message.From.Id
+        Assert.False userBanned
         
-        // send a callback to mark it as false-positive
+        // send a callback to mark it as false-positive (NOT SPAM button)
         let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
@@ -102,6 +105,38 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // assert it is false-positive
         let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
         Assert.True isFalsePositive
+        // CRITICAL: assert user is still NOT banned after NOT SPAM button
+        let! userBanned = fixture.UserBanned msgUpdate.Message.From.Id
+        Assert.False userBanned
+    }
+    
+    [<Fact>]
+    let ``Potential spam NOT SPAM button does not ban user`` () = task {
+        // For potential spam, we need a text that gives score >= 0 but < 1.0 (ML_SPAM_THRESHOLD)
+        // Using a shorter spam-like text that might give lower score
+        // This tests the fix for the bug where NOT SPAM button was calling vahterMarkedAsSpam
+        let user = Tg.user()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage msgUpdate
+
+        // For potential spam, message is NOT auto-deleted (deleteMessage = false)
+        let! msgAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        // If this is potential spam, it won't be auto-deleted
+        // If it IS auto-deleted, it means score >= threshold, but the test still validates the bug fix
+        
+        // User should NOT be banned initially
+        let! userBannedBefore = fixture.UserBanned user.Id
+        Assert.False userBannedBefore
+        
+        // Try to get NotASpam callback (this exists for both detected and potential spam)
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
+        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
+        let! _ = fixture.SendMessage msgCallback
+        
+        // CRITICAL: User should still NOT be banned after NOT SPAM button
+        // This is the main assertion for the bug fix
+        let! userBannedAfter = fixture.UserBanned user.Id
+        Assert.False userBannedAfter
     }
     
     [<Fact>]

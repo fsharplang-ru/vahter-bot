@@ -484,38 +484,42 @@ let killSpammerAutomated
     let msgType = if deleteMessage then "Deleted" else "Detected"
     let logMsg = $"{msgType} spam (score: {score}) in {prependUsername message.Chat.Username} ({message.Chat.Id}) from {prependUsername message.From.Username} ({message.From.Id}) with text:\n{message.TextOrCaption}"
 
-    // Determine which topic and what buttons
-    let topicId, replyMarkup =
+    // Determine which topic
+    let topicId =
+        if deleteMessage then botConfig.ActionDetectedTopicId
+        else botConfig.ActionPotentialTopicId
+
+    // Phase 1: Create callback(s) without message_id
+    // For detected spam: one NotASpam callback
+    // For potential spam: two callbacks - Spam (KILL) and NotASpam (NOT SPAM)
+    let! callbackIds, markup = task {
         if deleteMessage then
-            // Detected spam → Detected topic with NOT A SPAM button
-            botConfig.ActionDetectedTopicId,
-            fun (callbackId: Guid) -> InlineKeyboardMarkup [
-                InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callbackId)
+            // Detected spam → one NotASpam callback
+            let! callback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id topicId
+            return [callback.id], InlineKeyboardMarkup [
+                InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callback.id)
             ]
         else
-            // Potential spam → Potential topic with KILL and NOT SPAM buttons
-            botConfig.ActionPotentialTopicId,
-            fun (callbackId: Guid) -> InlineKeyboardMarkup [|
-                InlineKeyboardButton.WithCallbackData("🚫 KILL", string callbackId);
-                InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string callbackId)
+            // Potential spam → two callbacks
+            let! killCallback = DB.newCallbackPending (CallbackMessage.Spam { message = message }) message.From.Id topicId
+            let! notSpamCallback = DB.newCallbackPending (CallbackMessage.NotASpam { message = message }) message.From.Id topicId
+            return [killCallback.id; notSpamCallback.id], InlineKeyboardMarkup [|
+                InlineKeyboardButton.WithCallbackData("🚫 KILL", string killCallback.id);
+                InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string notSpamCallback.id)
             |]
-
-    // Phase 1: Create callback without message_id
-    let callbackData = 
-        if deleteMessage then CallbackMessage.NotASpam { message = message }
-        else CallbackMessage.Spam { message = message }
-    let! callback = DB.newCallbackPending callbackData message.From.Id topicId
+    }
     
     // Phase 2: Post to action channel topic
     let! sent = botClient.SendTextMessageAsync(
         chatId = ChatId(botConfig.ActionChannelId),
         text = logMsg,
         messageThreadId = topicId,
-        replyMarkup = replyMarkup callback.id
+        replyMarkup = markup
     )
     
-    // Phase 3: Update callback with message_id
-    do! DB.updateCallbackMessageId callback.id sent.MessageId
+    // Phase 3: Update all callbacks with message_id
+    for callbackId in callbackIds do
+        do! DB.updateCallbackMessageId callbackId sent.MessageId
     
     // Send to All Logs topic (readonly, no buttons)
     do! botClient.SendTextMessageAsync(
@@ -932,8 +936,12 @@ let onCallbackAux
         do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Already handled by another vahter")
     
     // Always delete message from action channel (empty inbox)
+    // and cleanup related callbacks (for potential spam with two buttons)
     match dbCallback.action_message_id with
     | Some msgId ->
+        // Delete other callbacks with same message_id (the other button)
+        do! DB.deleteCallbacksByMessageId msgId
+        // Delete message from channel
         do! botClient.DeleteMessageAsync(
                 ChatId(botConfig.ActionChannelId),
                 msgId
