@@ -718,9 +718,12 @@ let justMessage
         use mlActivity = botActivity.StartActivity("mlPrediction")
 
         let shouldBeSkipped =
+            // skip prediction for automatic forwards from linked channels
+            if message.IsAutomaticForward then
+                true
             // skip prediction for vahters or local admins
-            if botConfig.AllowedUsers.ContainsValue message.From.Id
-               || UpdateChatAdmins.Admins.Contains message.From.Id then
+            elif botConfig.AllowedUsers.ContainsValue message.From.Id
+                 || UpdateChatAdmins.Admins.Contains message.From.Id then
                 true
             else
 
