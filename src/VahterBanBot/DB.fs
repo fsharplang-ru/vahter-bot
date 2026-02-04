@@ -547,3 +547,51 @@ ORDER BY killsTotal + notSpamTotal DESC;
         let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval |})
         return { interval = interval; stats = Array.ofSeq stats }
     }
+
+/// Tries to acquire a scheduled job with lease mechanism.
+/// Job runs once per day at the scheduled hour (UTC).
+/// Returns true if acquired, false if job is already running or not due yet.
+/// Uses atomic UPDATE to ensure only one pod can acquire the job.
+let tryAcquireScheduledJob (jobName: string) (scheduledHour: int) (podId: string): Task<bool> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        // Job should run if:
+        // 1. Current time >= today's scheduled time (scheduledHour:00 UTC)
+        // 2. Haven't completed today (last_completed_at < today's scheduled time or NULL)
+        // 3. Not locked or lock expired
+        let sql =
+            """
+UPDATE scheduled_job
+SET locked_until = NOW() + INTERVAL '1 hour',
+    locked_by = @podId
+WHERE job_name = @jobName
+  AND NOW() >= (CURRENT_DATE + @scheduledHour * INTERVAL '1 hour')
+  AND (last_completed_at IS NULL OR last_completed_at < (CURRENT_DATE + @scheduledHour * INTERVAL '1 hour'))
+  AND (locked_until IS NULL OR locked_until < NOW())
+RETURNING job_name;
+            """
+
+        let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; scheduledHour = scheduledHour; podId = podId |})
+        return Seq.length result > 0
+    }
+
+/// Marks a scheduled job as completed and releases the lock.
+let completeScheduledJob (jobName: string): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+UPDATE scheduled_job 
+SET last_completed_at = NOW(),
+    locked_until = NULL,
+    locked_by = NULL
+WHERE job_name = @jobName;
+            """
+
+        let! _ = conn.ExecuteAsync(sql, {| jobName = jobName |})
+        return ()
+    }

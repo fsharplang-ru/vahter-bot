@@ -16,9 +16,13 @@ type CleanupService(
     telegramClient: ITelegramBotClient,
     botConf: BotConfiguration
 ) =
-    let mutable timer: Timer = null
+    let podId = getEnvOr "POD_NAME" Environment.MachineName
+    let mutable cts: CancellationTokenSource = null
+    let mutable backgroundTask: Task = null
     
-    let cleanup _ = task {
+    /// Cleanup job - runs at 22:00 UTC
+    /// Cleans up old messages, callbacks, and detected spam from channel
+    let runCleanup () = task {
         let sb = StringBuilder()
         
         if botConf.CleanupOldMessages then
@@ -56,6 +60,20 @@ type CleanupService(
         if cleanupCallbacks > 0 then
             %sb.AppendLine $"Cleaned up {cleanupCallbacks} very old callbacks from DB"
 
+        let msg = sb.ToString()
+        if msg.Length > 0 then
+            do! telegramClient.SendTextMessageAsync(
+                    chatId = ChatId(botConf.AllLogsChannelId),
+                    text = msg
+                ) |> taskIgnore
+            logger.LogInformation msg
+    }
+    
+    /// Stats job - runs at 08:00 UTC
+    /// Sends daily vahter statistics to Telegram
+    let runStats () = task {
+        let sb = StringBuilder()
+        
         // Vahter ban stats (old system)
         let! vahterStats = DB.getVahterStats (Some botConf.CleanupInterval)
         %sb.AppendLine(string vahterStats)
@@ -71,14 +89,58 @@ type CleanupService(
             ) |> taskIgnore
         logger.LogInformation msg
     }
+    
+    let tryRunJob (jobName: string) (scheduledHour: int) (jobAction: unit -> Task<unit>) = task {
+        let! acquired = DB.tryAcquireScheduledJob jobName scheduledHour podId
+        if acquired then
+            logger.LogInformation("Acquired {JobName} job (pod: {PodId})", jobName, podId)
+            try
+                do! jobAction()
+                do! DB.completeScheduledJob jobName
+                logger.LogInformation("{JobName} completed successfully (pod: {PodId})", jobName, podId)
+            with ex ->
+                // Job failed but lease will expire in 1 hour, allowing retry
+                logger.LogError(ex, "{JobName} failed (pod: {PodId}), will retry after lease expires", jobName, podId)
+    }
+    
+    let runSchedulerLoop (ct: CancellationToken) = task {
+        logger.LogInformation("Scheduler service started (pod: {PodId}, check interval: {Interval})", podId, botConf.CleanupCheckInterval)
+        
+        // Use PeriodicTimer for async-friendly scheduling
+        use timer = new PeriodicTimer(botConf.CleanupCheckInterval)
+        
+        // Initial check after a short delay (don't run immediately on startup)
+        let! _ = Task.Delay(TimeSpan.FromSeconds 30, ct)
+        
+        while not ct.IsCancellationRequested do
+            try
+                // Check both scheduled jobs
+                do! tryRunJob "daily_cleanup" botConf.CleanupScheduledHour runCleanup
+                do! tryRunJob "daily_stats" botConf.StatsScheduledHour runStats
+            with 
+            | :? OperationCanceledException -> ()
+            | ex ->
+                logger.LogError(ex, "Error in scheduler loop (pod: {PodId})", podId)
+            
+            try
+                let! _ = timer.WaitForNextTickAsync(ct)
+                ()
+            with :? OperationCanceledException -> ()
+    }
 
     interface IHostedService with
         member this.StartAsync _ =
             if not botConf.IgnoreSideEffects then
-                timer <- new Timer(TimerCallback(cleanup >> ignore), null, TimeSpan.Zero, botConf.CleanupInterval)
+                cts <- new CancellationTokenSource()
+                backgroundTask <- Task.Factory.StartNew((fun () -> runSchedulerLoop cts.Token), TaskCreationOptions.LongRunning).Unwrap()
             Task.CompletedTask
 
-        member this.StopAsync _ =
-            match timer with
-            | null -> Task.CompletedTask
-            | timer -> timer.DisposeAsync().AsTask()
+        member this.StopAsync _ = task {
+            if not (isNull cts) then
+                cts.Cancel()
+                try
+                    // Wait for the background task to complete gracefully
+                    do! Task.WhenAny(backgroundTask, Task.Delay(TimeSpan.FromSeconds 5)) |> taskIgnore
+                with _ -> ()
+                cts.Dispose()
+        }

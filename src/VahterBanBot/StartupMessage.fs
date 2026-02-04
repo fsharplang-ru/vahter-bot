@@ -3,15 +3,12 @@ module VahterBanBot.StartupMessage
 open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open Microsoft.Extensions.Hosting
 
 type StartupMessage(
     logger: ILogger<StartupMessage>,
-    telegramClient: ITelegramBotClient,
     botConf: BotConfiguration
 ) =
     let getStartLogMsg() =
@@ -27,15 +24,11 @@ type StartupMessage(
         sb.ToString()
 
     interface IHostedService with
-        member this.StartAsync _ = task {
-            if not botConf.IgnoreSideEffects then
-                let startLogMsg = getStartLogMsg()
-                logger.LogInformation startLogMsg
-                do! telegramClient.SendTextMessageAsync(
-                        chatId = ChatId(botConf.AllLogsChannelId),
-                        text = startLogMsg
-                    ) |> taskIgnore
-        }
+        member this.StartAsync _ =
+            // Only log locally - Telegram notifications are sent via daily cleanup job
+            let startLogMsg = getStartLogMsg()
+            logger.LogInformation startLogMsg
+            Task.CompletedTask
 
         member this.StopAsync _ =
             Task.CompletedTask
