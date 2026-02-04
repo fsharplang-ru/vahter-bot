@@ -29,6 +29,9 @@ type BotConfiguration =
       UsePolling: bool
       CleanupOldMessages: bool
       CleanupInterval: TimeSpan
+      CleanupCheckInterval: TimeSpan
+      CleanupScheduledHour: int
+      StatsScheduledHour: int
       CleanupOldLimit: TimeSpan
       UpdateChatAdminsInterval: TimeSpan option
       UpdateChatAdmins: bool
