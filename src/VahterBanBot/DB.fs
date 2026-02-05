@@ -158,20 +158,22 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
         //language=postgresql
         let sql =
             """
-(SELECT vahter.username                                                      AS vahter
-      , COUNT(*)                                                             AS killCountTotal
-      , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
- FROM banned b
-          JOIN "user" vahter ON vahter.id = b.banned_by
- GROUP BY b.banned_by, vahter.username
- UNION
- SELECT 'bot'                                                          AS vahter,
-        COUNT(*)                                                       AS killCountTotal,
-        COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS killCountInterval
- FROM (SELECT banned_user_id, MIN(banned_at) AS banned_at
-       FROM banned_by_bot
-       GROUP BY banned_user_id) bbb)
-    ORDER BY killCountTotal DESC
+SELECT * FROM (
+    SELECT vahter.username                                                      AS "Vahter"
+          , COUNT(*)                                                             AS "KillCountTotal"
+          , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS "KillCountInterval"
+     FROM banned b
+              JOIN "user" vahter ON vahter.id = b.banned_by
+     GROUP BY b.banned_by, vahter.username
+     UNION
+     SELECT 'bot'                                                          AS "Vahter",
+            COUNT(*)                                                       AS "KillCountTotal",
+            COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS "KillCountInterval"
+     FROM (SELECT banned_user_id, MIN(banned_at) AS banned_at
+           FROM banned_by_bot
+           GROUP BY banned_user_id) bbb
+) stats
+ORDER BY "KillCountTotal" DESC;
             """
 
         let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
@@ -531,17 +533,19 @@ let getVahterActionStats (interval: TimeSpan option): Task<VahterActionStats> =
         //language=postgresql
         let sql =
             """
-SELECT u.username AS vahter,
-       COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban')) AS killsTotal,
-       COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban') 
-                          AND va.created_at > NOW() - @interval::INTERVAL) AS killsInterval,
-       COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam')) AS notSpamTotal,
-       COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam') 
-                          AND va.created_at > NOW() - @interval::INTERVAL) AS notSpamInterval
-FROM vahter_actions va
-JOIN "user" u ON u.id = va.vahter_id
-GROUP BY u.id, u.username
-ORDER BY killsTotal + notSpamTotal DESC;
+SELECT * FROM (
+    SELECT u.username AS "Vahter",
+           COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban')) AS "KillsTotal",
+           COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban') 
+                              AND va.created_at > NOW() - @interval::INTERVAL) AS "KillsInterval",
+           COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam')) AS "NotSpamTotal",
+           COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam') 
+                              AND va.created_at > NOW() - @interval::INTERVAL) AS "NotSpamInterval"
+    FROM vahter_actions va
+    JOIN "user" u ON u.id = va.vahter_id
+    GROUP BY u.id, u.username
+) stats
+ORDER BY "KillsTotal" + "NotSpamTotal" DESC;
             """
 
         let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval |})
