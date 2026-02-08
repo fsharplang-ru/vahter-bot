@@ -74,10 +74,6 @@ type CleanupService(
     let runStats () = task {
         let sb = StringBuilder()
         
-        // Vahter ban stats (old system)
-        let! vahterStats = DB.getVahterStats (Some botConf.CleanupInterval)
-        %sb.AppendLine(string vahterStats)
-        
         // Vahter action stats (new system)
         let! actionStats = DB.getVahterActionStats (Some botConf.CleanupInterval)
         %sb.AppendLine(string actionStats)
