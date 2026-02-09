@@ -79,7 +79,9 @@ let botConf =
       AzureOcrEndpoint = getEnvOr "AZURE_OCR_ENDPOINT" ""
       AzureOcrKey = getEnvOr "AZURE_OCR_KEY" ""
       MlEnabled = getEnvOr "ML_ENABLED" "false" |> bool.Parse
-      MlRetrainInterval = getEnvOrWith "ML_RETRAIN_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
+      MlRetrainScheduledTime =
+          let s = getEnvOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
+          TimeOnly.Parse(s).ToTimeSpan()
       MlSeed = getEnvOrWith "ML_SEED" (Nullable<int>()) (int >> Nullable)
       MlSpamDeletionEnabled = getEnvOr "ML_SPAM_DELETION_ENABLED" "false" |> bool.Parse
       MlSpamAutobanEnabled = getEnvOr "ML_SPAM_AUTOBAN_ENABLED" "false" |> bool.Parse
@@ -124,11 +126,12 @@ let builder = WebApplication.CreateBuilder()
     // we need to customize Giraffe STJ settings to conform to the Telegram.Bot API
     .AddSingleton<Json.ISerializer>(Json.Serializer(jsonOptions))
     .ConfigureTelegramBot<Microsoft.AspNetCore.Http.Json.JsonOptions>(fun x -> x.SerializerOptions)
+    // MachineLearning must start before CleanupService (loads model from DB on startup)
+    .AddSingleton<MachineLearning>()
+    .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
     .AddHostedService<CleanupService>()
     .AddHostedService<StartupMessage>()
     .AddHostedService<UpdateChatAdmins>()
-    .AddSingleton<MachineLearning>()
-    .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
 
 builder.Services
     .AddHttpClient<IComputerVision, AzureComputerVision>()
