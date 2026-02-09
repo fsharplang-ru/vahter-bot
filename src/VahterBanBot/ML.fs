@@ -233,7 +233,7 @@ type MachineLearning(
                         let mutable loaded = false
                         let mutable attempts = 0
                         while not loaded && attempts < 60 do // up to ~5 minutes
-                            do! Task.Delay(TimeSpan.FromSeconds 5)
+                            do! Task.Delay(TimeSpan.FromSeconds 5L)
                             let! result = loadModelFromDb()
                             loaded <- result
                             attempts <- attempts + 1

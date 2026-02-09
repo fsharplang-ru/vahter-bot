@@ -67,12 +67,12 @@ let botConf =
           |> getEnvOr "USE_FAKE_API"
           |> bool.Parse
       CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
-      CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int |> TimeSpan.FromSeconds
-      CleanupCheckInterval = getEnvOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int |> TimeSpan.FromSeconds
+      CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int64 |> TimeSpan.FromSeconds
+      CleanupCheckInterval = getEnvOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int64 |> TimeSpan.FromSeconds
       CleanupScheduledHour = getEnvOr "CLEANUP_SCHEDULED_HOUR_UTC" "22" |> int
       StatsScheduledHour = getEnvOr "STATS_SCHEDULED_HOUR_UTC" "8" |> int
-      CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int |> TimeSpan.FromSeconds
-      UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int >> TimeSpan.FromSeconds >> Some)
+      CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int64 |> TimeSpan.FromSeconds
+      UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int64 >> TimeSpan.FromSeconds >> Some)
       UpdateChatAdmins = getEnvOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
       OcrEnabled = getEnvOr "OCR_ENABLED" "false" |> bool.Parse
       OcrMaxFileSizeBytes = getEnvOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64

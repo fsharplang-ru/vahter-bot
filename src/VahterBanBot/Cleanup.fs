@@ -32,7 +32,7 @@ type CleanupService(
             %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable botConf.CleanupOldLimit}"
         
         // Cleanup failed posts (callbacks without message_id, older than 5 minutes)
-        let! failedPosts = DB.getCallbacksWithoutMessageId (TimeSpan.FromMinutes 5)
+        let! failedPosts = DB.getCallbacksWithoutMessageId (TimeSpan.FromMinutes 5L)
         for callback in failedPosts do
             do! DB.deleteCallback callback.id
         if failedPosts.Length > 0 then
@@ -108,7 +108,7 @@ type CleanupService(
         use timer = new PeriodicTimer(botConf.CleanupCheckInterval)
         
         // Initial check after a short delay (don't run immediately on startup)
-        let! _ = Task.Delay(TimeSpan.FromSeconds 30, ct)
+        let! _ = Task.Delay(TimeSpan.FromSeconds 30L, ct)
         
         while not ct.IsCancellationRequested do
             try
@@ -144,7 +144,7 @@ type CleanupService(
                 cts.Cancel()
                 try
                     // Wait for the background task to complete gracefully
-                    do! Task.WhenAny(backgroundTask, Task.Delay(TimeSpan.FromSeconds 5)) |> taskIgnore
+                    do! Task.WhenAny(backgroundTask, Task.Delay(TimeSpan.FromSeconds 5L)) |> taskIgnore
                 with _ -> ()
                 cts.Dispose()
         }
