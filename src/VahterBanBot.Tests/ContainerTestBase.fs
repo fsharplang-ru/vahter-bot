@@ -53,16 +53,14 @@ type VahterTestContainers(mlEnabled: bool) =
     // PostgreSQL container. Important to have the same image as in Azure
     // and assign network alias to it as it will be "host" in DB connection string for the app
     let dbContainer =
-        PostgreSqlBuilder()
-            .WithImage(pgImage) 
+        PostgreSqlBuilder(pgImage)
             .WithNetwork(network)
             .WithNetworkAliases(dbAlias)
             .Build()
 
     // Flyway container to run migrations
     let flywayContainer =
-        ContainerBuilder()
-            .WithImage("flyway/flyway")
+        ContainerBuilder("flyway/flyway")
             .WithNetwork(network)
             .WithBindMount(CommonDirectoryPath.GetSolutionDirectory().DirectoryPath + "/src/migrations", "/flyway/sql", AccessMode.ReadOnly)
             .WithEnvironment("FLYWAY_URL", "jdbc:postgresql://vahter-db:5432/vahter_db")
@@ -83,8 +81,7 @@ type VahterTestContainers(mlEnabled: bool) =
     // we'll pass all the necessary environment variables to it
     let appContainer =
         let builder = 
-            ContainerBuilder()
-                .WithImage(image)
+            ContainerBuilder(image)
                 .WithNetwork(network)
                 .WithPortBinding(80, true)
                 .WithEnvironment("BOT_USER_ID", "1337")
@@ -111,7 +108,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("UPDATE_CHAT_ADMINS", "true")
                 .WithEnvironment("UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400")
                 .DependsOn(flywayContainer)
-                .WithWaitStrategy(Wait.ForUnixContainer().UntilPortIsAvailable(80))
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(80))
         if mlEnabled then
             builder
                 .WithEnvironment("ML_ENABLED", "true")
@@ -156,7 +153,7 @@ type VahterTestContainers(mlEnabled: bool) =
     }
 
     interface IAsyncLifetime with
-        member this.InitializeAsync() = task {
+        member this.InitializeAsync() = ValueTask(task {
             try
                 do! startContainers()
                 publicConnectionString <- $"Server=127.0.0.1;Database=vahter_db;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
@@ -178,7 +175,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 // seed some test data
                 let script = File.ReadAllText(CommonDirectoryPath.GetCallerFileDirectory().DirectoryPath + "/test_seed.sql")
                 let scriptFilePath = String.Join("/", String.Empty, "tmp", Guid.NewGuid().ToString("D"), Path.GetRandomFileName())
-                do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, Unix.FileMode644)
+                do! dbContainer.CopyAsync(Encoding.Default.GetBytes script, scriptFilePath, fileMode = Unix.FileMode644)
                 let! scriptResult = dbContainer.ExecAsync [|"psql"; "--username"; "vahter_bot_ban_service"; "--dbname"; "vahter_db"; "--file"; scriptFilePath |]
 
                 if scriptResult.Stderr <> "" then
@@ -197,14 +194,15 @@ type VahterTestContainers(mlEnabled: bool) =
                     let struct (_stdout, err) = appContainer.GetLogsAsync().Result
                     if err <> "" then
                         failwith err
-        }
-        member this.DisposeAsync() = task {
+        })
+    interface IAsyncDisposable with
+        member this.DisposeAsync() = ValueTask(task {
             // stop all the containers, flyway might be dead already
             do! flywayContainer.DisposeAsync()
             do! appContainer.DisposeAsync()
             do! dbContainer.DisposeAsync()
             // do! image.DisposeAsync() // might be faster not to dispose base image to cache?
-        }
+        })
 
     member _.Http = httpClient
     member _.Uri = uri
@@ -345,6 +343,7 @@ type MlDisabledVahterTestContainers() =
 // workaround to wait for ML to be ready
 type MlAwaitFixture() =
     interface IAsyncLifetime with
-        member this.DisposeAsync() = Task.CompletedTask
         // we assume 5 seconds is enough for model to train. Could be flaky
-        member this.InitializeAsync() = Task.Delay 10000
+        member this.InitializeAsync() = ValueTask(Task.Delay 10000)
+    interface IAsyncDisposable with
+        member this.DisposeAsync() = ValueTask()

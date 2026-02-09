@@ -4,7 +4,6 @@ open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
 
@@ -490,5 +489,4 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
     }
 
-    interface IAssemblyFixture<MlEnabledVahterTestContainers>
     interface IClassFixture<MlAwaitFixture>

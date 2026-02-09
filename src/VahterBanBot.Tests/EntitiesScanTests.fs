@@ -5,7 +5,6 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
 
@@ -59,7 +58,6 @@ type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
         Assert.False msgBanned
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>
 
 type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
 
@@ -113,5 +111,4 @@ type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: Ml
         Assert.False msgBanned
     }
 
-    interface IAssemblyFixture<MlEnabledVahterTestContainers>
     interface IClassFixture<MlAwaitFixture>

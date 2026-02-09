@@ -60,7 +60,7 @@ type Tg() =
             Id = updateId,
             Message = 
                 Message(
-                    MessageId = msgId,
+                    Id = msgId,
                     Text = (text |> Option.defaultValue (Guid.NewGuid().ToString())),
                     Chat = (chat |> Option.defaultValue (Tg.chat())),
                     From = (from |> Option.defaultValue (Tg.user())),
@@ -75,7 +75,7 @@ type Tg() =
             EditedMessage =
                 if editedText |> Option.isSome then
                     Message(
-                        MessageId = msgId,
+                        Id = msgId,
                         Text = editedText.Value,
                         Chat = (chat |> Option.defaultValue (Tg.chat())),
                         From = (from |> Option.defaultValue (Tg.user())),
@@ -91,7 +91,7 @@ type Tg() =
             Id = next(),
             Message = 
                 Message(
-                    MessageId = next(),
+                    Id = next(),
                     Text = (text |> Option.defaultValue (Guid.NewGuid().ToString())),
                     Chat = msg.Chat,
                     From = (from |> Option.defaultValue (Tg.user())),

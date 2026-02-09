@@ -1,5 +1,6 @@
 open System
 open System.Collections.Generic
+open System.Diagnostics
 open System.Text.Json
 open System.Text.Json.Serialization
 open System.Threading
@@ -166,9 +167,6 @@ let otelBuilder =
                     ]
                 )
                 .AddSource(botActivity.Name)
-            getEnvWith "OTEL_EXPORTER_ZIPKIN_ENDPOINT" (fun _ ->
-                %builder.AddZipkinExporter()
-            )
             getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
                 %builder.AddOtlpExporter(fun options ->
                     options.Endpoint <- Uri(endpoint)
@@ -235,10 +233,10 @@ let webApp = choose [
         try
             do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision update
             %topActivity.SetTag("update-error", false)
-            topActivity.SetStatus(Status.Ok)
+            %topActivity.SetStatus(ActivityStatusCode.Ok)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
-            topActivity.SetStatus(Status.Error)
+            %topActivity.SetStatus(ActivityStatusCode.Error)
             %topActivity.SetTag("update-error", true)
 
         return! Successful.OK() next ctx

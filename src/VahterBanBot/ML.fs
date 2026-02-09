@@ -147,7 +147,7 @@ type MachineLearning(
         let metricsStr = metricsToString metrics sw.Elapsed
         logger.LogInformation metricsStr
         if sendMetrics then
-            do! telegramClient.SendTextMessageAsync(
+            do! telegramClient.SendMessage(
                     chatId = ChatId(botConf.AllLogsChannelId),
                     text = metricsStr,
                     parseMode = ParseMode.Markdown

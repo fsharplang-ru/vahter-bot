@@ -1,7 +1,9 @@
+module internal VahterBanBot.Tests.AssemblyInfo
+
 open Xunit
-open Xunit.Extensions.AssemblyFixture
+open VahterBanBot.Tests.ContainerTestBase
 
-[<assembly: TestFramework(AssemblyFixtureFramework.TypeName, AssemblyFixtureFramework.AssemblyName)>]
+[<assembly: CollectionBehavior(DisableTestParallelization = true)>]
+[<assembly: AssemblyFixture(typeof<MlDisabledVahterTestContainers>)>]
+[<assembly: AssemblyFixture(typeof<MlEnabledVahterTestContainers>)>]
 do ()
-
-module Program = let [<EntryPoint>] main _ = 0

@@ -26,7 +26,7 @@ type UpdateChatAdmins(
             %sb.AppendLine("New chat admins:")
             let result = HashSet<int64>()
             for chatId in botConf.ChatsToMonitor.Values do
-                let! admins = telegramClient.GetChatAdministratorsAsync(ChatId chatId)
+                let! admins = telegramClient.GetChatAdministrators(ChatId chatId)
 
                 // wait a bit so we don't get rate limited
                 do! Task.Delay 100

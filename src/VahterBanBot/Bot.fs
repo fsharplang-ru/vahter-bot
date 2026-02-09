@@ -91,7 +91,7 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // ban user in each chat
             try
-                do! botClient.BanChatMemberAsync(ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
+                do! botClient.BanChatMember(ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -118,7 +118,7 @@ let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId 
         )
     let untilDate = DateTime.UtcNow.AddHours duration
     try 
-        do! botClient.RestrictChatMemberAsync(chatId, targetUserId, permissions, untilDate = untilDate)
+        do! botClient.RestrictChatMember(chatId, targetUserId, permissions, untilDate = untilDate)
         return Ok(chatId, targetUserId)
     with e ->
         return Error(chatId, targetUserId, e)
@@ -130,7 +130,7 @@ let unbanInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // unban user in each chat
             try
-                do! botClient.UnbanChatMemberAsync(ChatId chatId, targetUserId, true)
+                do! botClient.UnbanChatMember(ChatId chatId, targetUserId, true)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -217,7 +217,7 @@ let ping
     (botClient: ITelegramBotClient)
     (message: Message) = task {
     use _ = botActivity.StartActivity("ping")
-    do! botClient.SendTextMessageAsync(ChatId(message.Chat.Id), "pong") |> taskIgnore
+    do! botClient.SendMessage(ChatId(message.Chat.Id), "pong") |> taskIgnore
 }
 
 let deleteChannelMessage
@@ -226,7 +226,7 @@ let deleteChannelMessage
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
     recordDeletedMessage message.Chat.Id message.Chat.Username "channelMessage"
-    do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+    do! botClient.DeleteMessage(ChatId(message.Chat.Id), message.MessageId)
         |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     let probablyChannelName =
@@ -260,7 +260,7 @@ let totalBan
                 .SetTag("chatId", message.Chat.Id)
                 .SetTag("chatUsername", message.Chat.Username)
         recordDeletedMessage message.Chat.Id message.Chat.Username "totalBan_initial"
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessage(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
     }
 
@@ -286,7 +286,7 @@ let totalBan
                             .SetTag("msgId", msg.message_id)
                             .SetTag("chatId", msg.chat_id)
                     recordDeletedMessage msg.chat_id null "totalBan_history"
-                    do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
+                    do! botClient.DeleteMessage(ChatId(msg.chat_id), msg.message_id)
                 with e ->
                     logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
             })
@@ -308,7 +308,7 @@ let totalBan
                 // Delete message from action channel
                 match callback.action_message_id with
                 | Some msgId ->
-                    do! botClient.DeleteMessageAsync(ChatId(callback.action_channel_id.Value), msgId)
+                    do! botClient.DeleteMessage(ChatId(callback.action_channel_id.Value), msgId)
                         |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete callback message {msgId} from action channel", e))
                 | None -> ()
                 // Delete callback from DB
@@ -336,7 +336,7 @@ let totalBan
         |> DB.banUser
 
     // log both to logger and to All Logs channel
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -401,7 +401,7 @@ let softBanMsg
                     .SetTag("chatId", messageToRemove.Chat.Id)
                     .SetTag("chatUsername", messageToRemove.Chat.Username)
             recordDeletedMessage messageToRemove.Chat.Id messageToRemove.Chat.Username "softBan"
-            do! botClient.DeleteMessageAsync(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
+            do! botClient.DeleteMessage(ChatId(messageToRemove.Chat.Id), messageToRemove.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete reply message {messageToRemove.MessageId} from chat {messageToRemove.Chat.Id}", e))
         }
         
@@ -417,7 +417,7 @@ let softBanMsg
         do! softBanInChat botClient (ChatId messageToRemove.Chat.Id) messageToRemove.From.Id duration |> taskIgnore
         do! deleteMsgTask
         
-        do! botClient.SendTextMessageAsync(
+        do! botClient.SendMessage(
                 chatId = ChatId(botConfig.AllLogsChannelId),
                 text = logText
             ) |> taskIgnore
@@ -450,7 +450,7 @@ let unban
     let logMsg = aggregateUnbanResultInLogMsg message.Chat vahter userToUnban logger 0 unbanResults
 
     // log both to logger and to All Logs channel
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -472,7 +472,7 @@ let killSpammerAutomated
     if deleteMessage then
         // delete message
         recordDeletedMessage message.Chat.Id message.Chat.Username "spamDeletion"
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessage(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
         // 0 here is the bot itself
         do! DbBanned.banMessage 0 message
@@ -509,7 +509,7 @@ let killSpammerAutomated
     }
     
     // Phase 2: Post to action channel
-    let! sent = botClient.SendTextMessageAsync(
+    let! sent = botClient.SendMessage(
         chatId = ChatId(channelId),
         text = logMsg,
         replyMarkup = markup
@@ -520,7 +520,7 @@ let killSpammerAutomated
         do! DB.updateCallbackMessageId callbackId sent.MessageId
     
     // Send to All Logs channel (readonly, no buttons)
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -554,7 +554,7 @@ let checkAndAutoBan
             do! totalBan botClient botConfig message botUser logger
             let msg = $"Auto-banned user {prependUsername message.From.Username} ({message.From.Id}) due to the low social score {socialScore}"
             logger.LogInformation msg
-            do! botClient.SendTextMessageAsync(
+            do! botClient.SendMessage(
                     chatId = ChatId(botConfig.AllLogsChannelId),
                     text = msg
                 ) |> taskIgnore
@@ -596,7 +596,7 @@ let totalBanByReaction
                             .SetTag("msgId", msg.message_id)
                             .SetTag("chatId", msg.chat_id)
                     recordDeletedMessage msg.chat_id null "totalBanByReaction_history"
-                    do! botClient.DeleteMessageAsync(ChatId(msg.chat_id), msg.message_id)
+                    do! botClient.DeleteMessage(ChatId(msg.chat_id), msg.message_id)
                 with e ->
                     logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
             })
@@ -616,7 +616,7 @@ let totalBanByReaction
             |> Seq.map (fun callback -> task {
                 match callback.action_message_id with
                 | Some msgId ->
-                    do! botClient.DeleteMessageAsync(ChatId(callback.action_channel_id.Value), msgId)
+                    do! botClient.DeleteMessage(ChatId(callback.action_channel_id.Value), msgId)
                         |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete callback message {msgId} from action channel", e))
                 | None -> ()
                 do! DB.deleteCallback callback.id
@@ -660,7 +660,7 @@ let totalBanByReaction
     let logMsg = string logMsgBuilder
     
     // log both to logger and to All Logs channel
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -688,7 +688,7 @@ let justMessage
     if isAutoBanned then
         // just delete message and move on
         recordDeletedMessage message.Chat.Id message.Chat.Username "alreadyAutoBanned"
-        do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+        do! botClient.DeleteMessage(ChatId(message.Chat.Id), message.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {message.MessageId} from chat {message.Chat.Id}", e))
 
     let containsInvisibleMention =
@@ -829,7 +829,7 @@ let adminCommand
                     .SetTag("chatId", message.Chat.Id)
                     .SetTag("chatUsername", message.Chat.Username)
             recordDeletedMessage message.Chat.Id message.Chat.Username "adminCommand"
-            do! botClient.DeleteMessageAsync(ChatId(message.Chat.Id), message.MessageId)
+            do! botClient.DeleteMessage(ChatId(message.Chat.Id), message.MessageId)
                 |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete ping message {message.MessageId} from chat {message.Chat.Id}", e))
         }
         // check that user is allowed to (un)ban others
@@ -919,7 +919,7 @@ let tryEnrichMessageWithOcr
 
                     %activity.SetTag("photoId", largestPhoto.FileId)
 
-                    let! file = botClient.GetFileAsync(largestPhoto.FileId)
+                    let! file = botClient.GetFile(largestPhoto.FileId)
 
                     if String.IsNullOrWhiteSpace file.FilePath then
                         logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
@@ -968,7 +968,7 @@ let vahterMarkedAsNotSpam
     let vahterUsername = vahter.username |> Option.defaultValue null
     
     let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{msg.message.TextOrCaption}"
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -1020,7 +1020,7 @@ let vahterSoftSpam
     
     // 1. Delete the message from original chat
     recordDeletedMessage chatId chatName "softSpam"
-    do! botClient.DeleteMessageAsync(ChatId(chatId), msgId)
+    do! botClient.DeleteMessage(ChatId(chatId), msgId)
         |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to delete message {msgId} from chat {chatId}", e))
     
     // 2. Mark as false negative (for ML training + karma)
@@ -1029,7 +1029,7 @@ let vahterSoftSpam
     // 3. Log the action
     let vahterUsername = vahter.username |> Option.defaultValue null
     let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.id}) marked message {msgId} in {prependUsername chatName}({chatId}) as SPAM (soft, no ban)\n{msg.TextOrCaption}"
-    do! botClient.SendTextMessageAsync(
+    do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
@@ -1082,12 +1082,12 @@ let onCallbackAux
             %onCallbackActivity.SetTag("type", "MarkAsSpam")
             do! vahterSoftSpam botUser botClient botConfig logger vahter msg
         
-        do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Done! +1 🎯")
+        do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Done! +1 🎯")
     else
         // Someone already handled via /ban
         %onCallbackActivity.SetTag("actionRecorded", false)
         logger.LogInformation $"Action already recorded for message {msg.message.MessageId} in chat {msg.message.Chat.Id}"
-        do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Already handled by another vahter")
+        do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Already handled by another vahter")
     
     // Always delete message from action channel (empty inbox)
     // and cleanup related callbacks (for potential spam with two buttons)
@@ -1096,7 +1096,7 @@ let onCallbackAux
         // Delete other callbacks with same message_id (the other button)
         do! DB.deleteCallbacksByMessageId msgId
         // Delete message from channel
-        do! botClient.DeleteMessageAsync(
+        do! botClient.DeleteMessage(
                 ChatId(channelId),
                 msgId
             ) |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msgId} from action channel", e))
@@ -1119,7 +1119,7 @@ let onCallback
     | None ->
         // Callback already processed by another vahter
         logger.LogInformation $"Callback {callbackId} already processed"
-        do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Already processed")
+        do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Already processed")
     | Some dbCallback ->
         %onCallbackActivity.SetTag("callbackData", dbCallback.data)
         let callback = dbCallback.data
@@ -1127,7 +1127,7 @@ let onCallback
         match! DB.getUserById callbackQuery.From.Id with
         | None ->
             logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being in DB"
-            do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "You are not in DB")
+            do! botClient.AnswerCallbackQuery(callbackQuery.Id, "You are not in DB")
         | Some vahter ->
             %onCallbackActivity.SetTag("vahterUsername", vahter.username)
             %onCallbackActivity.SetTag("vahterId", vahter.id)
@@ -1136,7 +1136,7 @@ let onCallback
             let isAuthed = botConfig.AllowedUsers.ContainsValue vahter.id
             if not isAuthed then
                 logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being a certified vahter"
-                do! botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Not authorized")
+                do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Not authorized")
             else
                 do! onCallbackAux
                         botUser
