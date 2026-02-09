@@ -40,7 +40,7 @@ type BotConfiguration =
       AzureOcrEndpoint: string
       AzureOcrKey: string
       MlEnabled: bool
-      MlRetrainInterval: TimeSpan option
+      MlRetrainScheduledTime: TimeSpan
       MlSeed: Nullable<int>
       MlSpamDeletionEnabled: bool
       MlSpamAutobanEnabled: bool

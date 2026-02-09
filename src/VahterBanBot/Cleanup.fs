@@ -5,6 +5,7 @@ open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
 open Telegram.Bot.Types
+open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open System
@@ -14,13 +15,14 @@ open Microsoft.Extensions.Hosting
 type CleanupService(
     logger: ILogger<CleanupService>,
     telegramClient: ITelegramBotClient,
-    botConf: BotConfiguration
+    botConf: BotConfiguration,
+    ml: MachineLearning
 ) =
     let podId = getEnvOr "POD_NAME" Environment.MachineName
     let mutable cts: CancellationTokenSource = null
     let mutable backgroundTask: Task = null
     
-    /// Cleanup job - runs at 22:00 UTC
+    /// Cleanup job - runs at configured hour UTC
     /// Cleans up old messages, callbacks, and detected spam from channel
     let runCleanup () = task {
         let sb = StringBuilder()
@@ -69,7 +71,7 @@ type CleanupService(
             logger.LogInformation msg
     }
     
-    /// Stats job - runs at 08:00 UTC
+    /// Stats job - runs at configured hour UTC
     /// Sends daily vahter statistics to Telegram
     let runStats () = task {
         let sb = StringBuilder()
@@ -86,8 +88,8 @@ type CleanupService(
         logger.LogInformation msg
     }
     
-    let tryRunJob (jobName: string) (scheduledHour: int) (jobAction: unit -> Task<unit>) = task {
-        let! acquired = DB.tryAcquireScheduledJob jobName scheduledHour podId
+    let tryRunJob (jobName: string) (scheduledTime: TimeSpan) (jobAction: unit -> Task<unit>) = task {
+        let! acquired = DB.tryAcquireScheduledJob jobName scheduledTime podId
         if acquired then
             logger.LogInformation("Acquired {JobName} job (pod: {PodId})", jobName, podId)
             try
@@ -110,9 +112,15 @@ type CleanupService(
         
         while not ct.IsCancellationRequested do
             try
-                // Check both scheduled jobs
-                do! tryRunJob "daily_cleanup" botConf.CleanupScheduledHour runCleanup
-                do! tryRunJob "daily_stats" botConf.StatsScheduledHour runStats
+                // Check scheduled jobs
+                do! tryRunJob "daily_cleanup" (TimeSpan.FromHours botConf.CleanupScheduledHour) runCleanup
+                do! tryRunJob "daily_stats" (TimeSpan.FromHours botConf.StatsScheduledHour) runStats
+
+                if botConf.MlEnabled then
+                    do! tryRunJob "daily_ml_retrain" botConf.MlRetrainScheduledTime (fun () -> ml.RetrainAndSave())
+
+                // Check if another pod retrained a newer model (all pods)
+                do! ml.TryReloadIfNewer()
             with 
             | :? OperationCanceledException -> ()
             | ex ->

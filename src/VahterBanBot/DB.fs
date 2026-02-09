@@ -552,17 +552,69 @@ ORDER BY "KillsTotal" + "NotSpamTotal" DESC;
         return { interval = interval; stats = Array.ofSeq stats }
     }
 
+/// Saves a trained ML model to the database (singleton row, upsert).
+let saveTrainedModel (modelData: byte[]): Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO ml_trained_model (id, model_data, created_at)
+VALUES (1, @modelData, NOW())
+ON CONFLICT (id) DO UPDATE
+    SET model_data = EXCLUDED.model_data,
+        created_at = EXCLUDED.created_at;
+            """
+
+        let! _ = conn.ExecuteAsync(sql, {| modelData = modelData |})
+        return ()
+    }
+
+[<CLIMutable>]
+type TrainedModelInfo =
+    { model_data: byte[]
+      created_at: DateTime }
+
+/// Loads a trained ML model from the database.
+/// Returns model bytes + created_at timestamp, or None if no model exists.
+let loadTrainedModel (): Task<(byte[] * DateTime) option> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT model_data, created_at FROM ml_trained_model WHERE id = 1"
+
+        let! result = conn.QueryAsync<TrainedModelInfo>(sql)
+        return
+            result
+            |> Seq.tryHead
+            |> Option.map (fun r -> r.model_data, r.created_at)
+    }
+
+/// Gets the created_at timestamp of the trained model (lightweight freshness check).
+let getModelCreatedAt (): Task<DateTime option> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql = "SELECT created_at FROM ml_trained_model WHERE id = 1"
+
+        let! result = conn.QueryAsync<DateTime>(sql)
+        return Seq.tryHead result
+    }
+
 /// Tries to acquire a scheduled job with lease mechanism.
-/// Job runs once per day at the scheduled hour (UTC).
+/// Job runs once per day at the scheduled time (UTC).
 /// Returns true if acquired, false if job is already running or not due yet.
 /// Uses atomic UPDATE to ensure only one pod can acquire the job.
-let tryAcquireScheduledJob (jobName: string) (scheduledHour: int) (podId: string): Task<bool> =
+let tryAcquireScheduledJob (jobName: string) (scheduledTime: TimeSpan) (podId: string): Task<bool> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
         // Job should run if:
-        // 1. Current time >= today's scheduled time (scheduledHour:00 UTC)
+        // 1. Current time >= today's scheduled time
         // 2. Haven't completed today (last_completed_at < today's scheduled time or NULL)
         // 3. Not locked or lock expired
         let sql =
@@ -571,13 +623,13 @@ UPDATE scheduled_job
 SET locked_until = NOW() + INTERVAL '1 hour',
     locked_by = @podId
 WHERE job_name = @jobName
-  AND NOW() >= (CURRENT_DATE + @scheduledHour * INTERVAL '1 hour')
-  AND (last_completed_at IS NULL OR last_completed_at < (CURRENT_DATE + @scheduledHour * INTERVAL '1 hour'))
+  AND NOW() >= (CURRENT_DATE + @scheduledTime)
+  AND (last_completed_at IS NULL OR last_completed_at < (CURRENT_DATE + @scheduledTime))
   AND (locked_until IS NULL OR locked_until < NOW())
 RETURNING job_name;
             """
 
-        let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; scheduledHour = scheduledHour; podId = podId |})
+        let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; scheduledTime = scheduledTime; podId = podId |})
         return Seq.length result > 0
     }
 
@@ -598,4 +650,27 @@ WHERE job_name = @jobName;
 
         let! _ = conn.ExecuteAsync(sql, {| jobName = jobName |})
         return ()
+    }
+
+/// Executes an action while holding a PostgreSQL session-level advisory lock.
+/// Returns true if the lock was acquired and the action completed.
+/// Returns false if the lock is already held by another session.
+/// The lock is explicitly released after the action, or automatically released
+/// if the connection drops (e.g., pod crash).
+let withAdvisoryLock (lockKey: int) (action: unit -> Task) : Task<bool> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+        do! conn.OpenAsync()
+
+        //language=postgresql
+        let! acquired = conn.QuerySingleAsync<bool>("SELECT pg_try_advisory_lock(@key)", {| key = lockKey |})
+        if acquired then
+            try
+                do! action()
+                return true
+            finally
+                // Explicitly release; also auto-released if connection drops
+                conn.Execute("SELECT pg_advisory_unlock(@key)", {| key = lockKey |}) |> ignore
+        else
+            return false
     }
