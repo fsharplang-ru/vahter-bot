@@ -55,17 +55,17 @@ type MachineLearning(
     let mutable predictionEngine: PredictionEngine<SpamOrHam, Prediction> option = None
     let mutable modelCreatedAt: DateTime option = None
 
-    /// Loads a serialized model from DB bytes and creates a PredictionEngine.
+    /// Loads a serialized model from DB via streaming and creates a PredictionEngine.
     let loadModelFromDb () = task {
-        match! DB.loadTrainedModel() with
-        | Some (modelBytes, createdAt) ->
+        let! result = DB.withTrainedModel (fun (stream, createdAt) -> task {
             let mlContext = MLContext(botConf.MlSeed)
-            use ms = new MemoryStream(modelBytes)
-            let model, _schema = mlContext.Model.Load(ms)
+            let model, _schema = mlContext.Model.Load(stream)
             predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(model))
             modelCreatedAt <- Some createdAt
-            logger.LogInformation("Loaded trained model from DB (created at {CreatedAt}, size {Size} bytes)", createdAt, modelBytes.Length)
-            return true
+            logger.LogInformation("Loaded trained model from DB (created at {CreatedAt})", createdAt)
+        })
+        match result with
+        | Some () -> return true
         | None ->
             logger.LogInformation "No trained model found in DB"
             return false
@@ -128,13 +128,19 @@ type MachineLearning(
         
         logger.LogInformation "Model transformation complete"
 
-        // Serialize and save to DB
-        use ms = new MemoryStream()
-        mlContext.Model.Save(trainedModel, dataView.Schema, ms)
-        let modelBytes = ms.ToArray()
-        do! DB.saveTrainedModel modelBytes
-        modelCreatedAt <- Some DateTime.UtcNow
-        logger.LogInformation("Saved trained model to DB ({Size} bytes)", modelBytes.Length)
+        // Serialize model to MemoryStream and stream directly to DB.
+        // We pass the MemoryStream as a Stream parameter to Npgsql, avoiding the
+        // extra byte[] copy that .ToArray() would create.
+        let ms = new MemoryStream()
+        try
+            mlContext.Model.Save(trainedModel, dataView.Schema, ms)
+            logger.LogInformation("Serialized model ({Size} bytes)", ms.Length)
+            ms.Position <- 0L
+            do! DB.saveTrainedModel ms
+            modelCreatedAt <- Some DateTime.UtcNow
+            logger.LogInformation "Saved trained model to DB"
+        finally
+            ms.Dispose()
         
         sw.Stop()
         
