@@ -1,9 +1,12 @@
 module VahterBanBot.DB
 
 open System
+open System.Data
+open System.IO
 open System.Threading.Tasks
 open Microsoft.ML.Data
 open Npgsql
+open NpgsqlTypes
 open VahterBanBot.Types
 open Dapper
 open VahterBanBot.Utils
@@ -553,9 +556,11 @@ ORDER BY "KillsTotal" + "NotSpamTotal" DESC;
     }
 
 /// Saves a trained ML model to the database (singleton row, upsert).
-let saveTrainedModel (modelData: byte[]): Task =
+/// Accepts a Stream to avoid buffering the entire model in memory as byte[].
+let saveTrainedModel (modelStream: Stream): Task =
     task {
         use conn = new NpgsqlConnection(connString)
+        do! conn.OpenAsync()
 
         //language=postgresql
         let sql =
@@ -567,29 +572,35 @@ ON CONFLICT (id) DO UPDATE
         created_at = EXCLUDED.created_at;
             """
 
-        let! _ = conn.ExecuteAsync(sql, {| modelData = modelData |})
+        use cmd = new NpgsqlCommand(sql, conn)
+        cmd.Parameters.Add(NpgsqlParameter("modelData", NpgsqlTypes.NpgsqlDbType.Bytea, Value = modelStream)) |> ignore
+        let! _ = cmd.ExecuteNonQueryAsync()
         return ()
     }
 
-[<CLIMutable>]
-type TrainedModelInfo =
-    { model_data: byte[]
-      created_at: DateTime }
-
-/// Loads a trained ML model from the database.
-/// Returns model bytes + created_at timestamp, or None if no model exists.
-let loadTrainedModel (): Task<(byte[] * DateTime) option> =
+/// Loads a trained ML model from the database as a Stream.
+/// Uses SequentialAccess to avoid buffering the entire bytea in memory.
+/// The returned stream is only valid while the caller-provided action runs.
+/// Column order: created_at first, then model_data (SequentialAccess requires reading in order).
+let withTrainedModel (action: Stream * DateTime -> Task<'a>) : Task<'a option> =
     task {
         use conn = new NpgsqlConnection(connString)
+        do! conn.OpenAsync()
 
         //language=postgresql
-        let sql = "SELECT model_data, created_at FROM ml_trained_model WHERE id = 1"
+        let sql = "SELECT created_at, model_data FROM ml_trained_model WHERE id = 1"
 
-        let! result = conn.QueryAsync<TrainedModelInfo>(sql)
-        return
-            result
-            |> Seq.tryHead
-            |> Option.map (fun r -> r.model_data, r.created_at)
+        use cmd = new NpgsqlCommand(sql, conn)
+        use! reader = cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess)
+        let! hasRow = reader.ReadAsync()
+        if hasRow then
+            // Must read in column order with SequentialAccess
+            let createdAt = reader.GetDateTime(0)
+            use stream = reader.GetStream(1)
+            let! result = action (stream, createdAt)
+            return Some result
+        else
+            return None
     }
 
 /// Gets the created_at timestamp of the trained model (lightweight freshness check).
