@@ -6,7 +6,14 @@ open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
 
 type Tg() =
-    static let mutable i = 1L // higher than the data in the test_seed.sql
+    // Start well above all hardcoded IDs used in tests and config to prevent
+    // auto-generated user/message/chat IDs from colliding with them:
+    //   Vahter IDs: 34, 69 (ALLOWED_USERS) — collision makes isBanAuthorized reject bans silently
+    //   FakeTgApi admin: 42 (/getChatAdministrators)
+    //   Bot user ID: 1337 (BOT_USER_ID)
+    //   Seed user IDs: 1001-1010 (test_seed.sql)
+    //   Seed message IDs: 10001-10499 (test_seed.sql)
+    static let mutable i = 100_000L
     static let nextInt64() = Interlocked.Increment &i
     static let next() = nextInt64() |> int
     static member user (?id: int64, ?username: string, ?firstName: string) =
