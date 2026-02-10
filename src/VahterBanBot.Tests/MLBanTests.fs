@@ -460,11 +460,16 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // - After 2nd: score=-2, -2 > -4 → no ban
         // - After 3rd: score=-3, -3 > -4 → no ban
         // - After 4th: score=-4, -4 <= -4 → BAN!
+        //
+        // NOTE: Uses "33" instead of "77" to avoid false_positive_messages contamination
+        // from the "Potential spam NOT SPAM button does not ban user" test which inserts "77"
+        // into false_positive_messages. The "3" family is in the training set as false negatives
+        // so "33" triggers ML detection as potential spam just like "77" does.
         let user = Tg.user()
         
         // First 3 messages should NOT trigger ban
         for i in 1..3 do
-            let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+            let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "33", from = user)
             let! _ = fixture.SendMessage msgUpdate
             
             // Click MarkAsSpam (soft spam)
@@ -477,7 +482,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
             Assert.False(userBanned, $"User should not be banned after {i} soft spam marks (score={-i})")
         
         // 4th soft spam should trigger auto-ban (score becomes -4 which is <= -4.0 threshold)
-        let finalMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let finalMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "33", from = user)
         let! _ = fixture.SendMessage finalMsg
         
         let! callbackId = fixture.GetCallbackId finalMsg.Message "MarkAsSpam"
