@@ -1162,16 +1162,7 @@ let onMessageReaction
             .SetTag("messageId", reaction.MessageId)
             .SetTag("userId", reaction.User.Id)
             .SetTag("userUsername", reaction.User.Username)
-    
-    logger.LogInformation(
-        "Reaction from {Username} ({UserId}) on message {MessageId} in {ChatUsername} ({ChatId})",
-        reaction.User.Username,
-        reaction.User.Id,
-        reaction.MessageId,
-        reaction.Chat.Username,
-        reaction.Chat.Id
-    )
-    
+
     // Check if reaction spam detection is enabled
     if not botConfig.ReactionSpamEnabled then
         %activity.SetTag("skipped", "reactionSpamDisabled")
