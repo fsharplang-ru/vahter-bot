@@ -4,7 +4,6 @@ open System.Net
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type ReactionSpamTests(fixture: MlEnabledVahterTestContainers) =
 
@@ -130,7 +129,6 @@ type ReactionSpamTests(fixture: MlEnabledVahterTestContainers) =
         Assert.Equal(0, reactionCount)
     }
 
-    interface IAssemblyFixture<MlEnabledVahterTestContainers>
 
 type ReactionSpamDisabledTests(fixture: MlDisabledVahterTestContainers) =
 
@@ -156,4 +154,3 @@ type ReactionSpamDisabledTests(fixture: MlDisabledVahterTestContainers) =
         Assert.Equal(0, reactionCount)
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>

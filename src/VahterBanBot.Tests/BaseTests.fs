@@ -6,7 +6,6 @@ open System.Text
 open Telegram.Bot.Types
 open VahterBanBot.Tests.ContainerTestBase
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type BaseTests(fixture: MlDisabledVahterTestContainers) =
     [<Fact>]
@@ -34,4 +33,3 @@ type BaseTests(fixture: MlDisabledVahterTestContainers) =
         Assert.Equal("null", body)
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>

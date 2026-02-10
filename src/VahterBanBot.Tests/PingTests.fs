@@ -4,7 +4,6 @@ open System.Net
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type PingTests(fixture: MlDisabledVahterTestContainers) =
     [<Fact>]
@@ -43,4 +42,3 @@ type PingTests(fixture: MlDisabledVahterTestContainers) =
         Assert.False dbMsg.IsSome
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>

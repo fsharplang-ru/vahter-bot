@@ -45,7 +45,7 @@ type CleanupService(
             match callback.action_message_id with
             | Some msgId ->
                 try
-                    do! telegramClient.DeleteMessageAsync(
+                    do! telegramClient.DeleteMessage(
                         ChatId(botConf.DetectedSpamChannelId),
                         msgId
                     )
@@ -64,7 +64,7 @@ type CleanupService(
 
         let msg = sb.ToString()
         if msg.Length > 0 then
-            do! telegramClient.SendTextMessageAsync(
+            do! telegramClient.SendMessage(
                     chatId = ChatId(botConf.AllLogsChannelId),
                     text = msg
                 ) |> taskIgnore
@@ -81,7 +81,7 @@ type CleanupService(
         %sb.AppendLine(string actionStats)
 
         let msg = sb.ToString()
-        do! telegramClient.SendTextMessageAsync(
+        do! telegramClient.SendMessage(
                 chatId = ChatId(botConf.AllLogsChannelId),
                 text = msg
             ) |> taskIgnore

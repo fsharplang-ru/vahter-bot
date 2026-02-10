@@ -58,7 +58,7 @@ let fakeTgApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
             // respond with the request body as a string
             let message =
                 Message(
-                    MessageId = 1,
+                    Id = 1,
                     Date = DateTime.UtcNow,
                     Chat = Chat(
                         Id = 1L,

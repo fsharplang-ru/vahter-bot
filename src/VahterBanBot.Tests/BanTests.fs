@@ -4,7 +4,6 @@ open System.Net
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
-open Xunit.Extensions.AssemblyFixture
 
 type BanTests(fixture: MlDisabledVahterTestContainers) =
 
@@ -165,4 +164,3 @@ type BanTests(fixture: MlDisabledVahterTestContainers) =
         Assert.True msgBanned
     }
 
-    interface IAssemblyFixture<MlDisabledVahterTestContainers>
