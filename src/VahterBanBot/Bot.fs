@@ -1233,6 +1233,9 @@ let onUpdate
     elif update.EditedOrMessage <> null then
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
+    elif update.ChatMember <> null || update.MyChatMember <> null then
+        // expected update type, nothing to do
+        ()
     else
         // unknown update type, just log and ignore
         logger.LogWarning("Unknown update type: {UpdateType}", update.Type)
