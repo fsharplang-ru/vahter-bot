@@ -19,7 +19,7 @@ jobs:
       with:
         global-json-file: global.json
     - name: Tests
-      run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx"
+      run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=detailed"
       
     # upload test results
     - name: Upload dotnet test results
