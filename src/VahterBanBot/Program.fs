@@ -97,6 +97,7 @@ let botConf =
       MlMaxNumberOfIterations = getEnvOr "ML_MAX_NUMBER_OF_ITERATIONS" "50" |> int
       MlCustomEmojiThreshold = getEnvOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
       MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
+      MlWeightDecayK = getEnvOr "ML_WEIGHT_DECAY_K" "0" |> float
       // Reaction spam detection
       ReactionSpamEnabled = getEnvOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
       ReactionSpamMinMessages = getEnvOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int

@@ -55,6 +55,8 @@ type BotConfiguration =
       MlMaxNumberOfIterations: int
       MlCustomEmojiThreshold: int
       MlStopWordsInChats: Dictionary<int64, string list>
+      /// Time-decay weight parameter: w(t) = exp(-k * age_in_days). 0 = no decay (all weights 1.0).
+      MlWeightDecayK: float
       // Reaction spam detection
       ReactionSpamEnabled: bool
       ReactionSpamMinMessages: int
