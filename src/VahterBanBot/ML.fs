@@ -22,6 +22,7 @@ type SpamOrHam =
       spam: bool
       lessThanNMessagesF: single
       moreThanNEmojisF: single
+      weight: single
       createdAt: DateTime }
 
 [<CLIMutable>]
@@ -86,12 +87,20 @@ type MachineLearning(
         
         logger.LogInformation $"Training data count: {rawData.Length}"
         
+        let now = DateTime.UtcNow
+        let k = botConf.MlWeightDecayK
         let data =
             rawData
             |> Array.map (fun x ->
+                let w =
+                    if k > 0.0 then
+                        single (Math.Exp(-k * (now - x.created_at).TotalDays))
+                    else
+                        1.0f
                 { text = x.text
                   spam = x.spam
                   createdAt = x.created_at
+                  weight = w
                   moreThanNEmojisF = if x.custom_emoji_count > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
                   lessThanNMessagesF = if x.less_than_n_messages then 1.0f else 0.0f }
             )
@@ -105,11 +114,21 @@ type MachineLearning(
         let trainingData = trainTestSplit.TrainSet
         let testData = trainTestSplit.TestSet
         
-        let dataProcessPipeline =
+        let featurePipeline =
             mlContext.Transforms.Text
                 .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
                 .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF"; "moreThanNEmojisF"|]))
-                .Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
+
+        let dataProcessPipeline =
+            if k > 0.0 then
+                featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
+                    labelColumnName = "spam",
+                    featureColumnName = "Features",
+                    exampleWeightColumnName = "weight",
+                    maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
+                ))
+            else
+                featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
                     labelColumnName = "spam",
                     featureColumnName = "Features",
                     maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
@@ -174,6 +193,7 @@ type MachineLearning(
                       spam = false
                       lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
                       moreThanNEmojisF = if emojiCount > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
+                      weight = 1.0f
                       createdAt = DateTime.UtcNow }
                 |> Some
             | None ->
