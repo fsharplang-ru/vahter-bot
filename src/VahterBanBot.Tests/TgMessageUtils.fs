@@ -60,7 +60,16 @@ type Tg() =
     static member emoji(?offset: int) = MessageEntity(Type = MessageEntityType.CustomEmoji, Offset = defaultArg offset 0 , Length = 1)
     static member emojies(n: int) = Array.init n (fun i -> Tg.emoji i)
 
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat) =
+    static member textQuote(text: string) =
+        TextQuote(Text = text, Position = 0)
+
+    static member externalReply(?photos: PhotoSize[], ?chat: Chat) =
+        ExternalReplyInfo(
+            Photo = (photos |> Option.defaultValue null),
+            Chat = (chat |> Option.defaultValue null)
+        )
+
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo) =
         let updateId = next()
         let msgId = next()
         Update(
@@ -77,7 +86,9 @@ type Tg() =
                     Entities = (entities |> Option.defaultValue null),
                     Photo = (photos |> Option.defaultValue null),
                     IsAutomaticForward = (isAutomaticForward |> Option.defaultValue false),
-                    SenderChat = (senderChat |> Option.defaultValue null)
+                    SenderChat = (senderChat |> Option.defaultValue null),
+                    Quote = (quote |> Option.defaultValue null),
+                    ExternalReply = (externalReply |> Option.defaultValue null)
                 ),
             EditedMessage =
                 if editedText |> Option.isSome then

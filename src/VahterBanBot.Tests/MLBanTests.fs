@@ -494,4 +494,70 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
     }
 
+    [<Fact>]
+    let ``Message with spam in quote text triggers auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            quote = Tg.textQuote("2222222")
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Message with non-spam quote text does NOT trigger auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            quote = Tg.textQuote("b")
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+    }
+
+    [<Fact>]
+    let ``Quote text is prepended to message text`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            quote = Tg.textQuote("b")
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.True dbMsg.IsSome
+        Assert.Equal("b\nhello", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Spam in external reply photo triggers auto-delete via OCR`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            externalReply = Tg.externalReply(photos = [| Tg.spamPhoto |])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Ham in external reply photo does NOT trigger auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            externalReply = Tg.externalReply(photos = [| Tg.hamPhoto |])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+    }
+
     interface IClassFixture<MlAwaitFixture>
