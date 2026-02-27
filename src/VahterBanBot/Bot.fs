@@ -889,6 +889,96 @@ let onMessage
         do! justMessage botUser botClient botConfig logger ml message
 }
 
+let private selectLargestPhoto (photos: PhotoSize array) =
+    let withSize = photos |> Array.filter (fun p -> p.FileSize.HasValue)
+    if withSize.Length > 0 then
+        withSize |> Array.maxBy (fun p -> p.FileSize.Value)
+    else
+        photos |> Array.maxBy (fun p -> p.Width * p.Height)
+
+let private ocrPhotos
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (computerVision: IComputerVision)
+    (logger: ILogger)
+    (photos: PhotoSize array)
+    (messageId: int) = task {
+    let candidatePhotos =
+        photos
+        |> Array.filter (fun p ->
+            let size = int64 p.FileSize
+            size = 0L || size <= botConfig.OcrMaxFileSizeBytes)
+
+    if candidatePhotos.Length = 0 then
+        logger.LogWarning(
+            "No photos under OCR limit of {LimitBytes} bytes for message {MessageId}",
+            botConfig.OcrMaxFileSizeBytes,
+            messageId)
+        return None
+    else
+        let largestPhoto = selectLargestPhoto candidatePhotos
+
+        let! file = botClient.GetFile(largestPhoto.FileId)
+
+        if String.IsNullOrWhiteSpace file.FilePath then
+            logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+            return None
+        else
+            let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
+            let! ocrText = computerVision.TextFromImageUrl fileUrl
+            if String.IsNullOrWhiteSpace ocrText then
+                return None
+            else
+                return Some ocrText
+}
+
+let tryEnrichMessageWithForwardedContent
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (computerVision: IComputerVision)
+    (logger: ILogger)
+    (update: Update) = task {
+    if botConfig.ForwardSpamDetectionEnabled then
+        let message = update.EditedOrMessage
+        if not (isNull message) && isMessageFromAllowedChats botConfig message then
+            use activity = botActivity.StartActivity("forwardedContentEnrichment")
+            try
+                let mutable forwardedText: string = null
+
+                if not (isNull message.Quote)
+                   && not (String.IsNullOrWhiteSpace message.Quote.Text) then
+                    forwardedText <- message.Quote.Text
+                    %activity.SetTag("quoteTextLength", message.Quote.Text.Length)
+
+                if botConfig.OcrEnabled
+                   && not (isNull message.ExternalReply)
+                   && not (isNull message.ExternalReply.Photo)
+                   && message.ExternalReply.Photo.Length > 0 then
+                    let! ocrText = ocrPhotos botClient botConfig computerVision logger message.ExternalReply.Photo message.MessageId
+                    match ocrText with
+                    | Some text ->
+                        forwardedText <-
+                            if isNull forwardedText then text
+                            else $"{forwardedText}\n{text}"
+                        %activity.SetTag("externalReplyOcrLength", text.Length)
+                    | None -> ()
+
+                if not (String.IsNullOrWhiteSpace forwardedText) then
+                    let baseText = message.TextOrCaption
+                    let enrichedText =
+                        if String.IsNullOrWhiteSpace baseText then forwardedText
+                        else $"{forwardedText}\n{baseText}"
+                    logger.LogDebug(
+                        "Enriched message {MessageId} with forwarded content of length {ForwardedLength}",
+                        message.MessageId,
+                        forwardedText.Length
+                    )
+                    message.Text <- enrichedText
+                    %activity.SetTag("enrichedTextLength", enrichedText.Length)
+            with ex ->
+                logger.LogError(ex, "Failed to process forwarded content for message {MessageId}", update.EditedOrMessage.MessageId)
+}
+
 let tryEnrichMessageWithOcr
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -897,52 +987,25 @@ let tryEnrichMessageWithOcr
     (update: Update) = task {
     if botConfig.OcrEnabled then
         let message = update.EditedOrMessage
-        if not (isNull message.Photo) && message.Photo.Length > 0 then
+        if not (isNull message.Photo) && message.Photo.Length > 0 && isMessageFromAllowedChats botConfig message then
             use activity = botActivity.StartActivity("ocrEnrichment")
             try
-                let candidatePhotos =
-                    message.Photo
-                    |> Array.filter (fun p ->
-                        let size = int64 p.FileSize
-                        size = 0L || size <= botConfig.OcrMaxFileSizeBytes)
-
-                if candidatePhotos.Length = 0 then
-                    logger.LogWarning(
-                        "No photos under OCR limit of {LimitBytes} bytes for message {MessageId}",
-                        botConfig.OcrMaxFileSizeBytes,
-                        message.MessageId)
-                else
-                    let largestPhoto =
-                        candidatePhotos
-                        |> Seq.filter (fun p -> p.FileSize.HasValue)
-                        |> Seq.maxBy (fun p -> p.FileSize.Value)
-
-                    %activity.SetTag("photoId", largestPhoto.FileId)
-
-                    let! file = botClient.GetFile(largestPhoto.FileId)
-
-                    if String.IsNullOrWhiteSpace file.FilePath then
-                        logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
-                    else
-                        let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
-                        %activity.SetTag("fileUrl", fileUrl)
-                        let! ocrText = computerVision.TextFromImageUrl fileUrl
-
-                        if not (String.IsNullOrWhiteSpace ocrText) then
-                            let baseText = message.TextOrCaption
-                            let enrichedText =
-                                if String.IsNullOrWhiteSpace baseText then
-                                    ocrText
-                                else
-                                    $"{baseText}\n{ocrText}"
-                            logger.LogDebug (
-                                "Enriched message {MessageId} with OCR text {EnrichedText} of length {OcrTextLength}",
-                                update.EditedOrMessage.MessageId,
-                                enrichedText,
-                                ocrText.Length
-                            )
-                            message.Text <- enrichedText
-                            %activity.SetTag("ocrTextLength", enrichedText.Length)
+                let! ocrResult = ocrPhotos botClient botConfig computerVision logger message.Photo message.MessageId
+                match ocrResult with
+                | Some ocrText ->
+                    let baseText = message.TextOrCaption
+                    let enrichedText =
+                        if String.IsNullOrWhiteSpace baseText then ocrText
+                        else $"{baseText}\n{ocrText}"
+                    logger.LogDebug (
+                        "Enriched message {MessageId} with OCR text {EnrichedText} of length {OcrTextLength}",
+                        update.EditedOrMessage.MessageId,
+                        enrichedText,
+                        ocrText.Length
+                    )
+                    message.Text <- enrichedText
+                    %activity.SetTag("ocrTextLength", enrichedText.Length)
+                | None -> ()
             with ex ->
                 logger.LogError(ex, "Failed to process OCR for message {MessageId}", update.EditedOrMessage.MessageId)
 }
@@ -1222,6 +1285,7 @@ let onUpdate
     elif update.MessageReaction <> null then
         do! onMessageReaction botClient botConfig logger update.MessageReaction
     elif update.EditedOrMessage <> null then
+        do! tryEnrichMessageWithForwardedContent botClient botConfig computerVision logger update
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
     elif update.ChatMember <> null || update.MyChatMember <> null then

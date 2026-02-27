@@ -60,7 +60,9 @@ type BotConfiguration =
       // Reaction spam detection
       ReactionSpamEnabled: bool
       ReactionSpamMinMessages: int
-      ReactionSpamMaxReactions: int }
+      ReactionSpamMaxReactions: int
+      // Forward spam detection
+      ForwardSpamDetectionEnabled: bool }
 
 [<CLIMutable>]
 type DbUser =
