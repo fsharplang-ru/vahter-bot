@@ -889,6 +889,13 @@ let onMessage
         do! justMessage botUser botClient botConfig logger ml message
 }
 
+let private selectLargestPhoto (photos: PhotoSize array) =
+    let withSize = photos |> Array.filter (fun p -> p.FileSize.HasValue)
+    if withSize.Length > 0 then
+        withSize |> Array.maxBy (fun p -> p.FileSize.Value)
+    else
+        photos |> Array.maxBy (fun p -> p.Width * p.Height)
+
 let private ocrPhotos
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -909,10 +916,7 @@ let private ocrPhotos
             messageId)
         return None
     else
-        let largestPhoto =
-            candidatePhotos
-            |> Seq.filter (fun p -> p.FileSize.HasValue)
-            |> Seq.maxBy (fun p -> p.FileSize.Value)
+        let largestPhoto = selectLargestPhoto candidatePhotos
 
         let! file = botClient.GetFile(largestPhoto.FileId)
 
@@ -936,7 +940,7 @@ let tryEnrichMessageWithForwardedContent
     (update: Update) = task {
     if botConfig.ForwardSpamDetectionEnabled then
         let message = update.EditedOrMessage
-        if not (isNull message) then
+        if not (isNull message) && isMessageFromAllowedChats botConfig message then
             use activity = botActivity.StartActivity("forwardedContentEnrichment")
             try
                 let mutable forwardedText: string = null
@@ -983,7 +987,7 @@ let tryEnrichMessageWithOcr
     (update: Update) = task {
     if botConfig.OcrEnabled then
         let message = update.EditedOrMessage
-        if not (isNull message.Photo) && message.Photo.Length > 0 then
+        if not (isNull message.Photo) && message.Photo.Length > 0 && isMessageFromAllowedChats botConfig message then
             use activity = botActivity.StartActivity("ocrEnrichment")
             try
                 let! ocrResult = ocrPhotos botClient botConfig computerVision logger message.Photo message.MessageId
