@@ -130,6 +130,8 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("REACTION_SPAM_MAX_REACTIONS", "5")
                 // Forward spam detection
                 .WithEnvironment("FORWARD_SPAM_DETECTION_ENABLED", "true")
+                // Inline keyboard spam detection
+                .WithEnvironment("INLINE_KEYBOARD_SPAM_DETECTION_ENABLED", "true")
                 .Build()
         else
             builder
@@ -137,6 +139,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("OCR_ENABLED", "false")
                 .WithEnvironment("REACTION_SPAM_ENABLED", "false")
                 .WithEnvironment("FORWARD_SPAM_DETECTION_ENABLED", "false")
+                .WithEnvironment("INLINE_KEYBOARD_SPAM_DETECTION_ENABLED", "false")
                 .Build()
             
     let startContainers() = task {

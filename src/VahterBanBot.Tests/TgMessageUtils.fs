@@ -4,6 +4,7 @@ open System
 open System.Threading
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
+open Telegram.Bot.Types.ReplyMarkups
 
 type Tg() =
     // Start well above all hardcoded IDs used in tests and config to prevent
@@ -69,7 +70,7 @@ type Tg() =
             Chat = (chat |> Option.defaultValue null)
         )
 
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo) =
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?callback: CallbackQuery, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo, ?replyMarkup: InlineKeyboardMarkup) =
         let updateId = next()
         let msgId = next()
         Update(
@@ -88,7 +89,8 @@ type Tg() =
                     IsAutomaticForward = (isAutomaticForward |> Option.defaultValue false),
                     SenderChat = (senderChat |> Option.defaultValue null),
                     Quote = (quote |> Option.defaultValue null),
-                    ExternalReply = (externalReply |> Option.defaultValue null)
+                    ExternalReply = (externalReply |> Option.defaultValue null),
+                    ReplyMarkup = (replyMarkup |> Option.defaultValue null)
                 ),
             EditedMessage =
                 if editedText |> Option.isSome then
@@ -131,6 +133,18 @@ type Tg() =
                 NewReaction = [| ReactionTypeEmoji(Emoji = reactionEmoji) |]
             )
         )
+
+    static member inlineKeyboard(buttons: (string * string option) list) =
+        let rows =
+            buttons
+            |> List.map (fun (text, url) ->
+                seq {
+                    match url with
+                    | Some u -> InlineKeyboardButton.WithUrl(text, u)
+                    | None -> InlineKeyboardButton.WithCallbackData(text, text)
+                })
+            |> List.toSeq
+        InlineKeyboardMarkup(rows)
 
     static member spamPhoto =
         PhotoSize(
