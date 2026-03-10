@@ -141,7 +141,7 @@ type Tg() =
                 seq {
                     match url with
                     | Some u -> InlineKeyboardButton.WithUrl(text, u)
-                    | None -> InlineKeyboardButton.WithCallbackData(text)
+                    | None -> InlineKeyboardButton.WithCallbackData(text, text)
                 })
             |> List.toSeq
         InlineKeyboardMarkup(rows)
