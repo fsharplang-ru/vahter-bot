@@ -103,7 +103,9 @@ let botConf =
       ReactionSpamMinMessages = getEnvOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
       ReactionSpamMaxReactions = getEnvOr "REACTION_SPAM_MAX_REACTIONS" "5" |> int
       // Forward spam detection
-      ForwardSpamDetectionEnabled = getEnvOr "FORWARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse }
+      ForwardSpamDetectionEnabled = getEnvOr "FORWARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
+      // Inline keyboard spam detection
+      InlineKeyboardSpamDetectionEnabled = getEnvOr "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with

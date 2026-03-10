@@ -1010,6 +1010,44 @@ let tryEnrichMessageWithOcr
                 logger.LogError(ex, "Failed to process OCR for message {MessageId}", update.EditedOrMessage.MessageId)
 }
 
+let tryEnrichMessageWithInlineKeyboardText
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (update: Update) = task {
+    if botConfig.InlineKeyboardSpamDetectionEnabled then
+        let message = update.EditedOrMessage
+        if not (isNull message)
+           && not (isNull message.ReplyMarkup)
+           && not (isNull message.ReplyMarkup.InlineKeyboard)
+           && isMessageFromAllowedChats botConfig message then
+            use activity = botActivity.StartActivity("inlineKeyboardEnrichment")
+            try
+                let sb = StringBuilder()
+                for row in message.ReplyMarkup.InlineKeyboard do
+                    for button in row do
+                        if not (String.IsNullOrWhiteSpace button.Text) then
+                            %sb.AppendLine(button.Text)
+                        if not (isNull button.Url) && not (String.IsNullOrWhiteSpace button.Url) then
+                            %sb.AppendLine(button.Url)
+
+                let buttonText = sb.ToString().TrimEnd([|'\r'; '\n'|])
+                if not (String.IsNullOrWhiteSpace buttonText) then
+                    let baseText = message.TextOrCaption
+                    let enrichedText =
+                        if String.IsNullOrWhiteSpace baseText then buttonText
+                        else $"{baseText}\n{buttonText}"
+                    logger.LogDebug(
+                        "Enriched message {MessageId} with inline keyboard text of length {ButtonTextLength}",
+                        message.MessageId,
+                        buttonText.Length
+                    )
+                    message.Text <- enrichedText
+                    %activity.SetTag("buttonTextLength", buttonText.Length)
+                    %activity.SetTag("enrichedTextLength", enrichedText.Length)
+            with ex ->
+                logger.LogError(ex, "Failed to process inline keyboard text for message {MessageId}", update.EditedOrMessage.MessageId)
+}
+
 let vahterMarkedAsNotSpam
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -1287,6 +1325,7 @@ let onUpdate
     elif update.EditedOrMessage <> null then
         do! tryEnrichMessageWithForwardedContent botClient botConfig computerVision logger update
         do! tryEnrichMessageWithOcr botClient botConfig computerVision logger update
+        do! tryEnrichMessageWithInlineKeyboardText botConfig logger update
         do! onMessage botUser botClient botConfig logger ml update.EditedOrMessage
     elif update.ChatMember <> null || update.MyChatMember <> null then
         // expected update type, nothing to do

@@ -560,4 +560,57 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.False msgBanned
     }
 
+    [<Fact>]
+    let ``Message with spam in inline keyboard button text triggers auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            replyMarkup = Tg.inlineKeyboard([ ("2222222", None) ])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
+    [<Fact>]
+    let ``Message with non-spam inline keyboard button text does NOT trigger auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            replyMarkup = Tg.inlineKeyboard([ ("click here", None) ])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.False msgBanned
+    }
+
+    [<Fact>]
+    let ``Inline keyboard button text is appended to message text`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            replyMarkup = Tg.inlineKeyboard([ ("b", None) ])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.True dbMsg.IsSome
+        Assert.Equal("hello\nb", dbMsg.Value.text)
+    }
+
+    [<Fact>]
+    let ``Message with spam in inline keyboard button URL triggers auto-delete`` () = task {
+        let msgUpdate = Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = "hello",
+            replyMarkup = Tg.inlineKeyboard([ ("click", Some "https://2222222.example.com") ])
+        )
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True msgBanned
+    }
+
     interface IClassFixture<MlAwaitFixture>
