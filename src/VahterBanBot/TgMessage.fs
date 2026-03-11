@@ -85,15 +85,6 @@ type TgMessage private (raw: Message) =
         if isNull raw.ReplyToMessage then None
         else Some (TgMessage.Create raw.ReplyToMessage)
 
-    // ── Channel message detection (for ShouldDeleteChannelMessages) ─
-
-    /// Matches the original isChannelMessage function – From is @Channel_Bot regardless of SenderChat.
-    member _.IsChannelMessage =
-        raw.From <> null &&
-        raw.From.IsBot &&
-        raw.From.FirstName = "Channel" &&
-        raw.From.Username = "Channel_Bot"
-
     // ── Enrichment (mutable, raw message stays untouched) ──────────
 
     /// Prepends text before the original (e.g. forwarded/quote content).

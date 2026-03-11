@@ -60,7 +60,6 @@ let botConf =
       DetectedSpamCleanupAge = getEnvOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> fromJson
       AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
-      ShouldDeleteChannelMessages = getEnvOr "SHOULD_DELETE_CHANNEL_MESSAGES" "true" |> bool.Parse
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
       UseFakeApi =

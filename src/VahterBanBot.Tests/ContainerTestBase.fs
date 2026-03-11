@@ -95,7 +95,6 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("DETECTED_SPAM_CLEANUP_AGE_HOURS", "24")
                 .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
                 .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
-                .WithEnvironment("SHOULD_DELETE_CHANNEL_MESSAGES", "true")
                 .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
                 .WithEnvironment("USE_FAKE_API", "true")
                 .WithEnvironment("USE_POLLING", "false")

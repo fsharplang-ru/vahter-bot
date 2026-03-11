@@ -23,7 +23,6 @@ type BotConfiguration =
       DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
-      ShouldDeleteChannelMessages: bool
       IgnoreSideEffects: bool
       UseFakeApi: bool
       UsePolling: bool
