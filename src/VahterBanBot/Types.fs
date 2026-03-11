@@ -84,6 +84,9 @@ type DbUser =
     static member newUser(user: User) =
         DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
 
+    static member fromTgMessage(msg: TgMessage) =
+        DbUser.newUser (id = msg.SenderId, ?username = Option.ofObj msg.SenderUsername)
+
 [<CLIMutable>]
 type DbBanned =
     { message_id: int option
@@ -94,15 +97,15 @@ type DbBanned =
       banned_in_chat_username: string option
       banned_by: int64 }
 module DbBanned =
-    let banMessage (vahter: int64) (message: Message) =
-        if isNull message.From || isNull message.Chat then
-            failwith "Message should have a user and a chat"
-        { message_id = Some message.MessageId
-          message_text = message.TextOrCaption
-          banned_user_id = message.From.Id
+    let banMessage (vahter: int64) (msg: TgMessage) =
+        if not msg.HasSender || isNull msg.Chat then
+            failwith "Message should have a sender and a chat"
+        { message_id = Some msg.MessageId
+          message_text = msg.Text
+          banned_user_id = msg.SenderId
           banned_at = DateTime.UtcNow
-          banned_in_chat_id = Some message.Chat.Id
-          banned_in_chat_username = Option.ofObj message.Chat.Username
+          banned_in_chat_id = Some msg.ChatId
+          banned_in_chat_username = Option.ofObj msg.ChatUsername
           banned_by = vahter }
 
 [<CLIMutable>]
@@ -113,13 +116,13 @@ type DbMessage =
       text: string
       raw_message: string
       created_at: DateTime }
-    static member newMessage(message: Telegram.Bot.Types.Message) =
-        { chat_id = message.Chat.Id
-          message_id = message.MessageId
-          user_id = message.From.Id
+    static member newMessage(msg: TgMessage) =
+        { chat_id = msg.ChatId
+          message_id = msg.MessageId
+          user_id = msg.SenderId
           created_at = DateTime.UtcNow
-          text = message.TextOrCaption
-          raw_message = JsonSerializer.Serialize(message, options = jsonOptions) }
+          text = msg.Text
+          raw_message = msg.RawJson }
 
 [<CLIMutable>]
 type VahterStat =

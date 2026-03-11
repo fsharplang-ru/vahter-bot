@@ -57,13 +57,6 @@ type Task<'x> with
 
 let inline taskIgnore (t: Task<'x>) = t.Ignore()
 
-type Telegram.Bot.Types.Message with
-    member msg.TextOrCaption =
-        if isNull msg.Text then
-            msg.Caption
-        else
-            msg.Text
-
 type Telegram.Bot.Types.Update with
     member msg.EditedOrMessage =
         if isNull msg.EditedMessage then
