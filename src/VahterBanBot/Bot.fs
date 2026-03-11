@@ -715,7 +715,7 @@ let justMessage
                     )
             | _ -> false
 
-        match Option.ofObj msg.Text, Option.ofObj msg.Entities with
+        match Option.ofObj msg.OriginalText, Option.ofObj msg.Entities with
         | Some text, Some entities ->
             entities |> Array.exists (checkEntity text)
         | _ -> false
@@ -828,7 +828,7 @@ let adminCommand
                     .SetTag("chatUsername", msg.ChatUsername)
             recordDeletedMessage msg.ChatId msg.ChatUsername "adminCommand"
             do! botClient.DeleteMessage(ChatId(msg.ChatId), msg.MessageId)
-                |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete ping message {msg.MessageId} from chat {msg.ChatId}", e))
+                |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete command message {msg.MessageId} from chat {msg.ChatId}", e))
         }
         // check that user is allowed to (un)ban others
         if isBanOnReplyCommand msg then

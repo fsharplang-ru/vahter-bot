@@ -71,7 +71,9 @@ type TgMessage private (raw: Message) =
     // ── Sub-objects (safe to expose – no From leakage) ─────────────
 
     member _.IsAutomaticForward = raw.IsAutomaticForward
-    member _.Entities     = raw.Entities
+    member _.Entities     =
+        if isNull raw.Text then raw.CaptionEntities
+        else raw.Entities
     member _.Photos       = raw.Photo
     member _.SenderChat   = raw.SenderChat
     member _.Quote        = raw.Quote
