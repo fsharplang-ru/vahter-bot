@@ -715,7 +715,7 @@ let justMessage
                 true
             // skip prediction for channel senders whose channel is in ChatsToMonitor
             elif msg.IsChannelSender
-                 && botConfig.ChatsToMonitor.ContainsValue msg.SenderChat.Id then
+                 && botConfig.ChatsToMonitor.ContainsValue msg.SenderId then
                 true
             // skip prediction for vahters or local admins
             elif botConfig.AllowedUsers.ContainsValue msg.SenderId
