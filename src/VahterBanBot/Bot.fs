@@ -215,24 +215,6 @@ let ping
     do! botClient.SendMessage(ChatId(msg.ChatId), "pong") |> taskIgnore
 }
 
-let deleteChannelMessage
-    (botClient: ITelegramBotClient)
-    (msg: TgMessage)
-    (logger: ILogger) = task {
-    use banOnReplyActivity = botActivity.StartActivity("deleteChannelMessage")
-    recordDeletedMessage msg.ChatId msg.ChatUsername "channelMessage"
-    do! botClient.DeleteMessage(ChatId(msg.ChatId), msg.MessageId)
-        |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msg.MessageId} from chat {msg.ChatId}", e))
-
-    let probablyChannelName =
-        if msg.SenderChat <> null then
-            msg.SenderChat.Title
-        else
-            "[unknown]"
-    %banOnReplyActivity.SetTag("channelName", probablyChannelName)
-    logger.LogInformation $"Deleted message from channel {probablyChannelName}"
-}
-
 let totalBan
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -731,9 +713,9 @@ let justMessage
             // skip prediction for automatic forwards from linked channels
             if msg.IsAutomaticForward then
                 true
-            // skip prediction for channel senders from monitored chats
+            // skip prediction for channel senders whose channel is in ChatsToMonitor
             elif msg.IsChannelSender
-                 && botConfig.ChatsToMonitor.ContainsValue msg.ChatId then
+                 && botConfig.ChatsToMonitor.ContainsValue msg.SenderId then
                 true
             // skip prediction for vahters or local admins
             elif botConfig.AllowedUsers.ContainsValue msg.SenderId
@@ -874,12 +856,8 @@ let onMessage
         DbUser.fromTgMessage msg
         |> DB.upsertUser
 
-    // check if message comes from channel, we should delete it immediately
-    if botConfig.ShouldDeleteChannelMessages && msg.IsChannelMessage then
-        do! deleteChannelMessage botClient msg logger
-
     // check if message is a known command from authorized user
-    elif isKnownCommand msg && isUserVahter botConfig user then
+    if isKnownCommand msg && isUserVahter botConfig user then
         do! adminCommand botClient botConfig logger user msg
 
     // if message is not a command from authorized user, just save it ID to DB

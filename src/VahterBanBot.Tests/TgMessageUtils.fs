@@ -45,6 +45,15 @@ type Tg() =
             IsBot = false,
             FirstName = "Telegram"
         )
+
+    /// Telegram Channel_Bot (id 136817688) used when channels post as themselves
+    static member channelBot () =
+        User(
+            Id = 136817688L,
+            IsBot = true,
+            Username = "Channel_Bot",
+            FirstName = "Channel"
+        )
     
     static member callback(data: string, ?from: User) =
         Update(
