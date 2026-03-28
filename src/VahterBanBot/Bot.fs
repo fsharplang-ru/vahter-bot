@@ -10,6 +10,7 @@ open Telegram.Bot.Types
 open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
+open VahterBanBot.LlmTriage
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.UpdateChatAdmins
@@ -649,6 +650,7 @@ let justMessage
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
+    (llmTriage: ILlmTriage)
     (msg: TgMessage) = task {
 
     use _ =
@@ -742,9 +744,13 @@ let justMessage
                     do! killSpammerAutomated botClient botConfig msg logger botConfig.MlSpamDeletionEnabled prediction.Score
                     // trigger auto-ban check (checkAndAutoBan handles MlSpamAutobanEnabled internally)
                     do! autoBan botUser botClient botConfig msg logger
+                    // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
+                    fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
                 elif prediction.Score >= botConfig.MlWarningThreshold then
                     // just warn
                     do! killSpammerAutomated botClient botConfig msg logger false prediction.Score
+                    // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
+                    fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
                 else
                     // not a spam
                     ()
@@ -831,6 +837,7 @@ let onMessage
     (botConfig: BotConfiguration)
     (logger: ILogger)
     (ml: MachineLearning)
+    (llmTriage: ILlmTriage)
     (msg: TgMessage) = task {
     use banOnReplyActivity = botActivity.StartActivity("onMessage")
 
@@ -862,7 +869,7 @@ let onMessage
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        do! justMessage botUser botClient botConfig logger ml msg
+        do! justMessage botUser botClient botConfig logger ml llmTriage msg
 }
 
 let private selectLargestPhoto (photos: PhotoSize array) =
@@ -1275,6 +1282,7 @@ let onUpdate
     (logger: ILogger)
     (ml: MachineLearning)
     (computerVision: IComputerVision)
+    (llmTriage: ILlmTriage)
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
@@ -1286,7 +1294,7 @@ let onUpdate
         do! tryEnrichWithForwardedContent botClient botConfig computerVision logger msg
         do! tryEnrichWithOcr botClient botConfig computerVision logger msg
         do! tryEnrichWithInlineKeyboardText botConfig logger msg
-        do! onMessage botUser botClient botConfig logger ml msg
+        do! onMessage botUser botClient botConfig logger ml llmTriage msg
     elif update.ChatMember <> null || update.MyChatMember <> null then
         // expected update type, nothing to do
         ()

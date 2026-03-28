@@ -663,6 +663,53 @@ WHERE job_name = @jobName;
         return ()
     }
 
+/// Inserts an LLM triage verdict for a message.
+let insertLlmTriage
+    (chatId: int64) (messageId: int) (userId: int64)
+    (verdict: string) (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO llm_triage (chat_id, message_id, user_id, verdict, prompt_tokens, completion_tokens, latency_ms)
+VALUES (@chatId, @messageId, @userId, @verdict, @promptTokens, @completionTokens, @latencyMs)
+            """
+
+        let! _ = conn.ExecuteAsync(sql, {| chatId = chatId; messageId = messageId; userId = userId
+                                           verdict = verdict; promptTokens = promptTokens
+                                           completionTokens = completionTokens; latencyMs = latencyMs |})
+        return ()
+    }
+
+/// Gets LLM triage stats, joined with vahter_actions to compute accuracy.
+let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT
+    lt.verdict                                              AS "LlmVerdict",
+    COALESCE(va.action_type, '(pending)')                   AS "VahterAction",
+    COUNT(*)::INT                                           AS "Count",
+    COALESCE(SUM(lt.prompt_tokens + lt.completion_tokens), 0) AS "TotalTokens",
+    COALESCE(AVG(lt.latency_ms), 0)                         AS "AvgLatencyMs"
+FROM llm_triage lt
+LEFT JOIN vahter_actions va
+       ON va.target_chat_id    = lt.chat_id
+      AND va.target_message_id = lt.message_id
+WHERE lt.created_at > NOW() - @interval::INTERVAL
+GROUP BY lt.verdict, va.action_type
+ORDER BY "Count" DESC
+            """
+
+        let! rows = conn.QueryAsync<LlmTriageRow>(sql, {| interval = interval |})
+        return { interval = interval; rows = Array.ofSeq rows }
+    }
+
 /// Executes an action while holding a PostgreSQL session-level advisory lock.
 /// Returns true if the lock was acquired and the action completed.
 /// Returns false if the lock is already held by another session.

@@ -39,6 +39,15 @@ type TgMessage private (raw: Message) =
         if this.IsChannelSender then raw.SenderChat.Username
         else raw.From.Username
 
+    /// Human-readable display name – channel title for channel senders,
+    /// FirstName + LastName (trimmed) for regular users.
+    member this.SenderDisplayName =
+        if this.IsChannelSender then
+            if isNull raw.SenderChat.Title then raw.SenderChat.Username
+            else raw.SenderChat.Title
+        else
+            $"{raw.From.FirstName} {raw.From.LastName}".Trim()
+
     // ── Message identity ───────────────────────────────────────────
 
     member _.MessageId = raw.MessageId

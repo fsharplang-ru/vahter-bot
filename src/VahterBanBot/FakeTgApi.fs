@@ -169,12 +169,69 @@ let fakeOcrApi (botConf: BotConfiguration) (request: HttpRequestMessage)=
             return new HttpResponseMessage(HttpStatusCode.NotFound)
     }
 
+let private fakeAzureOpenAiResponse (verdict: string) =
+    // mirrors exact shape of _tmp_azure_ai_response_example.json
+    $"""{{
+  "choices": [{{
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {{
+      "content": "{{\"verdict\":\"{verdict}\"}}",
+      "role": "assistant"
+    }}
+  }}],
+  "created": 1774736361,
+  "id": "chatcmpl-fake",
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "usage": {{
+    "completion_tokens": 8,
+    "prompt_tokens": 264,
+    "total_tokens": 272
+  }}
+}}"""
+
+let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
+    task {
+        let url = request.RequestUri.ToString()
+        if botConf.AzureOpenAiEndpoint <> ""
+           && url.StartsWith(botConf.AzureOpenAiEndpoint)
+           && url.Contains("/chat/completions") then
+            if not (request.Headers.Contains("api-key")) then
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            else
+            let! body =
+                if isNull request.Content then Task.FromResult String.Empty
+                else request.Content.ReadAsStringAsync()
+            // Return KILL if any message content contains "spam" (case-insensitive),
+            // NOT_SPAM otherwise — lets tests control the verdict via message text.
+            let verdict =
+                try
+                    use doc = JsonDocument.Parse(body)
+                    let msgs = doc.RootElement.GetProperty("messages")
+                    let hasSpam =
+                        msgs.EnumerateArray()
+                        |> Seq.exists (fun m ->
+                            match m.TryGetProperty("content") with
+                            | true, c -> c.GetString().Contains("spam", StringComparison.OrdinalIgnoreCase)
+                            | _ -> false)
+                    if hasSpam then "KILL" else "NOT_SPAM"
+                with _ -> "NOT_SPAM"
+            let r = new HttpResponseMessage(HttpStatusCode.OK)
+            r.Content <- new StringContent(fakeAzureOpenAiResponse verdict, Encoding.UTF8, "application/json")
+            return r
+        else
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+    }
+
 let fakeApi (botConf: BotConfiguration) =
     { new DelegatingHandler() with
         member x.SendAsync(request, cancellationToken) = task {
             let url = request.RequestUri.ToString()
             if url.StartsWith("https://api.telegram.org") then
                 return fakeTgApi botConf request
+            elif botConf.AzureOpenAiEndpoint <> "" && url.StartsWith(botConf.AzureOpenAiEndpoint) then
+                return! fakeLlmApi botConf request
             elif url.StartsWith(botConf.AzureOcrEndpoint) then
                 return! fakeOcrApi botConf request
             else
