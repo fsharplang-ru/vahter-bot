@@ -701,7 +701,8 @@ FROM llm_triage lt
 LEFT JOIN vahter_actions va
        ON va.target_chat_id    = lt.chat_id
       AND va.target_message_id = lt.message_id
-WHERE lt.created_at > NOW() - @interval::INTERVAL
+WHERE @interval::INTERVAL IS NULL
+   OR lt.created_at > NOW() - @interval::INTERVAL
 GROUP BY lt.verdict, va.action_type
 ORDER BY "Count" DESC
             """

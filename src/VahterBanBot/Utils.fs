@@ -75,11 +75,10 @@ let fireAndForget
     (timeoutMs: int)
     (taskName: string)
     (action: CancellationToken -> Task) : unit =
-    let cts = new CancellationTokenSource()
-    cts.CancelAfter(timeoutMs)
     let _ =
         Task.Run(fun () ->
             let work = task {
+                use cts = new CancellationTokenSource(timeoutMs)
                 try
                     do! action cts.Token
                 with
@@ -87,7 +86,6 @@ let fireAndForget
                     logger.LogWarning("Fire-and-forget task '{TaskName}' timed out or was cancelled", taskName)
                 | ex ->
                     logger.LogError(ex, "Fire-and-forget task '{TaskName}' failed", taskName)
-                cts.Dispose()
             }
             work :> Task)
     ()

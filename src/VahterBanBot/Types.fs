@@ -260,7 +260,10 @@ type LlmTriageStats =
         if this.rows.Length > 0 then
             let totalCalls   = this.rows |> Array.sumBy (fun r -> r.Count)
             let totalTokens  = this.rows |> Array.sumBy (fun r -> r.TotalTokens)
-            let avgLatencyMs = this.rows |> Array.averageBy (fun r -> r.AvgLatencyMs)
+            let avgLatencyMs =
+                if totalCalls > 0
+                then this.rows |> Array.sumBy (fun r -> r.AvgLatencyMs * float r.Count) |> fun s -> s / float totalCalls
+                else 0.0
 
             // Agreement: LLM verdict matches vahter action
             let agreed =

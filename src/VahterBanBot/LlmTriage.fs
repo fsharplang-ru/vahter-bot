@@ -36,7 +36,6 @@ let private parseResponse (logger: ILogger) (json: string) =
 
 // ── Interface + implementation ────────────────────────────────────────────────
 
-[<AllowNullLiteral>]
 type ILlmTriage =
     abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<unit>
 
