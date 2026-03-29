@@ -21,6 +21,8 @@ open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
+open VahterBanBot.LlmTriage
+open VahterBanBot.Telemetry
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
@@ -104,7 +106,13 @@ let botConf =
       // Forward spam detection
       ForwardSpamDetectionEnabled = getEnvOr "FORWARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
       // Inline keyboard spam detection
-      InlineKeyboardSpamDetectionEnabled = getEnvOr "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse }
+      InlineKeyboardSpamDetectionEnabled = getEnvOr "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
+      // LLM shadow triage
+      LlmTriageEnabled      = getEnvOr "LLM_TRIAGE_ENABLED" "false" |> bool.Parse
+      AzureOpenAiEndpoint   = getEnvOr "AZURE_OPENAI_ENDPOINT" ""
+      AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
+      AzureOpenAiDeployment = getEnvOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
+      LlmChatDescriptions   = getEnvOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -147,6 +155,13 @@ builder.Services
             handlers.Add(fakeApi botConf)
     )
     |> ignore
+
+%builder.Services
+    .AddHttpClient<ILlmTriage, AzureLlmTriage>()
+    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
+        if botConf.UseFakeApi then
+            handlers.Add(fakeApi botConf)
+    )
 
 %builder.Services
     .AddHttpClient("telegram_bot_client")
@@ -235,9 +250,10 @@ let webApp = choose [
         let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
         let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
         let computerVision = scope.ServiceProvider.GetRequiredService<IComputerVision>()
+        let llmTriage = scope.ServiceProvider.GetRequiredService<ILlmTriage>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision update
+            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision llmTriage update
             %topActivity.SetTag("update-error", false)
             %topActivity.SetStatus(ActivityStatusCode.Ok)
         with e ->
@@ -267,7 +283,8 @@ if botConf.UsePolling then
                     let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
                     let ocr = ctx.ServiceProvider.GetRequiredService<IComputerVision>()
-                    do! onUpdate botUser client botConf logger ml ocr update
+                    let llmTriage = ctx.ServiceProvider.GetRequiredService<ILlmTriage>()
+                    do! onUpdate botUser client botConf logger ml ocr llmTriage update
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask

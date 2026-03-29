@@ -169,12 +169,79 @@ let fakeOcrApi (botConf: BotConfiguration) (request: HttpRequestMessage)=
             return new HttpResponseMessage(HttpStatusCode.NotFound)
     }
 
+let private fakeAzureOpenAiResponse (verdict: string) =
+    // mirrors Azure OpenAI Chat Completions response shape
+    $"""{{
+  "choices": [{{
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {{
+      "content": "{{\"verdict\":\"{verdict}\"}}",
+      "role": "assistant"
+    }}
+  }}],
+  "created": 1774736361,
+  "id": "chatcmpl-fake",
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "usage": {{
+    "completion_tokens": 8,
+    "prompt_tokens": 264,
+    "total_tokens": 272
+  }}
+}}"""
+
+let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
+    task {
+        let url = request.RequestUri.ToString()
+        if botConf.AzureOpenAiEndpoint <> ""
+           && url.StartsWith(botConf.AzureOpenAiEndpoint)
+           && url.Contains("/chat/completions") then
+            if not (request.Headers.Contains("api-key")) then
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            else
+            let! body =
+                if isNull request.Content then Task.FromResult String.Empty
+                else request.Content.ReadAsStringAsync()
+            // Three-way routing based on keywords in the user message content (role="user" only).
+            // System prompt is excluded — it always contains "spam detection".
+            //   "kill"  → KILL     (permanent ban)
+            //   "spam"  → SPAM     (soft delete, no ban)
+            //   neither → NOT_SPAM
+            let verdict =
+                try
+                    use doc = JsonDocument.Parse(body)
+                    let msgs = doc.RootElement.GetProperty("messages")
+                    let userContent =
+                        msgs.EnumerateArray()
+                        |> Seq.tryFind (fun m ->
+                            match m.TryGetProperty("role") with
+                            | true, role -> role.GetString() = "user"
+                            | _ -> false)
+                        |> Option.bind (fun m ->
+                            match m.TryGetProperty("content") with
+                            | true, c -> Some (c.GetString())
+                            | _ -> None)
+                        |> Option.defaultValue ""
+                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "KILL"
+                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                    else "NOT_SPAM"
+                with _ -> "NOT_SPAM"
+            let r = new HttpResponseMessage(HttpStatusCode.OK)
+            r.Content <- new StringContent(fakeAzureOpenAiResponse verdict, Encoding.UTF8, "application/json")
+            return r
+        else
+            return new HttpResponseMessage(HttpStatusCode.NotFound)
+    }
+
 let fakeApi (botConf: BotConfiguration) =
     { new DelegatingHandler() with
         member x.SendAsync(request, cancellationToken) = task {
             let url = request.RequestUri.ToString()
             if url.StartsWith("https://api.telegram.org") then
                 return fakeTgApi botConf request
+            elif botConf.AzureOpenAiEndpoint <> "" && url.StartsWith(botConf.AzureOpenAiEndpoint) then
+                return! fakeLlmApi botConf request
             elif url.StartsWith(botConf.AzureOcrEndpoint) then
                 return! fakeOcrApi botConf request
             else

@@ -75,10 +75,16 @@ type CleanupService(
     /// Sends daily vahter statistics to Telegram
     let runStats () = task {
         let sb = StringBuilder()
-        
+
         // Vahter action stats (new system)
         let! actionStats = DB.getVahterActionStats (Some botConf.CleanupInterval)
         %sb.AppendLine(string actionStats)
+
+        // LLM triage accuracy stats
+        let! llmStats = DB.getLlmTriageStats (Some botConf.CleanupInterval)
+        let llmStr = string llmStats
+        if llmStr.Length > 0 then
+            %sb.Append llmStr
 
         let msg = sb.ToString()
         do! telegramClient.SendMessage(

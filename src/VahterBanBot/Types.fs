@@ -63,7 +63,13 @@ type BotConfiguration =
       // Forward spam detection
       ForwardSpamDetectionEnabled: bool
       // Inline keyboard spam detection
-      InlineKeyboardSpamDetectionEnabled: bool }
+      InlineKeyboardSpamDetectionEnabled: bool
+      // LLM shadow triage
+      LlmTriageEnabled: bool
+      AzureOpenAiEndpoint: string
+      AzureOpenAiKey: string
+      AzureOpenAiDeployment: string
+      LlmChatDescriptions: Dictionary<int64, string> }
 
 [<CLIMutable>]
 type DbUser =
@@ -236,4 +242,60 @@ type VahterActionStats =
             |> Array.iteri (fun i stat ->
                 let total = stat.KillsTotal + stat.NotSpamTotal
                 %sb.AppendLine $"  %d{i+1}. {prependUsername stat.Vahter} - {total}")
+        sb.ToString()
+
+[<CLIMutable>]
+type LlmTriageRow =
+    { LlmVerdict:       string
+      VahterAction:     string   // "(pending)" when vahter hasn't acted yet
+      Count:            int
+      TotalTokens:      int64
+      AvgLatencyMs:     float }
+
+type LlmTriageStats =
+    { rows:     LlmTriageRow array
+      interval: TimeSpan option }
+    override this.ToString() =
+        let sb = StringBuilder()
+        if this.rows.Length > 0 then
+            let totalCalls   = this.rows |> Array.sumBy (fun r -> r.Count)
+            let totalTokens  = this.rows |> Array.sumBy (fun r -> r.TotalTokens)
+            let avgLatencyMs =
+                if totalCalls > 0
+                then this.rows |> Array.sumBy (fun r -> r.AvgLatencyMs * float r.Count) |> fun s -> s / float totalCalls
+                else 0.0
+
+            // Agreement: LLM verdict matches vahter action
+            let agreed =
+                this.rows
+                |> Array.sumBy (fun r ->
+                    let isMatch =
+                        (r.LlmVerdict = "KILL"     && r.VahterAction = "potential_kill") ||
+                        (r.LlmVerdict = "SPAM"     && r.VahterAction = "potential_soft_spam") ||
+                        (r.LlmVerdict = "NOT_SPAM" && (r.VahterAction = "potential_not_spam" || r.VahterAction = "detected_not_spam"))
+                    if isMatch then r.Count else 0)
+            let decided = this.rows |> Array.sumBy (fun r -> if r.VahterAction = "(pending)" then 0 else r.Count)
+            let agreementPct = if decided > 0 then int (float agreed / float decided * 100.0) else 0
+
+            let intervalStr =
+                match this.interval with
+                | Some ts -> $"last {timeSpanAsHumanReadable ts}"
+                | None    -> "all time"
+
+            %sb.AppendLine $"\nLLM triage ({intervalStr}): {totalCalls} calls | avg {int avgLatencyMs}ms | {totalTokens} tokens"
+            %sb.AppendLine $"Agreement: {agreed}/{decided} ({agreementPct}%%)"
+
+            // group rows by LLM verdict for display
+            let byVerdict =
+                this.rows
+                |> Array.groupBy (fun r -> r.LlmVerdict)
+                |> Array.sortBy fst
+
+            for verdict, rows in byVerdict do
+                let verdictTotal = rows |> Array.sumBy (fun r -> r.Count)
+                %sb.Append $"  {verdict,-10} ({verdictTotal})"
+                for row in rows |> Array.sortBy (fun r -> r.VahterAction) do
+                    %sb.Append $" | {row.VahterAction}: {row.Count}"
+                %sb.AppendLine ""
+
         sb.ToString()
