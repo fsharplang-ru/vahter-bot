@@ -8,11 +8,9 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
+open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
-
-// Same source name as Bot.fs so all spans appear under one service in OTEL
-let private activitySource = new ActivitySource("VahterBanBot")
 
 // ── Response parsing ──────────────────────────────────────────────────────────
 
@@ -48,7 +46,7 @@ type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: I
             if not botConf.LlmTriageEnabled then ()
             else
 
-            use activity = activitySource.StartActivity("llmTriage")
+            use activity = botActivity.StartActivity("llmTriage")
 
             let chatDescLine =
                 match botConf.LlmChatDescriptions.TryGetValue(msg.ChatId) with

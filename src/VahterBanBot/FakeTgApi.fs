@@ -170,7 +170,7 @@ let fakeOcrApi (botConf: BotConfiguration) (request: HttpRequestMessage)=
     }
 
 let private fakeAzureOpenAiResponse (verdict: string) =
-    // mirrors exact shape of _tmp_azure_ai_response_example.json
+    // mirrors Azure OpenAI Chat Completions response shape
     $"""{{
   "choices": [{{
     "finish_reason": "stop",
@@ -203,8 +203,9 @@ let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
             let! body =
                 if isNull request.Content then Task.FromResult String.Empty
                 else request.Content.ReadAsStringAsync()
-            // Return KILL if any message content contains "spam" (case-insensitive),
+            // Return KILL if the user message content contains "spam" (case-insensitive),
             // NOT_SPAM otherwise — lets tests control the verdict via message text.
+            // Only user messages are checked (not system prompt, which always contains "spam detection").
             let verdict =
                 try
                     use doc = JsonDocument.Parse(body)
@@ -212,8 +213,9 @@ let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
                     let hasSpam =
                         msgs.EnumerateArray()
                         |> Seq.exists (fun m ->
-                            match m.TryGetProperty("content") with
-                            | true, c -> c.GetString().Contains("spam", StringComparison.OrdinalIgnoreCase)
+                            match m.TryGetProperty("role"), m.TryGetProperty("content") with
+                            | (true, role), (true, content) when role.GetString() = "user" ->
+                                content.GetString().Contains("spam", StringComparison.OrdinalIgnoreCase)
                             | _ -> false)
                     if hasSpam then "KILL" else "NOT_SPAM"
                 with _ -> "NOT_SPAM"

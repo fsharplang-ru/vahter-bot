@@ -22,6 +22,7 @@
         <Compile Include="ChannelSenderTests.fs" />
         <Compile Include="ReactionSpamTests.fs" />
         <Compile Include="PingTests.fs" />
+        <Compile Include="LlmTriageTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 

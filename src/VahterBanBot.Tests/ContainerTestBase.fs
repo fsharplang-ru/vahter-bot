@@ -123,14 +123,14 @@ type VahterTestContainers(mlEnabled: bool) =
                 .WithEnvironment("OCR_MAX_FILE_SIZE_BYTES", (20L * 1024L * 1024L).ToString())
                 .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
                 .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
-                // Reaction spam detection
                 .WithEnvironment("REACTION_SPAM_ENABLED", "true")
                 .WithEnvironment("REACTION_SPAM_MIN_MESSAGES", "3")
                 .WithEnvironment("REACTION_SPAM_MAX_REACTIONS", "5")
-                // Forward spam detection
                 .WithEnvironment("FORWARD_SPAM_DETECTION_ENABLED", "true")
-                // Inline keyboard spam detection
                 .WithEnvironment("INLINE_KEYBOARD_SPAM_DETECTION_ENABLED", "true")
+                .WithEnvironment("LLM_TRIAGE_ENABLED", "true")
+                .WithEnvironment("AZURE_OPENAI_ENDPOINT", "https://fake-azure-openai.openai.azure.com")
+                .WithEnvironment("AZURE_OPENAI_KEY", "fake-llm-key")
                 .Build()
         else
             builder
@@ -337,6 +337,14 @@ WHERE data ->> 'Case' = @caseName
         let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
+    }
+
+    member _.TryGetLlmTriageVerdict(msg: Message) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql = "SELECT verdict FROM llm_triage WHERE chat_id = @chatId AND message_id = @messageId"
+        let! verdicts = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return verdicts |> Seq.tryHead
     }
 
 type MlEnabledVahterTestContainers() =

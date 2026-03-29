@@ -22,6 +22,7 @@ open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
+open VahterBanBot.Telemetry
 open VahterBanBot.Utils
 open VahterBanBot.Bot
 open VahterBanBot.Types
@@ -155,13 +156,12 @@ builder.Services
     )
     |> ignore
 
-builder.Services
+%builder.Services
     .AddHttpClient<ILlmTriage, AzureLlmTriage>()
     .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
         if botConf.UseFakeApi then
             handlers.Add(fakeApi botConf)
     )
-    |> ignore
 
 %builder.Services
     .AddHttpClient("telegram_bot_client")

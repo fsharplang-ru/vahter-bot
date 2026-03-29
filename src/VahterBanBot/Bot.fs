@@ -11,12 +11,11 @@ open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
+open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.UpdateChatAdmins
 open VahterBanBot.Metrics
-
-let botActivity = new ActivitySource("VahterBanBot")
 
 let isPingCommand (msg: TgMessage) =
     msg.Text = "/ban ping"
@@ -744,10 +743,8 @@ let justMessage
                     do! killSpammerAutomated botClient botConfig msg logger botConfig.MlSpamDeletionEnabled prediction.Score
                     // trigger auto-ban check (checkAndAutoBan handles MlSpamAutobanEnabled internally)
                     do! autoBan botUser botClient botConfig msg logger
-                    // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
-                    fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
                 elif prediction.Score >= botConfig.MlWarningThreshold then
-                    // just warn
+                    // just warn — send to triage channel; shadow-classify with LLM for accuracy tracking
                     do! killSpammerAutomated botClient botConfig msg logger false prediction.Score
                     // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
                     fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
