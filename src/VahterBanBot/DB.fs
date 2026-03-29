@@ -711,6 +711,14 @@ ORDER BY "Count" DESC
         return { interval = interval; rows = Array.ofSeq rows }
     }
 
+let loadBotSettings () =
+    task {
+        use conn = new NpgsqlConnection(connString)
+        let! rows = conn.QueryAsync<{| key: string; value: string |}>(
+            "SELECT key, value FROM bot_setting WHERE value IS NOT NULL")
+        return rows |> Seq.map (fun r -> r.key, r.value) |> readOnlyDict
+    }
+
 /// Executes an action while holding a PostgreSQL session-level advisory lock.
 /// Returns true if the lock was acquired and the action completed.
 /// Returns false if the lock is already held by another session.

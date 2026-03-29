@@ -78,68 +78,31 @@ type VahterTestContainers(mlEnabled: bool) =
             .Build()
 
     // the app container
-    // we'll pass all the necessary environment variables to it
+    // secrets and dev flags are env vars; all other settings come from bot_setting (seeded in InitializeAsync)
     let appContainer =
-        let builder = 
+        let builder =
             ContainerBuilder(image)
                 .WithNetwork(network)
                 .WithPortBinding(80, true)
-                .WithEnvironment("BOT_USER_ID", "1337")
-                .WithEnvironment("BOT_USER_NAME", "test_bot")
                 .WithEnvironment("BOT_TELEGRAM_TOKEN", "123:456")
                 .WithEnvironment("BOT_AUTH_TOKEN", "OUR_SECRET")
-                // Channels for vahter actions
-                .WithEnvironment("POTENTIAL_SPAM_CHANNEL_ID", "-101")
-                .WithEnvironment("DETECTED_SPAM_CHANNEL_ID", "-102")
-                .WithEnvironment("ALL_LOGS_CHANNEL_ID", "-103")
-                .WithEnvironment("DETECTED_SPAM_CLEANUP_AGE_HOURS", "24")
-                .WithEnvironment("CHATS_TO_MONITOR", """{"pro.hell":"-666","dotnetru":-42}""")
-                .WithEnvironment("ALLOWED_USERS", """{"vahter_1":"34","vahter_2":69}""")
                 .WithEnvironment("IGNORE_SIDE_EFFECTS", "false")
                 .WithEnvironment("USE_FAKE_API", "true")
                 .WithEnvironment("USE_POLLING", "false")
                 .WithEnvironment("DATABASE_URL", internalConnectionString)
-                .WithEnvironment("CLEANUP_OLD_MESSAGES", "false")
                 // .net 8.0 upgrade has a breaking change
                 // https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
-                // Azure default port for containers is 80, se we need explicitly set it
+                // Azure default port for containers is 80, so we need to explicitly set it
                 .WithEnvironment("ASPNETCORE_HTTP_PORTS", "80")
-                .WithEnvironment("UPDATE_CHAT_ADMINS", "true")
-                .WithEnvironment("UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400")
                 .DependsOn(flywayContainer)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(80))
         if mlEnabled then
             builder
-                .WithEnvironment("ML_ENABLED", "true")
-                .WithEnvironment("ML_SEED", "42")
-                .WithEnvironment("ML_TRAIN_RANDOM_SORT_DATA", "false")
-                .WithEnvironment("ML_SPAM_DELETION_ENABLED", "true")
-                .WithEnvironment("ML_SPAM_THRESHOLD", "1.0")
-                .WithEnvironment("ML_STOP_WORDS_IN_CHATS", """{"-42":["2"]}""")
-                .WithEnvironment("ML_SPAM_AUTOBAN_ENABLED", "true")
-                .WithEnvironment("ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT", "10")
-                .WithEnvironment("ML_SPAM_AUTOBAN_SCORE_THRESHOLD", "-4.0")
-                .WithEnvironment("OCR_ENABLED", "true")
-                .WithEnvironment("OCR_MAX_FILE_SIZE_BYTES", (20L * 1024L * 1024L).ToString())
-                .WithEnvironment("AZURE_OCR_ENDPOINT", "https://fake-azure-ocr.cognitiveservices.azure.com/ocr")
                 .WithEnvironment("AZURE_OCR_KEY", "secret-ocr-key")
-                .WithEnvironment("REACTION_SPAM_ENABLED", "true")
-                .WithEnvironment("REACTION_SPAM_MIN_MESSAGES", "3")
-                .WithEnvironment("REACTION_SPAM_MAX_REACTIONS", "5")
-                .WithEnvironment("FORWARD_SPAM_DETECTION_ENABLED", "true")
-                .WithEnvironment("INLINE_KEYBOARD_SPAM_DETECTION_ENABLED", "true")
-                .WithEnvironment("LLM_TRIAGE_ENABLED", "true")
-                .WithEnvironment("AZURE_OPENAI_ENDPOINT", "https://fake-azure-openai.openai.azure.com")
                 .WithEnvironment("AZURE_OPENAI_KEY", "fake-llm-key")
                 .Build()
         else
-            builder
-                .WithEnvironment("ML_ENABLED", "false")
-                .WithEnvironment("OCR_ENABLED", "false")
-                .WithEnvironment("REACTION_SPAM_ENABLED", "false")
-                .WithEnvironment("FORWARD_SPAM_DETECTION_ENABLED", "false")
-                .WithEnvironment("INLINE_KEYBOARD_SPAM_DETECTION_ENABLED", "false")
-                .Build()
+            builder.Build()
             
     let startContainers() = task {
         try
@@ -185,6 +148,53 @@ type VahterTestContainers(mlEnabled: bool) =
 
                 if scriptResult.Stderr <> "" then
                     failwith scriptResult.Stderr
+
+                // seed bot_setting — common settings + per-fixture overrides
+                let commonSettings = [
+                    "BOT_USER_ID",               "1337",                                    "FREE_FORM",    "BOT"
+                    "BOT_USER_NAME",             "test_bot",                                "FREE_FORM",    "BOT"
+                    "POTENTIAL_SPAM_CHANNEL_ID", "-101",                                    "FREE_FORM",    "CHANNELS"
+                    "DETECTED_SPAM_CHANNEL_ID",  "-102",                                    "FREE_FORM",    "CHANNELS"
+                    "ALL_LOGS_CHANNEL_ID",       "-103",                                    "FREE_FORM",    "CHANNELS"
+                    "DETECTED_SPAM_CLEANUP_AGE_HOURS", "24",                                "FREE_FORM",    "CHANNELS"
+                    "CHATS_TO_MONITOR",          """{"pro.hell":"-666","dotnetru":-42}""",  "JSON_BLOB",    "CHANNELS"
+                    "ALLOWED_USERS",             """{"vahter_1":"34","vahter_2":69}""",     "JSON_BLOB",    "CHANNELS"
+                    "CLEANUP_OLD_MESSAGES",      "false",                                   "FEATURE_FLAG", "CLEANUP"
+                    "UPDATE_CHAT_ADMINS",        "true",                                    "FEATURE_FLAG", "CLEANUP"
+                    "UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400",                             "FREE_FORM",    "CLEANUP"
+                ]
+                let mlSettings =
+                    if mlEnabled then [
+                        "ML_ENABLED",                          "true",  "FEATURE_FLAG", "ML"
+                        "ML_SEED",                             "42",    "FREE_FORM",    "ML"
+                        "ML_TRAIN_RANDOM_SORT_DATA",           "false", "FEATURE_FLAG", "ML"
+                        "ML_SPAM_THRESHOLD",                   "1.0",   "FREE_FORM",    "ML"
+                        "ML_STOP_WORDS_IN_CHATS",              """{"-42":["2"]}""", "JSON_BLOB", "ML"
+                        "ML_SPAM_DELETION_ENABLED",            "true",  "FEATURE_FLAG", "ML_SPAM_DELETION"
+                        "ML_SPAM_AUTOBAN_ENABLED",             "true",  "FEATURE_FLAG", "ML_SPAM_AUTOBAN"
+                        "ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT","10",    "FREE_FORM",    "ML_SPAM_AUTOBAN"
+                        "ML_SPAM_AUTOBAN_SCORE_THRESHOLD",     "-4.0",  "FREE_FORM",    "ML_SPAM_AUTOBAN"
+                        "OCR_ENABLED",                         "true",  "FEATURE_FLAG", "OCR"
+                        "OCR_MAX_FILE_SIZE_BYTES",             (20L * 1024L * 1024L).ToString(), "FREE_FORM", "OCR"
+                        "AZURE_OCR_ENDPOINT",                  "https://fake-azure-ocr.cognitiveservices.azure.com/ocr", "FREE_FORM", "OCR"
+                        "REACTION_SPAM_ENABLED",               "true",  "FEATURE_FLAG", "REACTION_SPAM"
+                        "REACTION_SPAM_MIN_MESSAGES",          "3",     "FREE_FORM",    "REACTION_SPAM"
+                        "REACTION_SPAM_MAX_REACTIONS",         "5",     "FREE_FORM",    "REACTION_SPAM"
+                        "FORWARD_SPAM_DETECTION_ENABLED",      "true",  "FEATURE_FLAG", "FORWARD_SPAM"
+                        "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED","true","FEATURE_FLAG", "INLINE_KEYBOARD_SPAM"
+                        "LLM_TRIAGE_ENABLED",                  "true",  "FEATURE_FLAG", "LLM"
+                        "AZURE_OPENAI_ENDPOINT",               "https://fake-azure-openai.openai.azure.com", "FREE_FORM", "LLM"
+                    ] else [
+                        // these two default to true in code, so must be explicitly set to false
+                        "FORWARD_SPAM_DETECTION_ENABLED",        "false", "FEATURE_FLAG", "FORWARD_SPAM"
+                        "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED","false", "FEATURE_FLAG", "INLINE_KEYBOARD_SPAM"
+                    ]
+                use settingsConn = new NpgsqlConnection(publicConnectionString)
+                for (key, value, typ, group) in commonSettings @ mlSettings do
+                    do! settingsConn.ExecuteAsync(
+                            "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g)",
+                            {| k = key; v = value; t = typ; g = group |})
+                        :> Task
 
                 // start the app container
                 do! appContainer.StartAsync()

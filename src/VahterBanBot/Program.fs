@@ -49,70 +49,98 @@ let botConfJsonOptions =
 let fromJson<'a> (json: string) =
     JsonSerializer.Deserialize<'a>(json, botConfJsonOptions)
 
+let dbSettings =
+    try
+        DB.loadBotSettings().GetAwaiter().GetResult()
+    with e ->
+        eprintfn "[FATAL] Failed to load bot settings from database: %O" e
+        reraise()
+
+let getSetting key =
+    match dbSettings.TryGetValue key with
+    | true, v -> v
+    | _ -> null
+
+let getSettingOr key def =
+    match getSetting key with
+    | null -> def
+    | v -> v
+
+let getRequiredSetting key =
+    match getSetting key with
+    | null -> failwithf "Required setting '%s' not found in bot_setting table" key
+    | v -> v
+
 let botConf =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
-      Route = getEnvOr "BOT_HOOK_ROUTE" "/bot"
+      Route = getSettingOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
-      BotUserId = getEnv "BOT_USER_ID" |> int64
-      BotUserName = getEnv "BOT_USER_NAME"
+      BotUserId = getRequiredSetting "BOT_USER_ID" |> int64
+      BotUserName = getRequiredSetting "BOT_USER_NAME"
       // Channels for vahter actions
-      PotentialSpamChannelId = getEnv "POTENTIAL_SPAM_CHANNEL_ID" |> int64
-      DetectedSpamChannelId = getEnv "DETECTED_SPAM_CHANNEL_ID" |> int64
-      AllLogsChannelId = getEnv "ALL_LOGS_CHANNEL_ID" |> int64
-      DetectedSpamCleanupAge = getEnvOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
-      ChatsToMonitor = getEnv "CHATS_TO_MONITOR" |> fromJson
-      AllowedUsers = getEnv "ALLOWED_USERS" |> fromJson
+      PotentialSpamChannelId = getRequiredSetting "POTENTIAL_SPAM_CHANNEL_ID" |> int64
+      DetectedSpamChannelId = getRequiredSetting "DETECTED_SPAM_CHANNEL_ID" |> int64
+      AllLogsChannelId = getRequiredSetting "ALL_LOGS_CHANNEL_ID" |> int64
+      DetectedSpamCleanupAge = getSettingOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
+      ChatsToMonitor = getRequiredSetting "CHATS_TO_MONITOR" |> fromJson
+      AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
-      UsePolling =  getEnvOr "USE_POLLING" "false" |> bool.Parse
+      UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse
       UseFakeApi =
           getEnvOr "USE_FAKE_TG_API" "false" // use old name for backward compatibility
           |> getEnvOr "USE_FAKE_API"
           |> bool.Parse
-      CleanupOldMessages = getEnvOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
-      CleanupInterval = getEnvOr "CLEANUP_INTERVAL_SEC" "86400" |> int64 |> TimeSpan.FromSeconds
-      CleanupCheckInterval = getEnvOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int64 |> TimeSpan.FromSeconds
-      CleanupScheduledHour = getEnvOr "CLEANUP_SCHEDULED_HOUR_UTC" "22" |> int
-      StatsScheduledHour = getEnvOr "STATS_SCHEDULED_HOUR_UTC" "8" |> int
-      CleanupOldLimit = getEnvOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int64 |> TimeSpan.FromSeconds
-      UpdateChatAdminsInterval = getEnvOrWith "UPDATE_CHAT_ADMINS_INTERVAL_SEC" None (int64 >> TimeSpan.FromSeconds >> Some)
-      UpdateChatAdmins = getEnvOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
-      OcrEnabled = getEnvOr "OCR_ENABLED" "false" |> bool.Parse
-      OcrMaxFileSizeBytes = getEnvOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
-      AzureOcrEndpoint = getEnvOr "AZURE_OCR_ENDPOINT" ""
+      CleanupOldMessages = getSettingOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
+      CleanupInterval = getSettingOr "CLEANUP_INTERVAL_SEC" "86400" |> int64 |> TimeSpan.FromSeconds
+      CleanupCheckInterval = getSettingOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int64 |> TimeSpan.FromSeconds
+      CleanupScheduledHour = getSettingOr "CLEANUP_SCHEDULED_HOUR_UTC" "22" |> int
+      StatsScheduledHour = getSettingOr "STATS_SCHEDULED_HOUR_UTC" "8" |> int
+      CleanupOldLimit = getSettingOr "CLEANUP_OLD_LIMIT_SEC" "259200" |> int64 |> TimeSpan.FromSeconds
+      UpdateChatAdminsInterval =
+          match getSetting "UPDATE_CHAT_ADMINS_INTERVAL_SEC" with
+          | null -> None
+          | v -> int64 v |> TimeSpan.FromSeconds |> Some
+      UpdateChatAdmins = getSettingOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
+      OcrEnabled = getSettingOr "OCR_ENABLED" "false" |> bool.Parse
+      OcrMaxFileSizeBytes = getSettingOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
+      AzureOcrEndpoint = getSettingOr "AZURE_OCR_ENDPOINT" ""
       AzureOcrKey = getEnvOr "AZURE_OCR_KEY" ""
-      MlEnabled = getEnvOr "ML_ENABLED" "false" |> bool.Parse
+      MlEnabled = getSettingOr "ML_ENABLED" "false" |> bool.Parse
       MlRetrainScheduledTime =
-          let s = getEnvOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
+          let s = getSettingOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
           TimeOnly.Parse(s).ToTimeSpan()
-      MlSeed = getEnvOrWith "ML_SEED" (Nullable<int>()) (int >> Nullable)
-      MlSpamDeletionEnabled = getEnvOr "ML_SPAM_DELETION_ENABLED" "false" |> bool.Parse
-      MlSpamAutobanEnabled = getEnvOr "ML_SPAM_AUTOBAN_ENABLED" "false" |> bool.Parse
-      MlSpamAutobanCheckLastMsgCount = getEnvOr "ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT" "10" |> int
-      MlSpamAutobanScoreThreshold = getEnvOr "ML_SPAM_AUTOBAN_SCORE_THRESHOLD" "-5.0" |> double
-      MlTrainRandomSortData = getEnvOr "ML_TRAIN_RANDOM_SORT_DATA" "true" |> bool.Parse
-      MlTrainInterval = getEnvOr "ML_TRAIN_INTERVAL_DAYS" "30" |> int |> TimeSpan.FromDays
-      MlTrainCriticalMsgCount = getEnvOr "ML_TRAIN_CRITICAL_MSG_COUNT" "5" |> int
-      MlTrainingSetFraction = getEnvOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
-      MlSpamThreshold = getEnvOr "ML_SPAM_THRESHOLD" "0.5" |> single
-      MlWarningThreshold = getEnvOr "ML_WARNING_THRESHOLD" "0.0" |> single
-      MlMaxNumberOfIterations = getEnvOr "ML_MAX_NUMBER_OF_ITERATIONS" "50" |> int
-      MlCustomEmojiThreshold = getEnvOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
-      MlStopWordsInChats = getEnvOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
-      MlWeightDecayK = getEnvOr "ML_WEIGHT_DECAY_K" "0" |> float
+      MlSeed =
+          match getSetting "ML_SEED" with
+          | null -> Nullable<int>()
+          | v -> int v |> Nullable
+      MlSpamDeletionEnabled = getSettingOr "ML_SPAM_DELETION_ENABLED" "false" |> bool.Parse
+      MlSpamAutobanEnabled = getSettingOr "ML_SPAM_AUTOBAN_ENABLED" "false" |> bool.Parse
+      MlSpamAutobanCheckLastMsgCount = getSettingOr "ML_SPAM_AUTOBAN_CHECK_LAST_MSG_COUNT" "10" |> int
+      MlSpamAutobanScoreThreshold = getSettingOr "ML_SPAM_AUTOBAN_SCORE_THRESHOLD" "-5.0" |> double
+      MlTrainRandomSortData = getSettingOr "ML_TRAIN_RANDOM_SORT_DATA" "true" |> bool.Parse
+      MlTrainInterval = getSettingOr "ML_TRAIN_INTERVAL_DAYS" "30" |> int |> TimeSpan.FromDays
+      MlTrainCriticalMsgCount = getSettingOr "ML_TRAIN_CRITICAL_MSG_COUNT" "5" |> int
+      MlTrainingSetFraction = getSettingOr "ML_TRAINING_SET_FRACTION" "0.2" |> float
+      MlSpamThreshold = getSettingOr "ML_SPAM_THRESHOLD" "0.5" |> single
+      MlWarningThreshold = getSettingOr "ML_WARNING_THRESHOLD" "0.0" |> single
+      MlMaxNumberOfIterations = getSettingOr "ML_MAX_NUMBER_OF_ITERATIONS" "50" |> int
+      MlCustomEmojiThreshold = getSettingOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
+      MlStopWordsInChats = getSettingOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
+      MlWeightDecayK = getSettingOr "ML_WEIGHT_DECAY_K" "0" |> float
       // Reaction spam detection
-      ReactionSpamEnabled = getEnvOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
-      ReactionSpamMinMessages = getEnvOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
-      ReactionSpamMaxReactions = getEnvOr "REACTION_SPAM_MAX_REACTIONS" "5" |> int
+      ReactionSpamEnabled = getSettingOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
+      ReactionSpamMinMessages = getSettingOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
+      ReactionSpamMaxReactions = getSettingOr "REACTION_SPAM_MAX_REACTIONS" "5" |> int
       // Forward spam detection
-      ForwardSpamDetectionEnabled = getEnvOr "FORWARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
+      ForwardSpamDetectionEnabled = getSettingOr "FORWARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
       // Inline keyboard spam detection
-      InlineKeyboardSpamDetectionEnabled = getEnvOr "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
+      InlineKeyboardSpamDetectionEnabled = getSettingOr "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
       // LLM shadow triage
-      LlmTriageEnabled      = getEnvOr "LLM_TRIAGE_ENABLED" "false" |> bool.Parse
-      AzureOpenAiEndpoint   = getEnvOr "AZURE_OPENAI_ENDPOINT" ""
+      LlmTriageEnabled      = getSettingOr "LLM_TRIAGE_ENABLED" "false" |> bool.Parse
+      AzureOpenAiEndpoint   = getSettingOr "AZURE_OPENAI_ENDPOINT" ""
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
-      AzureOpenAiDeployment = getEnvOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
-      LlmChatDescriptions   = getEnvOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson }
+      AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
+      LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson }
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
