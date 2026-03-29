@@ -203,21 +203,29 @@ let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
             let! body =
                 if isNull request.Content then Task.FromResult String.Empty
                 else request.Content.ReadAsStringAsync()
-            // Return KILL if the user message content contains "spam" (case-insensitive),
-            // NOT_SPAM otherwise — lets tests control the verdict via message text.
-            // Only user messages are checked (not system prompt, which always contains "spam detection").
+            // Three-way routing based on keywords in the user message content (role="user" only).
+            // System prompt is excluded — it always contains "spam detection".
+            //   "kill"  → KILL     (permanent ban)
+            //   "spam"  → SPAM     (soft delete, no ban)
+            //   neither → NOT_SPAM
             let verdict =
                 try
                     use doc = JsonDocument.Parse(body)
                     let msgs = doc.RootElement.GetProperty("messages")
-                    let hasSpam =
+                    let userContent =
                         msgs.EnumerateArray()
-                        |> Seq.exists (fun m ->
-                            match m.TryGetProperty("role"), m.TryGetProperty("content") with
-                            | (true, role), (true, content) when role.GetString() = "user" ->
-                                content.GetString().Contains("spam", StringComparison.OrdinalIgnoreCase)
+                        |> Seq.tryFind (fun m ->
+                            match m.TryGetProperty("role") with
+                            | true, role -> role.GetString() = "user"
                             | _ -> false)
-                    if hasSpam then "KILL" else "NOT_SPAM"
+                        |> Option.bind (fun m ->
+                            match m.TryGetProperty("content") with
+                            | true, c -> Some (c.GetString())
+                            | _ -> None)
+                        |> Option.defaultValue ""
+                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "KILL"
+                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                    else "NOT_SPAM"
                 with _ -> "NOT_SPAM"
             let r = new HttpResponseMessage(HttpStatusCode.OK)
             r.Content <- new StringContent(fakeAzureOpenAiResponse verdict, Encoding.UTF8, "application/json")

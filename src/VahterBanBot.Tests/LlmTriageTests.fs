@@ -10,14 +10,16 @@ open Xunit
 /// but before "M"/"P" tests that insert "77" into false_positive_messages — avoiding DB contamination.
 ///
 /// "77" scores in the ML warning range (>= ML_WARNING_THRESHOLD=0.0, < ML_SPAM_THRESHOLD=1.0).
-/// The fake Azure OpenAI handler returns KILL when the user message contains "spam" (case-insensitive,
-/// role="user" only), NOT_SPAM otherwise. Setting a user firstName containing "spam" triggers KILL.
+/// The fake Azure OpenAI handler uses three-way routing on the user message content (role="user" only):
+///   firstName containing "kill"  → KILL     (permanent ban)
+///   firstName containing "spam"  → SPAM     (soft delete, no ban)
+///   neither                      → NOT_SPAM
 type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) =
 
     [<Fact>]
     let ``LLM triage fires KILL verdict for potential spam`` () = task {
-        // Display name "spam advertiser" → fake LLM handler sees "spam" in user message → KILL
-        let spammer = Tg.user(firstName = "spam advertiser")
+        // Display name contains "kill" → fake LLM handler returns KILL
+        let spammer = Tg.user(firstName = "kill advertiser")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
@@ -26,6 +28,19 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
         let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "KILL", verdict)
+    }
+
+    [<Fact>]
+    let ``LLM triage fires SPAM verdict for potential spam`` () = task {
+        // Display name contains "spam" (but not "kill") → fake LLM handler returns SPAM (soft delete)
+        let spammer = Tg.user(firstName = "spam advertiser")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
+        let! _ = fixture.SendMessage msgUpdate
+
+        do! Task.Delay 2000
+
+        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
+        Assert.Equal(Some "SPAM", verdict)
     }
 
     [<Fact>]
