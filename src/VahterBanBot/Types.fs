@@ -270,7 +270,7 @@ type LlmTriageStats =
                 this.rows
                 |> Array.sumBy (fun r ->
                     let isMatch =
-                        (r.LlmVerdict = "KILL"     && r.VahterAction = "potential_kill") ||
+                        (r.LlmVerdict = "KILL"     && (r.VahterAction = "potential_kill" || r.VahterAction = "manual_ban")) ||
                         (r.LlmVerdict = "SPAM"     && r.VahterAction = "potential_soft_spam") ||
                         (r.LlmVerdict = "NOT_SPAM" && (r.VahterAction = "potential_not_spam" || r.VahterAction = "detected_not_spam"))
                     if isMatch then r.Count else 0)
