@@ -40,7 +40,6 @@ open Serilog.Formatting.Compact
 type Root = class end
 
 Dapper.FSharp.PostgreSQL.OptionTypes.register()
-SqlMapper.AddTypeHandler(CallbackMessageTypeHandler());
 
 let botConfJsonOptions =
     let opts = JsonSerializerOptions(JsonSerializerDefaults.Web)
@@ -90,7 +89,6 @@ let botConf =
           getEnvOr "USE_FAKE_TG_API" "false" // use old name for backward compatibility
           |> getEnvOr "USE_FAKE_API"
           |> bool.Parse
-      CleanupOldMessages = getSettingOr "CLEANUP_OLD_MESSAGES" "true" |> bool.Parse
       CleanupInterval = getSettingOr "CLEANUP_INTERVAL_SEC" "86400" |> int64 |> TimeSpan.FromSeconds
       CleanupCheckInterval = getSettingOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int64 |> TimeSpan.FromSeconds
       CleanupScheduledHour = getSettingOr "CLEANUP_SCHEDULED_HOUR_UTC" "22" |> int
@@ -243,8 +241,7 @@ let otelBuilder =
         )
 
 let botUser =
-    DbUser.newUser(botConf.BotUserId, botConf.BotUserName)
-    |> DB.upsertUser
+    DB.upsertUser botConf.BotUserId (Some botConf.BotUserName)
     |> fun x -> x.Result
 
 let webApp = choose [

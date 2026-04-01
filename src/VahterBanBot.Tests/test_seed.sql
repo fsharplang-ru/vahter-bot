@@ -895,3 +895,91 @@ VALUES (-42, 10008),
        (-666, 10497),
        (-666, 10498),
        (-666, 10499);
+
+-- ---------------------------------------------------------------------------
+-- Backfill event table from the seeded legacy data (mirrors V23 migration).
+-- The event table was created empty by V23; this populates it with test data.
+-- ON CONFLICT DO NOTHING makes this idempotent.
+-- ---------------------------------------------------------------------------
+
+-- 1. UsernameChanged — from user table
+INSERT INTO event(stream_id, stream_version, data, created_at)
+SELECT
+    'user:' || id,
+    ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at),
+    jsonb_build_object('Case', 'UsernameChanged', 'userId', id, 'username', username),
+    created_at
+FROM "user"
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 2. MessageReceived — from message table
+INSERT INTO event(stream_id, stream_version, data, created_at)
+SELECT
+    'message:' || chat_id || ':' || message_id,
+    1,
+    jsonb_build_object('Case', 'MessageReceived', 'chatId', chat_id, 'messageId', message_id,
+                       'userId', user_id, 'text', text, 'rawMessage', raw_message::jsonb),
+    created_at
+FROM message
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 3. UserBanned — union manual bans + (no bot bans in seed), offset by 1 for UsernameChanged
+WITH all_bans AS (
+    SELECT banned_user_id AS user_id,
+           banned_at,
+           banned_by,
+           false          AS is_bot_ban,
+           banned_in_chat_id,
+           message_id,
+           message_text
+    FROM banned
+),
+numbered AS (
+    SELECT *,
+           1 + ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY banned_at) AS stream_ver
+    FROM all_bans
+)
+INSERT INTO event(stream_id, stream_version, data, created_at)
+SELECT
+    'user:' || user_id,
+    stream_ver,
+    jsonb_build_object(
+        'Case', 'UserBanned',
+        'userId', user_id,
+        'bannedBy', CASE
+            WHEN is_bot_ban THEN jsonb_build_object('Case', 'BannedByAutoBan', 'chatId', banned_in_chat_id, 'messageText', message_text)
+            ELSE jsonb_build_object('Case', 'BannedByVahter', 'vahterId', banned_by, 'chatId', COALESCE(banned_in_chat_id, 0), 'messageId', COALESCE(message_id, 0), 'messageText', message_text)
+        END
+    ),
+    banned_at
+FROM numbered
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 4. MessageMarkedSpam — from false_negative_messages (version 2)
+INSERT INTO event(stream_id, stream_version, data, created_at)
+SELECT
+    'message:' || chat_id || ':' || message_id,
+    2,
+    jsonb_build_object('Case', 'MessageMarkedSpam', 'chatId', chat_id, 'messageId', message_id, 'markedBy', NULL),
+    NOW()
+FROM false_negative_messages
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 5. MessageMarkedHam — from false_positive_messages matched to message table
+CREATE TEMP TABLE seed_msg_hash_lookup AS
+    SELECT chat_id, message_id, md5(text)::uuid AS text_hash
+    FROM message
+    WHERE text IS NOT NULL;
+CREATE INDEX ON seed_msg_hash_lookup(text_hash);
+
+INSERT INTO event(stream_id, stream_version, data, created_at)
+SELECT
+    'message:' || m.chat_id || ':' || m.message_id,
+    2,
+    jsonb_build_object('Case', 'MessageMarkedHam', 'chatId', m.chat_id, 'messageId', m.message_id, 'text', fp.text, 'markedBy', NULL),
+    NOW()
+FROM false_positive_messages fp
+JOIN seed_msg_hash_lookup m ON m.text_hash = fp.text_hash
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+DROP TABLE seed_msg_hash_lookup;

@@ -31,8 +31,20 @@ type AlphabeticalTestCaseOrderer() =
             |> Seq.toArray
             :> IReadOnlyCollection<_>
 
+/// Same idea applied at the collection (≈ test class) level.
+/// xUnit v3's DefaultTestCollectionOrderer randomizes collection order,
+/// so without this the class execution order differs across platforms.
+type AlphabeticalTestCollectionOrderer() =
+    interface ITestCollectionOrderer with
+        member _.OrderTestCollections(testCollections: IReadOnlyCollection<'TTestCollection>) : IReadOnlyCollection<'TTestCollection> =
+            testCollections
+            |> Seq.sortBy (fun tc -> tc.TestCollectionDisplayName)
+            |> Seq.toArray
+            :> IReadOnlyCollection<_>
+
 [<assembly: CollectionBehavior(DisableTestParallelization = true)>]
 [<assembly: TestCaseOrdererAttribute(typeof<AlphabeticalTestCaseOrderer>)>]
+[<assembly: TestCollectionOrdererAttribute(typeof<AlphabeticalTestCollectionOrderer>)>]
 [<assembly: AssemblyFixture(typeof<MlDisabledVahterTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<MlEnabledVahterTestContainers>)>]
 do ()

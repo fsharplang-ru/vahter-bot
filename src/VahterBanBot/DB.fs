@@ -13,145 +13,464 @@ open VahterBanBot.Utils
 
 let private connString = getEnv "DATABASE_URL"
 
-let upsertUser (user: DbUser): Task<DbUser> =
+// ---------------------------------------------------------------------------
+// Generic serialize / deserialize via FSharp.SystemTextJson
+// ---------------------------------------------------------------------------
+
+open System.Text.Json
+open System.Text.Json.Serialization
+
+let fsharpJsonOpts =
+    JsonFSharpOptions.Default()
+        .WithUnionInternalTag()
+        .WithUnionUnwrapRecordCases()
+        .WithUnionNamedFields()
+        .WithUnwrapOption()
+        .ToJsonSerializerOptions()
+
+/// Deserializes data JSON → DU event.
+let deserializeEvent<'Event> (raw: RawEvent) : 'Event =
+    JsonSerializer.Deserialize<'Event>(raw.data, options = fsharpJsonOpts)
+
+/// SRTP helper — folds raw events into aggregate state using Fold/Zero from the state type.
+let inline foldEvents<'Event, 'State
+    when 'State : (static member Zero : 'State)
+    and  'State : (static member Fold : 'State * 'Event -> 'State)>
+    (rawEvents: RawEvent list) : 'State =
+    let fold s e = 'State.Fold(s, e)
+    rawEvents |> List.map deserializeEvent<'Event> |> List.fold fold 'State.Zero
+
+// ---------------------------------------------------------------------------
+// Event store primitives
+// ---------------------------------------------------------------------------
+
+/// Reads all events for a stream; returns (events, currentVersion) where
+/// currentVersion = 0 means the stream does not exist yet.
+let readStream (streamId: string) : Task<RawEvent list * int> =
     task {
         use conn = new NpgsqlConnection(connString)
-
         //language=postgresql
         let sql =
             """
-INSERT INTO "user" (id, username, created_at, updated_at)
-VALUES (@id, @username, @created_at, @updated_at)
-ON CONFLICT (id) DO UPDATE
-    SET username   = COALESCE("user".username, EXCLUDED.username),
-        updated_at = GREATEST(EXCLUDED.updated_at, "user".updated_at)
-RETURNING *;
-"""
-
-        let! insertedUser = conn.QueryAsync<DbUser>(sql, user)
-
-        return insertedUser |> Seq.head
+SELECT stream_id, stream_version, event_type, data::TEXT AS data, created_at
+FROM event
+WHERE stream_id = @streamId
+ORDER BY stream_version
+            """
+        let! rows = conn.QueryAsync<RawEvent>(sql, {| streamId = streamId |})
+        let events = List.ofSeq rows
+        let version = events |> List.tryLast |> Option.map (fun e -> e.stream_version) |> Option.defaultValue 0
+        return events, version
     }
 
-let upsertUserAndIncrementReactions (user: DbUser) (reactionIncrement: int): Task<DbUser> =
+/// Tries to append events to a stream at the expected version.
+/// Serializes DU events to JSON internally — callers pass typed events, not RawEvents.
+/// Returns Ok () on success, Error ConcurrencyConflict if stream_version already exists.
+let tryAppend<'Event> (streamId: string) (expectedVersion: int) (events: 'Event list) : Task<Result<unit, ConcurrencyConflict>> =
     task {
+        if events.IsEmpty then return Ok ()
+        else
         use conn = new NpgsqlConnection(connString)
-
+        do! conn.OpenAsync()
+        use! tx = conn.BeginTransactionAsync()
         //language=postgresql
         let sql =
             """
-INSERT INTO "user" (id, username, reaction_count, created_at, updated_at)
-VALUES (@id, @username, @reactionIncrement, @created_at, @updated_at)
-ON CONFLICT (id) DO UPDATE
-    SET username       = COALESCE("user".username, EXCLUDED.username),
-        reaction_count = "user".reaction_count + @reactionIncrement,
-        updated_at     = GREATEST(EXCLUDED.updated_at, "user".updated_at)
-RETURNING *;
-"""
-
-        let! insertedUser = conn.QueryAsync<DbUser>(sql, {| 
-            id = user.id
-            username = user.username
-            reactionIncrement = reactionIncrement
-            created_at = user.created_at
-            updated_at = user.updated_at 
-        |})
-
-        return insertedUser |> Seq.head
+INSERT INTO event(stream_id, stream_version, data)
+VALUES (@stream_id, @stream_version, @data::JSONB)
+ON CONFLICT (stream_id, stream_version) DO NOTHING
+RETURNING id
+            """
+        let mutable insertedCount = 0
+        for (i, e) in events |> List.indexed do
+            let data = JsonSerializer.Serialize<'Event>(e, fsharpJsonOpts)
+            let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data |})
+            insertedCount <- insertedCount + Seq.length rows
+        if insertedCount < events.Length then
+            do! tx.RollbackAsync()
+            return Error ConcurrencyConflict
+        else
+            do! tx.CommitAsync()
+            return Ok ()
     }
 
-let insertMessage (message: DbMessage): Task<DbMessage> =
+/// Optimistic-concurrency transact loop.
+/// Reads stream → folds events into state → calls decider → appends.
+/// Retries on ConcurrencyConflict. Never recurses — uses a while loop (task{} is hot/eager).
+/// Returns the new events and the final aggregate state.
+let transact
+    (fold:        'State -> 'Event -> 'State)
+    (initial:     'State)
+    (decider:     'State -> 'Event list)
+    (streamId:    string)
+    : Task<'Event list * 'State> =
     task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO message (chat_id, message_id, user_id, text, raw_message, created_at)
-VALUES (@chat_id, @message_id, @user_id, @text, @raw_message::JSONB, @created_at)
-ON CONFLICT (chat_id, message_id) DO NOTHING RETURNING *;
-            """
-
-        let! insertedMessage = conn.QueryAsync<DbMessage>(sql, message)
-
-        return
-            insertedMessage
-            |> Seq.tryHead
-            |> Option.defaultValue message
-}
-
-let banUser (banned: DbBanned): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO banned (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username, banned_by)
-VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat_id, @banned_in_chat_username, @banned_by)
-ON CONFLICT (banned_user_id) DO NOTHING;
-            """
-
-        let! _ = conn.ExecuteAsync(sql, banned)
-        return banned
+        let mutable result = ValueNone
+        while result.IsNone do
+            let! (rawEvents, version) = readStream streamId
+            let state     = rawEvents |> List.map deserializeEvent<'Event> |> List.fold fold initial
+            let newEvents = decider state
+            if newEvents.IsEmpty then
+                result <- ValueSome ([], state)
+            else
+                match! tryAppend streamId version newEvents with
+                | Ok _                    ->
+                    let finalState = newEvents |> List.fold fold state
+                    result <- ValueSome (newEvents, finalState)
+                | Error ConcurrencyConflict -> ()   // re-read, re-decide
+        return result.Value
     }
 
-let banUserByBot (banned: DbBanned) : Task =
+// ---------------------------------------------------------------------------
+// Transact-based write helpers (replace legacy insert/update functions)
+// ---------------------------------------------------------------------------
+
+/// SRTP wrapper — resolves Fold/Zero from the state type at compile time.
+let inline appendEvent (streamId: string) (decider: 'State -> 'Event list) : Task<'Event list * 'State>
+    when 'State : (static member Zero : 'State)
+    and  'State : (static member Fold : 'State * 'Event -> 'State) =
+    let fold s e = 'State.Fold(s, e)
+    transact fold 'State.Zero decider streamId
+
+/// Records a UsernameChanged event only when the username actually differs.
+let recordUsernameChanged (userId: int64) (username: string option) : Task<unit> =
     task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO banned_by_bot (message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username)
-VALUES (@message_id, @message_text, @banned_user_id, @banned_at, @banned_in_chat_id, @banned_in_chat_username)
-            """
-
-        let! _ = conn.ExecuteAsync(sql, banned)
-        return banned
-    }
-
-let unbanUserByBot (msg: DbMessage) : Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-DELETE FROM banned_by_bot WHERE message_id = @message_id and banned_in_chat_id = @chat_id
-            """
-
-        let! _ = conn.ExecuteAsync(sql, msg)
+        let! _ = appendEvent $"user:{userId}" (fun state ->
+            if state.Username = username then []
+            else [ UsernameChanged {| userId = userId; username = username |} ])
         return ()
     }
 
-let getUserMessages (userId: int64): Task<DbMessage array> =
+/// Records a UsernameChanged (if needed) with atomic reaction increment.
+let recordUserReaction (userId: int64) (username: string option) (reactionIncrement: int) : Task<User> =
+    task {
+        let! (_, state) = appendEvent $"user:{userId}" (fun state ->
+            let usernameEvt =
+                if state.Username = username then []
+                else [ UsernameChanged {| userId = userId; username = username |} ]
+            usernameEvt @ [ UserReactionRecorded {| userId = userId; delta = reactionIncrement |} ])
+        return state
+    }
+
+/// Records a UserBanned event (replaces banUser for writes).
+let recordUserBanned (userId: int64) (bannedBy: BannedBy) : Task<unit> =
+    task {
+        let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
+            if state.IsBanned then []   // idempotent — already banned
+            else [ UserBanned {| userId = userId; bannedBy = bannedBy |} ])
+        return ()
+    }
+
+/// Records a UserUnbanned event (replaces unbanUser for writes).
+let recordUserUnbanned (userId: int64) (unbannedBy: int64) : Task<unit> =
+    task {
+        let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
+            if not state.IsBanned then []
+            else [ UserUnbanned {| userId = userId; unbannedBy = unbannedBy |} ])
+        return ()
+    }
+
+/// Records a MessageReceived event (replaces insertMessage for writes).
+let recordMessageReceived (chatId: int64) (messageId: int) (userId: int64) (text: string) (rawMessage: string) : Task<unit> =
+    task {
+        let! _ = appendEvent $"message:{chatId}:{messageId}" (fun state ->
+            if state.Received then []
+            else [ MessageReceived {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = rawMessage |} ])
+        return ()
+    }
+
+/// Records a MessageEdited event (appends to existing message stream).
+let recordMessageEdited (chatId: int64) (messageId: int) (userId: int64) (text: string) (rawMessage: string) : Task<unit> =
+    task {
+        let! _ = appendEvent $"message:{chatId}:{messageId}" (fun (_: Message) ->
+            [ MessageEdited {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = rawMessage |} ])
+        return ()
+    }
+
+/// Records a MessageMarkedHam event. Latest Spam/Ham decision wins.
+let recordMessageMarkedHam (chatId: int64) (messageId: int) (text: string) (markedBy: int64 option) : Task<unit> =
+    task {
+        let! _ = appendEvent $"message:{chatId}:{messageId}" (fun state ->
+            if state.Classification = SpamClassification.Ham then []   // already ham
+            else [ MessageMarkedHam {| chatId = chatId; messageId = messageId; text = text; markedBy = markedBy |} ])
+        return ()
+    }
+
+/// Records a MessageMarkedSpam event. Latest Spam/Ham decision wins.
+let recordMessageMarkedSpam (chatId: int64) (messageId: int) (markedBy: int64 option) : Task<unit> =
+    task {
+        let! _ = appendEvent $"message:{chatId}:{messageId}" (fun state ->
+            if state.Classification = SpamClassification.Spam then []  // already spam
+            else [ MessageMarkedSpam {| chatId = chatId; messageId = messageId; markedBy = markedBy |} ])
+        return ()
+    }
+
+/// Records a VahterActed event. Allows multiple actions on the same message
+/// (e.g., ban then mark not-spam). Returns true if this was the first action
+/// (used by callers for deduplication of ban processing).
+let recordVahterAction
+    (vahterId: int64) (actionType: VahterAction) (targetUserId: int64)
+    (chatId: int64) (messageId: int) : Task<bool> =
+    task {
+        let! (_, state) = appendEvent $"moderation:{chatId}:{messageId}" (fun (_: Moderation) ->
+            [ VahterActed {| vahterId = vahterId; actionType = actionType; targetUserId = targetUserId; chatId = chatId; messageId = messageId |} ])
+        return state.VahterActedCount <= 1
+    }
+
+/// Records a BotAutoDeleted event. NOT idempotent — each call adds an event
+/// (each auto-deletion attempt counts toward the user's social score).
+let recordBotAutoDeleted (chatId: int64) (messageId: int) (userId: int64) (reason: AutoDeleteReason) : Task<unit> =
+    task {
+        let! _ = appendEvent $"moderation:{chatId}:{messageId}" (fun (_: Moderation) ->
+            [ BotAutoDeleted {| chatId = chatId; messageId = messageId; userId = userId; reason = reason |} ])
+        return ()
+    }
+
+/// Records an LlmClassified event (replaces insertLlmTriage for writes).
+let recordLlmClassified
+    (chatId: int64) (messageId: int) (verdict: string)
+    (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task<unit> =
+    task {
+        let! _ = appendEvent $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
+            [ LlmClassified {| chatId = chatId; messageId = messageId; verdict = verdict
+                               promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs |} ])
+        return ()
+    }
+
+let upsertUser (userId: int64) (username: string option): Task<User> =
+    task {
+        let! (_, state) = appendEvent $"user:{userId}" (fun (state: User) ->
+            if state.Username = username then []
+            else [ UsernameChanged {| userId = userId; username = username |} ])
+        return { state with Id = userId }
+    }
+
+let upsertUserAndIncrementReactions (userId: int64) (username: string option) (reactionIncrement: int): Task<User> =
+    task {
+        let! state = recordUserReaction userId username reactionIncrement
+        return { state with Id = userId }
+    }
+
+let insertMessage (msg: TgMessage): Task =
+    task {
+        do! recordUsernameChanged msg.SenderId (Option.ofObj msg.SenderUsername)
+        do! recordMessageReceived msg.ChatId msg.MessageId msg.SenderId
+                msg.Text
+                msg.RawJson
+    }
+
+let editMessage (msg: TgMessage): Task =
+    task {
+        do! recordUsernameChanged msg.SenderId (Option.ofObj msg.SenderUsername)
+        do! recordMessageEdited msg.ChatId msg.MessageId msg.SenderId
+                msg.Text
+                msg.RawJson
+    }
+
+/// Lightweight DTO for getUserMessages (used for message deletion).
+[<CLIMutable>]
+type UserMessage =
+    { chat_id: int64
+      message_id: int }
+
+let getUserMessages (userId: int64): Task<UserMessage array> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "SELECT * FROM message WHERE user_id = @userId"
-            
-        let! messages = conn.QueryAsync<DbMessage>(sql, {| userId = userId |})
+        let sql =
+            """
+SELECT
+    (data->>'chatId')::BIGINT    AS chat_id,
+    (data->>'messageId')::INT    AS message_id
+FROM event
+WHERE event_type = 'MessageReceived'
+  AND (data->>'userId')::BIGINT = @userId
+            """
+
+        let! messages = conn.QueryAsync<UserMessage>(sql, {| userId = userId |})
         return Array.ofSeq messages
     }
 
-let cleanupOldMessages (howOld: TimeSpan): Task<int> =
+// ---------------------------------------------------------------------------
+// Callback event-sourced functions
+// ---------------------------------------------------------------------------
+
+/// Creates a callback by appending CallbackCreated + CallbackMessagePosted events.
+let recordCallbackCreated (callbackId: Guid) (data: CallbackMessage) (targetUserId: int64) (channelId: int64) : Task<unit> =
     task {
-        use conn = new NpgsqlConnection(connString)
-        
-        //language=postgresql
-        let sql = "DELETE FROM message WHERE created_at < @thatOld"
-        return! conn.ExecuteAsync(sql, {| thatOld = DateTime.UtcNow.Subtract howOld |})
+        let serializedData = serializeCallbackData data
+        let! _ = appendEvent $"callback:{callbackId}" (fun (_: Callback) ->
+            [ CallbackCreated {| data = serializedData; targetUserId = targetUserId; actionChannelId = channelId |} ])
+        return ()
     }
-    
-let cleanupOldCallbacks (howOld: TimeSpan): Task<int> =
+
+/// Records the action message ID after posting to channel.
+let recordCallbackMessagePosted (callbackId: Guid) (messageId: int) : Task<unit> =
+    task {
+        let! _ = appendEvent $"callback:{callbackId}" (fun (state: Callback) ->
+            if state.IsTerminal || state.ActionMessageId.IsSome then []
+            else [ CallbackMessagePosted {| actionMessageId = messageId |} ])
+        return ()
+    }
+
+/// Atomically resolves a callback (vahter clicked a button).
+/// Returns Some aggregate state if resolved, None if already terminal.
+let resolveCallback (callbackId: Guid) : Task<Callback option> =
+    task {
+        let! (events, state) = appendEvent $"callback:{callbackId}" (fun (state: Callback) ->
+            if state.IsTerminal || state.Data.IsNone then []
+            else [ CallbackResolved ])
+        return if events.IsEmpty then None else Some state
+    }
+
+/// Expires a callback (cleanup/orphaned — no vahter action taken).
+let expireCallback (callbackId: Guid) : Task<unit> =
+    task {
+        let! _ = appendEvent $"callback:{callbackId}" (fun (state: Callback) ->
+            if state.IsTerminal then []
+            else [ CallbackExpired ])
+        return ()
+    }
+
+/// Gets all active (non-terminal) callbacks for a user.
+let getActiveCallbacksByUserId (userId: int64) : Task<ActiveCallbackInfo array> =
     task {
         use conn = new NpgsqlConnection(connString)
-        
+
         //language=postgresql
-        let sql = "DELETE FROM callback WHERE created_at < @thatOld"
-        return! conn.ExecuteAsync(sql, {| thatOld = DateTime.UtcNow.Subtract howOld |})
+        let sql =
+            """
+SELECT
+    REPLACE(e.stream_id, 'callback:', '')::UUID AS id,
+    (e.data->>'actionChannelId')::BIGINT AS action_channel_id,
+    (SELECT (e3.data->>'actionMessageId')::INT
+     FROM event e3
+     WHERE e3.stream_id = e.stream_id
+       AND e3.event_type = 'CallbackMessagePosted'
+     LIMIT 1) AS action_message_id
+FROM event e
+WHERE e.event_type = 'CallbackCreated'
+  AND (e.data->>'targetUserId')::BIGINT = @userId
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = e.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+
+        let! result = conn.QueryAsync<ActiveCallbackInfo>(sql, {| userId = userId |})
+        return Array.ofSeq result
+    }
+
+/// Gets active callbacks without a posted message (failed posts), older than the given age.
+let getFailedCallbackPosts (age: TimeSpan) : Task<Guid array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT REPLACE(e.stream_id, 'callback:', '')::UUID
+FROM event e
+WHERE e.event_type = 'CallbackCreated'
+  AND e.created_at < @cutoff
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = e.stream_id
+        AND e2.event_type = 'CallbackMessagePosted'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM event e3
+      WHERE e3.stream_id = e.stream_id
+        AND e3.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+
+        let! result = conn.QueryAsync<Guid>(sql, {| cutoff = DateTime.UtcNow.Subtract age |})
+        return Array.ofSeq result
+    }
+
+/// Gets active callbacks in a specific channel, older than the given age.
+let getOldCallbacksInChannel (age: TimeSpan) (channelId: int64) : Task<ActiveCallbackInfo array> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT
+    REPLACE(e.stream_id, 'callback:', '')::UUID AS id,
+    (e.data->>'actionChannelId')::BIGINT AS action_channel_id,
+    (SELECT (e3.data->>'actionMessageId')::INT
+     FROM event e3
+     WHERE e3.stream_id = e.stream_id
+       AND e3.event_type = 'CallbackMessagePosted'
+     LIMIT 1) AS action_message_id
+FROM event e
+WHERE e.event_type = 'CallbackCreated'
+  AND (e.data->>'actionChannelId')::BIGINT = @channelId
+  AND e.created_at < @cutoff
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = e.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+
+        let! result = conn.QueryAsync<ActiveCallbackInfo>(sql, {| channelId = channelId; cutoff = DateTime.UtcNow.Subtract age |})
+        return Array.ofSeq result
+    }
+
+/// Expires all callbacks sharing the same action message ID (sibling buttons).
+let expireCallbacksByMessageId (actionMessageId: int) : Task<unit> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT REPLACE(e.stream_id, 'callback:', '')::UUID
+FROM event e
+WHERE e.event_type = 'CallbackMessagePosted'
+  AND (e.data->>'actionMessageId')::INT = @msgId
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = e.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+
+        let! callbackIds = conn.QueryAsync<Guid>(sql, {| msgId = actionMessageId |})
+        for callbackId in callbackIds do
+            do! expireCallback callbackId
+    }
+
+/// Expires orphaned callbacks older than the given age.
+/// Uses per-callback appendEvent calls for proper optimistic concurrency.
+let expireOrphanedCallbacks (howOld: TimeSpan) : Task<int> =
+    task {
+        use conn = new NpgsqlConnection(connString)
+
+        //language=postgresql
+        let sql =
+            """
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND created_at < @cutoff
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = event.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+
+        let! orphanedIds = conn.QueryAsync<Guid>(sql, {| cutoff = DateTime.UtcNow.Subtract howOld |})
+        let ids = Array.ofSeq orphanedIds
+        for callbackId in ids do
+            do! expireCallback callbackId
+        return ids.Length
     }
 
 let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
@@ -183,14 +502,24 @@ ORDER BY "KillCountTotal" DESC;
         return { VahterStats.interval = banInterval; stats = Array.ofSeq stats }
     }
 
-let getUserById (userId: int64): Task<DbUser option> =
+let getUserById (userId: int64): Task<User option> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = """SELECT * FROM "user" WHERE id = @userId"""
-        let! users = conn.QueryAsync<DbUser>(sql, {| userId = userId |})
-        return users |> Seq.tryHead
+        let sql =
+            """
+SELECT stream_id, stream_version, event_type, data::TEXT AS data, created_at
+FROM event
+WHERE stream_id = 'user:' || @userId
+ORDER BY stream_version
+            """
+        let! rows = conn.QueryAsync<RawEvent>(sql, {| userId = userId |})
+        let events = List.ofSeq rows
+        if events.IsEmpty then return None
+        else
+            let state : User = foldEvents<UserEvent, User> events
+            return Some { state with Id = userId }
     }
 
 [<CLIMutable>]
@@ -208,244 +537,88 @@ let mlData (criticalMsgCount: int) (criticalDate: DateTime) : Task<SpamOrHamDb a
         //language=postgresql
         let sql =
             """
-WITH custom_emojis AS (SELECT message.id, COUNT(*) FILTER (WHERE entities ->> 'type' = 'custom_emoji') AS custom_emoji_count
-                       FROM message,
-                            LATERAL JSONB_ARRAY_ELEMENTS(raw_message -> 'entities') AS entities
-                       GROUP BY message.id),
-     less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsgCount AS less_than_n_messages
-                              FROM "user" u
-                                       LEFT JOIN message m ON u.id = m.user_id
-                              GROUP BY u.id),
-     really_banned AS (SELECT *
-                       FROM banned b
-                       -- known false positive spam messages
-                       WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
-                         AND NOT EXISTS(SELECT 1
-                                        FROM false_positive_messages fpm
-                                        WHERE fpm.text_hash = md5(b.message_text)::uuid
-                                          AND fpm.text = b.message_text)
-                         AND b.message_text IS NOT NULL
-                         AND b.banned_at >= @criticalDate),
-     spam_or_ham AS (SELECT x.text,
-                            x.spam,
-                            x.less_than_n_messages,
-                            x.custom_emoji_count,
-                            MAX(x.created_at) AS created_at
-                     FROM (SELECT DISTINCT COALESCE(m.text, re_id.message_text)                       AS text,
-                                           CASE
-                                               -- known false negative spam messages
-                                               WHEN (EXISTS(SELECT 1
-                                                            FROM false_negative_messages fnm
-                                                            WHERE fnm.chat_id = m.chat_id
-                                                              AND fnm.message_id = m.message_id)
-                                                   -- known banned spam messages by bot, and not marked as false positive
-                                                   OR EXISTS(SELECT 1
-                                                             FROM banned_by_bot bbb
-                                                             WHERE bbb.banned_in_chat_id = m.chat_id
-                                                               AND bbb.message_id = m.message_id))
-                                                   THEN TRUE
-                                               WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
-                                                   THEN FALSE
-                                               ELSE TRUE
-                                               END                                                    AS spam,
-                                           COALESCE(l.less_than_n_messages, TRUE)                     AS less_than_n_messages,
-                                           COALESCE(ce.custom_emoji_count, 0)                         AS custom_emoji_count,
-                                           COALESCE(re_id.banned_at, re_text.banned_at, m.created_at) AS created_at
-                           FROM (SELECT *
-                                 FROM message
-                                 WHERE text IS NOT NULL
-                                   AND created_at >= @criticalDate) m
-                                    FULL OUTER JOIN really_banned re_id
-                                                    ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
-                                    LEFT JOIN really_banned re_text ON m.text = re_text.message_text
-                                    LEFT JOIN custom_emojis ce ON m.id = ce.id
-                                    LEFT JOIN less_than_n_messages l ON m.user_id = l.id) x
-                     GROUP BY text, spam, less_than_n_messages, custom_emoji_count)
-SELECT *
+WITH msg_events AS (
+    SELECT (e.data->>'chatId')::BIGINT                                                AS chat_id,
+           (e.data->>'messageId')::INT                                                AS message_id,
+           e.data->>'text'                                                            AS text,
+           (e.data->>'userId')::BIGINT                                                AS user_id,
+           (SELECT COUNT(*) FROM jsonb_array_elements(e.data->'rawMessage'->'entities') ent
+            WHERE ent->>'type' = 'custom_emoji')::INT                                 AS custom_emoji_count,
+           e.created_at
+    FROM event e
+    WHERE e.event_type = 'MessageReceived'
+      AND e.created_at >= @criticalDate
+      AND e.data->>'text' IS NOT NULL
+),
+user_msg_counts AS (
+    SELECT (data->>'userId')::BIGINT AS user_id,
+           COUNT(DISTINCT data->>'text') < @criticalMsgCount AS less_than_n_messages
+    FROM event
+    WHERE event_type = 'MessageReceived'
+    GROUP BY 1
+),
+spam_or_ham AS (
+    SELECT m.text,
+           m.user_id,
+           EXISTS(
+               SELECT 1 FROM event e2
+               WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
+                 AND e2.event_type IN ('BotAutoDeleted', 'VahterActed')
+                 AND (e2.data->>'actionType' IS NULL
+                      OR e2.data->>'actionType' IN ('PotentialKill', 'ManualBan'))
+           ) OR EXISTS(
+               SELECT 1 FROM event e3
+               WHERE e3.event_type = 'MessageMarkedSpam'
+                 AND e3.stream_id = 'message:' || m.chat_id || ':' || m.message_id
+           )                                                                          AS spam,
+           COALESCE(u.less_than_n_messages, TRUE)                                     AS less_than_n_messages,
+           m.custom_emoji_count,
+           m.created_at
+    FROM msg_events m
+    LEFT JOIN user_msg_counts u ON u.user_id = m.user_id
+    WHERE NOT EXISTS(
+        SELECT 1 FROM event e_fp
+        WHERE e_fp.event_type = 'MessageMarkedHam'
+          AND e_fp.data->>'text' = m.text
+    )
+)
+SELECT text,
+       spam,
+       less_than_n_messages,
+       custom_emoji_count,
+       MAX(created_at) AS created_at
 FROM spam_or_ham
-ORDER BY created_at;
+GROUP BY text, spam, less_than_n_messages, custom_emoji_count
+ORDER BY MAX(created_at);
 """
 
         let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})
         return Array.ofSeq data
     }
 
-let unbanUser (userId: int64): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
+let unbanUser (userId: int64) (vahterId: int64): Task =
+    recordUserUnbanned userId vahterId
 
-        //language=postgresql
-        let sql =
-            """
-DELETE FROM banned
-WHERE banned_user_id = @userId
-            """
-        
-        let! _ = conn.ExecuteAsync(sql, {| userId = userId |})
-        return ()
-    }
-
-let markMessageAsFalsePositive (message: DbMessage): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        let message = { message with text = message.text }
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO false_positive_messages (text) 
-VALUES (@text)
-ON CONFLICT DO NOTHING;
-            """
-
-        return! conn.ExecuteAsync(sql, message)
-    }
+let markMessageAsFalsePositive (chatId: int64) (messageId: int) (text: string): Task =
+    recordMessageMarkedHam chatId messageId (if isNull text then "" else text) None
 
 /// Marks a message as false negative (spam that was not auto-detected)
 /// Used for soft spam marking - counts toward karma but doesn't ban
 let markMessageAsFalseNegative (chatId: int64) (messageId: int): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO false_negative_messages (chat_id, message_id)
-VALUES (@chatId, @messageId)
-ON CONFLICT DO NOTHING;
-            """
-
-        let! _ = conn.ExecuteAsync(sql, {| chatId = chatId; messageId = messageId |})
-        return ()
-    }
-
-/// Creates a callback without action_message_id (first phase of two-phase insert)
-let newCallbackPending (data: CallbackMessage) (targetUserId: int64) (channelId: int64): Task<DbCallback> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO callback (data, target_user_id, action_channel_id)
-VALUES (@data::JSONB, @targetUserId, @channelId)
-RETURNING *;
-            """
-
-        return! conn.QuerySingleAsync<DbCallback>(sql, {| data = data; targetUserId = targetUserId; channelId = channelId |})
-    }
-
-/// Updates callback with action_message_id (second phase of two-phase insert)
-let updateCallbackMessageId (id: Guid) (messageId: int): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "UPDATE callback SET action_message_id = @messageId WHERE id = @id"
-
-        let! _ = conn.ExecuteAsync(sql, {| id = id; messageId = messageId |})
-        return ()
-    }
-
-/// Atomically gets and deletes a callback (protection against race condition between button clicks)
-let getCallbackAtomic (id: Guid): Task<DbCallback option> = 
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "DELETE FROM callback WHERE id = @id RETURNING *"
-
-        let! result = conn.QueryAsync<DbCallback>(sql, {| id = id |})
-        return Seq.tryHead result
-    }
-
-let getCallback (id: Guid): Task<DbCallback option> = 
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "SELECT * FROM callback WHERE id = @id"
-
-        let! result = conn.QueryAsync<DbCallback>(sql, {| id = id |})
-        return Seq.tryHead result
-    }
-
-let deleteCallback (id: Guid): Task = 
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "DELETE FROM callback WHERE id = @id"
-
-        let! _ = conn.ExecuteAsync(sql, {| id = id |})
-        return ()
-    }
-
-/// Deletes all callbacks with the same action_message_id (for potential spam with two buttons)
-let deleteCallbacksByMessageId (actionMessageId: int): Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "DELETE FROM callback WHERE action_message_id = @msgId"
-
-        let! _ = conn.ExecuteAsync(sql, {| msgId = actionMessageId |})
-        return ()
-    }
-
-/// Gets all callbacks for a user (for cleanup when user is banned via /ban)
-let getCallbacksByUserId (userId: int64): Task<DbCallback array> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = "SELECT * FROM callback WHERE target_user_id = @userId"
-
-        let! result = conn.QueryAsync<DbCallback>(sql, {| userId = userId |})
-        return Array.ofSeq result
-    }
-
-/// Gets callbacks without action_message_id older than specified age (failed posts)
-let getCallbacksWithoutMessageId (age: TimeSpan): Task<DbCallback array> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = 
-            """
-SELECT * FROM callback 
-WHERE action_message_id IS NULL 
-  AND created_at < @cutoff
-            """
-
-        let! result = conn.QueryAsync<DbCallback>(sql, {| cutoff = DateTime.UtcNow.Subtract age |})
-        return Array.ofSeq result
-    }
-
-/// Gets old callbacks from Detected Spam channel for cleanup
-let getOldDetectedSpamCallbacks (age: TimeSpan) (detectedChannelId: int64): Task<DbCallback array> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql = 
-            """
-SELECT * FROM callback 
-WHERE action_channel_id = @channelId 
-  AND created_at < @cutoff
-            """
-
-        let! result = conn.QueryAsync<DbCallback>(sql, {| channelId = detectedChannelId; cutoff = DateTime.UtcNow.Subtract age |})
-        return Array.ofSeq result
-    }
+    recordMessageMarkedSpam chatId messageId None
 
 let countUniqueUserMsg (userId: int64): Task<int> =
     task {
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "SELECT COUNT(DISTINCT text) FROM message WHERE user_id = @userId"
+        let sql =
+            """
+SELECT COUNT(DISTINCT data->>'text')::INT
+FROM event
+WHERE event_type = 'MessageReceived'
+  AND (data->>'userId')::BIGINT = @userId
+            """
 
         let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return result
@@ -456,7 +629,16 @@ let isBannedByVahter (vahterId: int64) (userId: int64): Task<bool> =
         use conn = new NpgsqlConnection(connString)
 
         //language=postgresql
-        let sql = "SELECT EXISTS(SELECT 1 FROM banned WHERE banned_user_id = @userId AND banned_by = @vahterId)"
+        let sql =
+            """
+SELECT EXISTS(
+    SELECT 1 FROM event
+    WHERE stream_id = 'user:' || @userId
+      AND event_type = 'UserBanned'
+      AND data->'bannedBy'->>'Case' = 'BannedByVahter'
+      AND (data->'bannedBy'->>'vahterId')::BIGINT = @vahterId
+)
+            """
 
         let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; vahterId = vahterId |})
         return result
@@ -469,66 +651,69 @@ let getUserStatsByLastNMessages (n: int) (userId: int64): Task<UserStats> =
         //language=postgresql
         let sql =
             """
-WITH stats AS (SELECT m.message_id,
-                      m.chat_id,
-                      b.id IS NOT NULL        AS banned,
-                      bbb.id IS NOT NULL      AS banned_by_bot,
-                      fnm.chat_id IS NOT NULL AS false_neg,
-                      fpm.text IS NOT NULL    AS false_pos
-               FROM message m
-                        LEFT JOIN banned b ON m.message_id = b.message_id AND m.chat_id = b.banned_in_chat_id
-                        LEFT JOIN public.banned_by_bot bbb
-                                  ON m.message_id = bbb.message_id AND m.chat_id = bbb.banned_in_chat_id
-                        LEFT JOIN public.false_negative_messages fnm
-                                  ON m.message_id = fnm.message_id AND m.chat_id = fnm.chat_id
-                        LEFT JOIN false_positive_messages fpm ON fpm.text_hash = md5(m.text)::uuid
-                                                             AND fpm.text = m.text
-               WHERE m.user_id = @userId
-               ORDER BY m.created_at DESC
-               LIMIT @n),
-     stats_count AS (SELECT message_id,
-                            chat_id,
-                            CASE WHEN false_pos THEN FALSE ELSE banned OR banned_by_bot OR false_neg END AS spam
-                     FROM stats)
-SELECT COUNT(*) FILTER (WHERE NOT spam) AS good,
-       COUNT(*) FILTER (WHERE spam)     AS bad
-FROM stats_count;
+WITH user_messages AS (
+    SELECT data->>'text'             AS text,
+           (data->>'chatId')::BIGINT AS chat_id,
+           (data->>'messageId')::INT AS message_id,
+           created_at
+    FROM event
+    WHERE event_type = 'MessageReceived'
+      AND (data->>'userId')::BIGINT = @userId
+),
+bot_deletions AS (
+    SELECT (data->>'chatId')::BIGINT AS chat_id,
+           (data->>'messageId')::INT AS message_id
+    FROM event
+    WHERE event_type = 'BotAutoDeleted'
+      AND (data->>'userId')::BIGINT = @userId
+),
+expanded AS (
+    SELECT m.text, m.chat_id, m.message_id,
+           d.message_id IS NOT NULL AS banned_by_bot,
+           EXISTS(
+               SELECT 1 FROM event e2
+               WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
+                 AND e2.event_type = 'VahterActed'
+                 AND e2.data->>'actionType' IN ('PotentialKill', 'ManualBan')
+           ) AS banned_by_vahter,
+           EXISTS(
+               SELECT 1 FROM event e3
+               WHERE e3.event_type = 'MessageMarkedHam'
+                 AND e3.data->>'text' = m.text
+           ) AS is_ham,
+           EXISTS(
+               SELECT 1 FROM event e4
+               WHERE e4.stream_id = 'message:' || m.chat_id || ':' || m.message_id
+                 AND e4.event_type = 'MessageMarkedSpam'
+           ) AS is_spam
+    FROM user_messages m
+    LEFT JOIN bot_deletions d ON m.chat_id = d.chat_id AND m.message_id = d.message_id
+    ORDER BY m.created_at DESC
+    LIMIT @n
+)
+SELECT COUNT(*) FILTER (WHERE CASE WHEN is_ham THEN TRUE
+                                    ELSE NOT (banned_by_bot OR banned_by_vahter OR is_spam)
+                               END) AS good,
+       COUNT(*) FILTER (WHERE CASE WHEN is_ham THEN FALSE
+                                    ELSE (banned_by_bot OR banned_by_vahter OR is_spam)
+                               END) AS bad
+FROM expanded;
             """
 
         let! result = conn.QuerySingleAsync<UserStats>(sql, {| userId = userId; n = n |})
         return result
     }
 
-/// Records a vahter action. Returns true if recorded, false if already exists (race condition protection)
-let tryRecordVahterAction 
-    (vahterId: int64) 
-    (actionType: string) 
-    (targetUserId: int64) 
-    (chatId: int64) 
+/// Records a vahter action via event stream. Returns true if recorded (first actor), false if already handled.
+let tryRecordVahterAction
+    (vahterId: int64)
+    (actionType: VahterAction)
+    (targetUserId: int64)
+    (chatId: int64)
     (msgId: int): Task<bool> =
-    task {
-        use conn = new NpgsqlConnection(connString)
+    recordVahterAction vahterId actionType targetUserId chatId msgId
 
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO vahter_actions (vahter_id, action_type, target_user_id, target_chat_id, target_message_id)
-VALUES (@vahterId, @actionType, @targetUserId, @chatId, @msgId)
-ON CONFLICT (target_chat_id, target_message_id) DO NOTHING
-RETURNING id;
-            """
-
-        let! result = conn.QueryAsync<int64>(sql, {| 
-            vahterId = vahterId
-            actionType = actionType
-            targetUserId = targetUserId
-            chatId = chatId
-            msgId = msgId 
-        |})
-        return Seq.length result > 0
-    }
-
-/// Gets vahter action stats
+/// Gets vahter action stats from event table
 let getVahterActionStats (interval: TimeSpan option): Task<VahterActionStats> =
     task {
         use conn = new NpgsqlConnection(connString)
@@ -537,16 +722,20 @@ let getVahterActionStats (interval: TimeSpan option): Task<VahterActionStats> =
         let sql =
             """
 SELECT * FROM (
-    SELECT u.username AS "Vahter",
-           COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban')) AS "KillsTotal",
-           COUNT(*) FILTER (WHERE va.action_type IN ('potential_kill', 'manual_ban') 
+    SELECT (SELECT e2.data->>'username'
+            FROM event e2
+            WHERE e2.stream_id = 'user:' || (va.data->>'vahterId')
+              AND e2.event_type = 'UsernameChanged'
+            ORDER BY e2.id DESC LIMIT 1) AS "Vahter",
+           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')) AS "KillsTotal",
+           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')
                               AND va.created_at > NOW() - @interval::INTERVAL) AS "KillsInterval",
-           COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam')) AS "NotSpamTotal",
-           COUNT(*) FILTER (WHERE va.action_type IN ('potential_not_spam', 'detected_not_spam') 
+           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialNotSpam', 'DetectedNotSpam')) AS "NotSpamTotal",
+           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialNotSpam', 'DetectedNotSpam')
                               AND va.created_at > NOW() - @interval::INTERVAL) AS "NotSpamInterval"
-    FROM vahter_actions va
-    JOIN "user" u ON u.id = va.vahter_id
-    GROUP BY u.id, u.username
+    FROM event va
+    WHERE va.event_type = 'VahterActed'
+    GROUP BY va.data->>'vahterId'
 ) stats
 ORDER BY "KillsTotal" + "NotSpamTotal" DESC;
             """
@@ -663,27 +852,13 @@ WHERE job_name = @jobName;
         return ()
     }
 
-/// Inserts an LLM triage verdict for a message.
+/// Records an LLM triage verdict via event stream.
 let insertLlmTriage
-    (chatId: int64) (messageId: int) (userId: int64)
+    (chatId: int64) (messageId: int) (_userId: int64)
     (verdict: string) (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task =
-    task {
-        use conn = new NpgsqlConnection(connString)
+    recordLlmClassified chatId messageId verdict promptTokens completionTokens latencyMs
 
-        //language=postgresql
-        let sql =
-            """
-INSERT INTO llm_triage (chat_id, message_id, user_id, verdict, prompt_tokens, completion_tokens, latency_ms)
-VALUES (@chatId, @messageId, @userId, @verdict, @promptTokens, @completionTokens, @latencyMs)
-            """
-
-        let! _ = conn.ExecuteAsync(sql, {| chatId = chatId; messageId = messageId; userId = userId
-                                           verdict = verdict; promptTokens = promptTokens
-                                           completionTokens = completionTokens; latencyMs = latencyMs |})
-        return ()
-    }
-
-/// Gets LLM triage stats, joined with vahter_actions to compute accuracy.
+/// Gets LLM triage stats from the event table, joined with VahterActed events for accuracy.
 let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
     task {
         use conn = new NpgsqlConnection(connString)
@@ -692,18 +867,19 @@ let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
         let sql =
             """
 SELECT
-    lt.verdict                                              AS "LlmVerdict",
-    COALESCE(va.action_type, '(pending)')                   AS "VahterAction",
-    COUNT(*)::INT                                           AS "Count",
-    COALESCE(SUM(lt.prompt_tokens + lt.completion_tokens), 0) AS "TotalTokens",
-    COALESCE(AVG(lt.latency_ms), 0)                         AS "AvgLatencyMs"
-FROM llm_triage lt
-LEFT JOIN vahter_actions va
-       ON va.target_chat_id    = lt.chat_id
-      AND va.target_message_id = lt.message_id
-WHERE @interval::INTERVAL IS NULL
-   OR lt.created_at > NOW() - @interval::INTERVAL
-GROUP BY lt.verdict, va.action_type
+    lt.data->>'verdict'                                                   AS "LlmVerdict",
+    COALESCE(va.data->>'actionType', '(pending)')                          AS "VahterAction",
+    COUNT(*)::INT                                                          AS "Count",
+    COALESCE(SUM((lt.data->>'promptTokens')::INT + (lt.data->>'completionTokens')::INT), 0) AS "TotalTokens",
+    COALESCE(AVG((lt.data->>'latencyMs')::INT), 0)                         AS "AvgLatencyMs"
+FROM event lt
+LEFT JOIN event va
+       ON va.event_type = 'VahterActed'
+      AND va.data->>'chatId'    = lt.data->>'chatId'
+      AND va.data->>'messageId' = lt.data->>'messageId'
+WHERE lt.event_type = 'LlmClassified'
+  AND (@interval::INTERVAL IS NULL OR lt.created_at > NOW() - @interval::INTERVAL)
+GROUP BY lt.data->>'verdict', va.data->>'actionType'
 ORDER BY "Count" DESC
             """
 

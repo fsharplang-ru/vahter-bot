@@ -23,10 +23,8 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
-        // Fire-and-forget — give it a moment to complete
-        do! Task.Delay 2000
-
-        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
+        // Poll for verdict (fireAndForget is async)
+        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "KILL", verdict)
     }
 
@@ -37,9 +35,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
-        do! Task.Delay 2000
-
-        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
+        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "SPAM", verdict)
     }
 
@@ -49,9 +45,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77")
         let! _ = fixture.SendMessage msgUpdate
 
-        do! Task.Delay 2000
-
-        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
+        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "NOT_SPAM", verdict)
     }
 
@@ -61,7 +55,8 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
 
-        do! Task.Delay 2000
+        // Give fireAndForget time to complete (if it runs at all)
+        do! Task.Delay 3000
 
         let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(None, verdict)

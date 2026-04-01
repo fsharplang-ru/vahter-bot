@@ -9,6 +9,152 @@ open Dapper
 open Telegram.Bot.Types
 open Utils
 
+// ---------------------------------------------------------------------------
+// Event sourcing — raw DB row and typed event DUs
+// ---------------------------------------------------------------------------
+
+[<CLIMutable>]
+type RawEvent =
+    { stream_id:      string
+      stream_version: int
+      event_type:     string
+      data:           string   // JSONB stored as text by Dapper
+      created_at:     DateTime }
+
+type ConcurrencyConflict = ConcurrencyConflict
+
+// ---------------------------------------------------------------------------
+// Shared value types
+// ---------------------------------------------------------------------------
+
+type BannedBy =
+    | BannedByVahter of {| vahterId: int64; chatId: int64; messageId: int; messageText: string option |}
+    | BannedByAutoBan of {| chatId: int64; messageText: string option |}
+
+// ---------------------------------------------------------------------------
+// Per-stream event DUs
+// ---------------------------------------------------------------------------
+
+type UserEvent =
+    | UsernameChanged      of {| userId: int64; username: string option |}
+    | UserBanned           of {| userId: int64; bannedBy: BannedBy |}
+    | UserUnbanned         of {| userId: int64; unbannedBy: int64 |}
+    | UserReactionRecorded of {| userId: int64; delta: int |}
+
+type User =
+    { Id:            int64
+      BannedBy:      BannedBy option
+      Username:      string option
+      ReactionCount: int }
+    member this.IsBanned = this.BannedBy.IsSome
+    static member Zero = { Id = 0L; BannedBy = None; Username = None; ReactionCount = 0 }
+    static member Fold (state: User, event: UserEvent) : User =
+        match event with
+        | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
+        | UserBanned e           -> { state with Id = e.userId; BannedBy = Some e.bannedBy }
+        | UserUnbanned e         -> { state with Id = e.userId; BannedBy = None }
+        | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
+
+    static member fromTgUser (user: Telegram.Bot.Types.User) =
+        { User.Zero with Id = user.Id; Username = Option.ofObj user.Username }
+
+    static member fromTgMessage (msg: TgMessage) =
+        { User.Zero with Id = msg.SenderId; Username = Option.ofObj msg.SenderUsername }
+
+// ---------------------------------------------------------------------------
+
+type SpamClassification =
+    | Unknown
+    | Spam
+    | Ham
+
+type MessageEvent =
+    | MessageReceived    of {| chatId: int64; messageId: int; userId: int64; text: string; rawMessage: string |}
+    | MessageEdited      of {| chatId: int64; messageId: int; userId: int64; text: string; rawMessage: string |}
+    | MessageDeleted     of {| chatId: int64; messageId: int; deletedBy: int64 |}
+    | MessageMarkedSpam  of {| chatId: int64; messageId: int; markedBy: int64 option |}
+    | MessageMarkedHam   of {| chatId: int64; messageId: int; text: string; markedBy: int64 option |}
+
+type Message =
+    { Received:       bool
+      Deleted:        bool
+      Classification: SpamClassification }
+    static member Zero = { Received = false; Deleted = false; Classification = Unknown }
+    static member Fold (state: Message, event: MessageEvent) : Message =
+        match event with
+        | MessageReceived _   -> { state with Received = true }
+        | MessageEdited _     -> state   // edit is recorded but doesn't change aggregate state
+        | MessageDeleted _    -> { state with Deleted = true }
+        | MessageMarkedSpam _ -> { state with Classification = Spam }
+        | MessageMarkedHam _  -> { state with Classification = Ham }
+
+// ---------------------------------------------------------------------------
+
+
+type VahterAction =
+    | PotentialKill
+    | ManualBan
+    | PotentialSoftSpam
+    | PotentialNotSpam
+    | DetectedNotSpam
+
+type AutoDeleteReason =
+    | MlSpam of {| score: float |}
+    | ReactionSpam of {| reactionCount: int |}
+    | InvisibleMention
+
+type ModerationEvent =
+    | VahterActed      of {| vahterId: int64; actionType: VahterAction; targetUserId: int64; chatId: int64; messageId: int |}
+    | BotAutoDeleted   of {| chatId: int64; messageId: int; userId: int64; reason: AutoDeleteReason |}
+
+type Moderation =
+    { VahterActedCount:    int
+      BotAutoDeletedCount: int }
+    static member Zero = { VahterActedCount = 0; BotAutoDeletedCount = 0 }
+    static member Fold (state: Moderation, event: ModerationEvent) : Moderation =
+        match event with
+        | VahterActed _      -> { state with VahterActedCount = state.VahterActedCount + 1 }
+        | BotAutoDeleted _   -> { state with BotAutoDeletedCount = state.BotAutoDeletedCount + 1 }
+
+// ---------------------------------------------------------------------------
+
+type CallbackEvent =
+    | CallbackCreated       of {| data: string; targetUserId: int64; actionChannelId: int64 |}
+    | CallbackMessagePosted of {| actionMessageId: int |}
+    | CallbackResolved
+    | CallbackExpired
+
+type Callback =
+    { Data:             string option
+      TargetUserId:     int64
+      ActionChannelId:  int64
+      ActionMessageId:  int option
+      IsTerminal:       bool }
+    static member Zero = { Data = None; TargetUserId = 0L; ActionChannelId = 0L; ActionMessageId = None; IsTerminal = false }
+    static member Fold (state: Callback, event: CallbackEvent) : Callback =
+        match event with
+        | CallbackCreated e       -> { state with Data = Some e.data; TargetUserId = e.targetUserId; ActionChannelId = e.actionChannelId }
+        | CallbackMessagePosted e -> { state with ActionMessageId = Some e.actionMessageId }
+        | CallbackResolved
+        | CallbackExpired         -> { state with IsTerminal = true }
+
+// ---------------------------------------------------------------------------
+
+type DetectionEvent =
+    | MlScoredMessage          of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
+    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int |}
+    | InvisibleMentionDetected of {| chatId: int64; messageId: int; userId: int64 |}
+
+type Detection =
+    { MlScore:      float option
+      LlmVerdict:   string option }
+    static member Zero = { MlScore = None; LlmVerdict = None }
+    static member Fold (state: Detection, event: DetectionEvent) : Detection =
+        match event with
+        | MlScoredMessage e          -> { state with MlScore = Some e.score }
+        | LlmClassified e            -> { state with LlmVerdict = Some e.verdict }
+        | InvisibleMentionDetected _ -> state
+
 [<CLIMutable>]
 type BotConfiguration =
     { BotToken: string
@@ -26,7 +172,6 @@ type BotConfiguration =
       IgnoreSideEffects: bool
       UseFakeApi: bool
       UsePolling: bool
-      CleanupOldMessages: bool
       CleanupInterval: TimeSpan
       CleanupCheckInterval: TimeSpan
       CleanupScheduledHour: int
@@ -72,64 +217,6 @@ type BotConfiguration =
       LlmChatDescriptions: Dictionary<int64, string> }
 
 [<CLIMutable>]
-type DbUser =
-    { id: int64
-      username: string option
-      reaction_count: int
-      updated_at: DateTime
-      created_at: DateTime }
-
-    static member newUser(id, ?username: string) =
-        { id = id
-          username = username
-          reaction_count = 0
-          updated_at = DateTime.UtcNow
-          created_at = DateTime.UtcNow }
-
-    static member newUser(user: User) =
-        DbUser.newUser (id = user.Id, ?username = Option.ofObj user.Username)
-
-    static member fromTgMessage(msg: TgMessage) =
-        DbUser.newUser (id = msg.SenderId, ?username = Option.ofObj msg.SenderUsername)
-
-[<CLIMutable>]
-type DbBanned =
-    { message_id: int option
-      message_text: string
-      banned_user_id: int64
-      banned_at: DateTime
-      banned_in_chat_id: int64 option
-      banned_in_chat_username: string option
-      banned_by: int64 }
-module DbBanned =
-    let banMessage (vahter: int64) (msg: TgMessage) =
-        if not msg.HasSender || isNull msg.Chat then
-            failwith "Message should have a sender and a chat"
-        { message_id = Some msg.MessageId
-          message_text = msg.Text
-          banned_user_id = msg.SenderId
-          banned_at = DateTime.UtcNow
-          banned_in_chat_id = Some msg.ChatId
-          banned_in_chat_username = Option.ofObj msg.ChatUsername
-          banned_by = vahter }
-
-[<CLIMutable>]
-type DbMessage =
-    { chat_id: int64
-      message_id: int
-      user_id: int64
-      text: string
-      raw_message: string
-      created_at: DateTime }
-    static member newMessage(msg: TgMessage) =
-        { chat_id = msg.ChatId
-          message_id = msg.MessageId
-          user_id = msg.SenderId
-          created_at = DateTime.UtcNow
-          text = msg.Text
-          raw_message = msg.RawJson }
-
-[<CLIMutable>]
 type VahterStat =
     { Vahter: string
       KillCountTotal: int
@@ -164,7 +251,7 @@ type VahterStats =
         sb.ToString()
 
 // used as aux type to possibly extend in future without breaking changes 
-type MessageWrapper= { message: Message }
+type MessageWrapper= { message: Telegram.Bot.Types.Message }
 
 // This type must be backwards compatible with the previous version
 // as it is used to (de)serialize the button callback data
@@ -173,26 +260,24 @@ type CallbackMessage =
     | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
     | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
 
+// Callback data serialization uses different JSON options (Telegram-aware)
+let private callbackJsonOpts =
+    let opts = JsonFSharpOptions.Default().ToJsonSerializerOptions()
+    Telegram.Bot.JsonBotAPI.Configure(opts)
+    opts
+
+let serializeCallbackData (data: CallbackMessage) : string =
+    JsonSerializer.Serialize(data, callbackJsonOpts)
+
+let deserializeCallbackData (json: string) : CallbackMessage =
+    JsonSerializer.Deserialize<CallbackMessage>(json, callbackJsonOpts)
+
+/// Lightweight DTO for callback queries (projected from events).
 [<CLIMutable>]
-type DbCallback =
+type ActiveCallbackInfo =
     { id: Guid
-      data: CallbackMessage
-      created_at: DateTime
       action_message_id: int option
-      action_channel_id: int64 option
-      target_user_id: int64 option }
-
-type CallbackMessageTypeHandler() =
-    inherit SqlMapper.TypeHandler<CallbackMessage>()
-    let callBackOptions =
-        let opts = JsonFSharpOptions.Default().ToJsonSerializerOptions()
-        Telegram.Bot.JsonBotAPI.Configure(opts)
-        opts
-
-    override this.SetValue(parameter, value) =
-        parameter.Value <- JsonSerializer.Serialize(value, options = callBackOptions)
-    override this.Parse(value) =
-        JsonSerializer.Deserialize<CallbackMessage>(value.ToString(), options = callBackOptions)
+      action_channel_id: int64 }
 
 [<CLIMutable>]
 type UserStats =
@@ -270,9 +355,9 @@ type LlmTriageStats =
                 this.rows
                 |> Array.sumBy (fun r ->
                     let isMatch =
-                        (r.LlmVerdict = "KILL"     && (r.VahterAction = "potential_kill" || r.VahterAction = "manual_ban")) ||
-                        (r.LlmVerdict = "SPAM"     && r.VahterAction = "potential_soft_spam") ||
-                        (r.LlmVerdict = "NOT_SPAM" && (r.VahterAction = "potential_not_spam" || r.VahterAction = "detected_not_spam"))
+                        (r.LlmVerdict = "KILL"     && (r.VahterAction = "PotentialKill" || r.VahterAction = "ManualBan")) ||
+                        (r.LlmVerdict = "SPAM"     && r.VahterAction = "PotentialSoftSpam") ||
+                        (r.LlmVerdict = "NOT_SPAM" && (r.VahterAction = "PotentialNotSpam" || r.VahterAction = "DetectedNotSpam"))
                     if isMatch then r.Count else 0)
             let decided = this.rows |> Array.sumBy (fun r -> if r.VahterAction = "(pending)" then 0 else r.Count)
             let agreementPct = if decided > 0 then int (float agreed / float decided * 100.0) else 0
