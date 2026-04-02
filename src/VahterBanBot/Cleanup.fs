@@ -23,23 +23,20 @@ type CleanupService(
     let mutable backgroundTask: Task = null
     
     /// Cleanup job - runs at configured hour UTC
-    /// Cleans up old messages, callbacks, and detected spam from channel
+    /// Cleans up failed callback posts, old detected spam from channel,
+    /// and orphaned callback streams in the event table.
     let runCleanup () = task {
         let sb = StringBuilder()
-        
-        if botConf.CleanupOldMessages then
-            let! cleanupMsgs = DB.cleanupOldMessages botConf.CleanupOldLimit
-            %sb.AppendLine $"Cleaned up {cleanupMsgs} messages from DB which are older than {timeSpanAsHumanReadable botConf.CleanupOldLimit}"
-        
-        // Cleanup failed posts (callbacks without message_id, older than 5 minutes)
-        let! failedPosts = DB.getCallbacksWithoutMessageId (TimeSpan.FromMinutes 5L)
-        for callback in failedPosts do
-            do! DB.deleteCallback callback.id
+
+        // Expire failed callback posts (no message posted, older than 5 minutes)
+        let! failedPosts = DB.getFailedCallbackPosts (TimeSpan.FromMinutes 5L)
+        for callbackId in failedPosts do
+            do! DB.expireCallback callbackId
         if failedPosts.Length > 0 then
-            %sb.AppendLine $"Cleaned up {failedPosts.Length} failed callback posts"
-        
-        // Cleanup old Detected Spam messages from detected spam channel
-        let! oldDetectedSpam = DB.getOldDetectedSpamCallbacks botConf.DetectedSpamCleanupAge botConf.DetectedSpamChannelId
+            %sb.AppendLine $"Expired {failedPosts.Length} failed callback posts"
+
+        // Expire old Detected Spam callbacks and delete their messages from channel
+        let! oldDetectedSpam = DB.getOldCallbacksInChannel botConf.DetectedSpamCleanupAge botConf.DetectedSpamChannelId
         let mutable deletedFromChannel = 0
         for callback in oldDetectedSpam do
             match callback.action_message_id with
@@ -53,14 +50,14 @@ type CleanupService(
                 with ex ->
                     logger.LogWarning(ex, $"Failed to delete message {msgId} from Detected Spam channel")
             | None -> ()
-            do! DB.deleteCallback callback.id
+            do! DB.expireCallback callback.id
         if oldDetectedSpam.Length > 0 then
-            %sb.AppendLine $"Cleaned up {oldDetectedSpam.Length} old detected spam callbacks ({deletedFromChannel} messages deleted from channel)"
-        
-        // Cleanup very old callbacks (fallback, older than CleanupOldLimit)
-        let! cleanupCallbacks = DB.cleanupOldCallbacks botConf.CleanupOldLimit
-        if cleanupCallbacks > 0 then
-            %sb.AppendLine $"Cleaned up {cleanupCallbacks} very old callbacks from DB"
+            %sb.AppendLine $"Expired {oldDetectedSpam.Length} old detected spam callbacks ({deletedFromChannel} messages deleted from channel)"
+
+        // Expire any remaining orphaned callbacks
+        let! orphaned = DB.expireOrphanedCallbacks botConf.CleanupOldLimit
+        if orphaned > 0 then
+            %sb.AppendLine $"Expired {orphaned} orphaned callbacks"
 
         let msg = sb.ToString()
         if msg.Length > 0 then

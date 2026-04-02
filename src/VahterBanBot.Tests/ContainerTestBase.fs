@@ -18,6 +18,19 @@ open VahterBanBot.Utils
 open Xunit
 open Dapper
 
+// Telegram.Bot.Types.Message is shadowed by VahterBanBot.Types.Message
+type TgMsg = Telegram.Bot.Types.Message
+
+/// Lightweight DTO for test assertions on message events.
+[<CLIMutable>]
+type TestMessage =
+    { chat_id: int64
+      message_id: int
+      user_id: int64
+      text: string
+      raw_message: string
+      created_at: DateTime }
+
 [<AbstractClass>]
 type VahterTestContainers(mlEnabled: bool) =
     let solutionDir = CommonDirectoryPath.GetSolutionDirectory()
@@ -159,7 +172,6 @@ type VahterTestContainers(mlEnabled: bool) =
                     "DETECTED_SPAM_CLEANUP_AGE_HOURS", "24",                                "FREE_FORM",    "CHANNELS"
                     "CHATS_TO_MONITOR",          """{"pro.hell":"-666","dotnetru":-42}""",  "JSON_BLOB",    "CHANNELS"
                     "ALLOWED_USERS",             """{"vahter_1":"34","vahter_2":69}""",     "JSON_BLOB",    "CHANNELS"
-                    "CLEANUP_OLD_MESSAGES",      "false",                                   "FEATURE_FLAG", "CLEANUP"
                     "UPDATE_CHAT_ADMINS",        "true",                                    "FEATURE_FLAG", "CLEANUP"
                     "UPDATE_CHAT_ADMINS_INTERVAL_SEC", "86400",                             "FREE_FORM",    "CLEANUP"
                 ]
@@ -250,74 +262,129 @@ type VahterTestContainers(mlEnabled: bool) =
         Tg.chat(id = -42, username = "dotnetru")
     ]
 
-    member _.TryGetDbMessage(msg: Message) = task {
+    member _.TryGetDbMessage(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT * FROM message WHERE chat_id = @chatId AND message_id = @messageId"
-        let! dbMessage = conn.QueryAsync<DbMessage>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        let sql =
+            """
+SELECT (data->>'chatId')::BIGINT AS chat_id,
+       (data->>'messageId')::INT  AS message_id,
+       (data->>'userId')::BIGINT  AS user_id,
+       data->>'text'              AS text,
+       (data->>'rawMessage')::JSONB::TEXT AS raw_message,
+       created_at
+FROM event
+WHERE event_type = 'MessageReceived'
+  AND (data->>'chatId')::BIGINT = @chatId
+  AND (data->>'messageId')::INT = @messageId
+            """
+        let! dbMessage = conn.QueryAsync<TestMessage>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return dbMessage |> Seq.tryHead
     }
 
-    member _.MessageBanned(msg: Message) = task {
+    member _.MessageBanned(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM banned WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
-        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
-        return count > 0
+        let sql =
+            """
+SELECT EXISTS (
+    SELECT 1 FROM event ub
+    WHERE ub.event_type = 'UserBanned'
+      AND (ub.data->'bannedBy'->>'chatId')::BIGINT = @chatId
+      AND (ub.data->'bannedBy'->>'messageId')::INT = @messageId
+      AND NOT EXISTS (
+          SELECT 1 FROM event uub
+          WHERE uub.event_type = 'UserUnbanned'
+            AND uub.stream_id = ub.stream_id
+            AND uub.id > ub.id
+      )
+)
+            """
+        return! conn.QuerySingleAsync<bool>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
     }
-    
+
     member _.UserBanned(userId: int64) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM banned WHERE banned_user_id = @userId"
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id   = 'user:' || @userId
+  AND event_type  = 'UserBanned'
+  AND data->'bannedBy'->>'Case' = 'BannedByVahter'
+            """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
     }
-    
-    member _.MessageIsAutoDeleted(msg: Message) = task {
+
+    member _.MessageIsAutoDeleted(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'BotAutoDeleted'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
     }
     
-    member _.GetCallbackId(msg: Message) (caseName: string) = task {
-        use conn = new NpgsqlConnection(publicConnectionString)
+    member _.GetCallbackId(msg: TgMsg) (caseName: string) = task {
         //language=postgresql
         let sql = """
-SELECT id
-FROM callback
-WHERE data ->> 'Case' = @caseName
-  AND data -> 'Fields' -> 0 -> 'message' ->> 'message_id' = @messageId::TEXT
-  AND data -> 'Fields' -> 0 -> 'message' -> 'chat' ->> 'id' = @chatId::TEXT
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND stream_id LIKE 'callback:%'
+  AND (data->>'data')::JSONB ->> 'Case' = @caseName
+  AND (data->>'data')::JSONB -> 'Fields' -> 0 -> 'message' ->> 'message_id' = @messageId::TEXT
+  AND (data->>'data')::JSONB -> 'Fields' -> 0 -> 'message' -> 'chat' ->> 'id' = @chatId::TEXT
 """
-        return! conn.QuerySingleAsync<Guid>(
-            sql, {| chatId = msg.Chat.Id
-                    messageId = msg.MessageId
-                    caseName = caseName |})
+        let param = {| chatId = msg.Chat.Id; messageId = msg.MessageId; caseName = caseName |}
+        // Retry to handle transient DB visibility delays on ARM
+        let mutable result = None
+        let mutable attempt = 0
+        while result.IsNone && attempt < 5 do
+            use conn = new NpgsqlConnection(publicConnectionString)
+            let! rows = conn.QueryAsync<Guid>(sql, param)
+            match rows |> Seq.tryHead with
+            | Some id -> result <- Some id
+            | None ->
+                attempt <- attempt + 1
+                do! Task.Delay 200
+        match result with
+        | Some id -> return id
+        | None -> return failwith $"Callback not found for message {msg.MessageId} in chat {msg.Chat.Id} with case {caseName}"
     }
     
-    member _.IsMessageFalsePositive(msg: Message) = task {
+    member _.IsMessageFalsePositive(msg: TgMsg) = task {
         if String.IsNullOrWhiteSpace(msg.Text) then return false else
-        
+
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = """
-            SELECT EXISTS (
-                SELECT 1 
-                FROM false_positive_messages 
-                WHERE text_hash = md5(@text)::uuid 
-                  AND text = @text
-            )
-        """
+        let sql =
+            """
+SELECT EXISTS (
+    SELECT 1 FROM event
+    WHERE event_type = 'MessageMarkedHam'
+      AND data->>'text' = @text
+)
+            """
         return! conn.QuerySingleAsync<bool>(sql, {| text = msg.Text |})
     }
 
     member _.UserBannedByBot(userId: int64) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_user_id = @userId"
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id  = 'user:' || @userId
+  AND event_type = 'UserBanned'
+  AND data->'bannedBy'->>'Case' = 'BannedByAutoBan'
+            """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
     }
@@ -325,36 +392,134 @@ WHERE data ->> 'Case' = @caseName
     member _.GetUserReactionCount(userId: int64) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = """SELECT reaction_count FROM "user" WHERE id = @userId"""
-        let! result = conn.QueryAsync<int>(sql, {| userId = userId |})
-        return result |> Seq.tryHead |> Option.defaultValue 0
+        let sql =
+            """
+SELECT COALESCE(SUM((data->>'delta')::INT), 0)::INT
+FROM event
+WHERE stream_id  = 'user:' || @userId
+  AND event_type = 'UserReactionRecorded'
+            """
+        let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return result
     }
     
-    member _.IsMessageFalseNegative(msg: Message) = task {
+    member _.IsMessageFalseNegative(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT COUNT(*) FROM false_negative_messages WHERE chat_id = @chatId AND message_id = @messageId"
-        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
-        return count > 0
-    }
-    
-    /// Checks if message was deleted (exists in fake API deleted list)
-    member _.MessageWasDeleted(msg: Message) = task {
-        use conn = new NpgsqlConnection(publicConnectionString)
-        // Check if message is in banned_by_bot (for auto-deleted) or was manually deleted
-        // For soft spam, we check the fake API's deleted messages
-        //language=postgresql
-        let sql = "SELECT COUNT(*) FROM banned_by_bot WHERE banned_in_chat_id = @chatId AND message_id = @messageId"
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'MessageMarkedSpam'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
         let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return count > 0
     }
 
-    member _.TryGetLlmTriageVerdict(msg: Message) = task {
+    /// Checks if message was auto-deleted by the bot
+    member _.MessageWasDeleted(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
-        let sql = "SELECT verdict FROM llm_triage WHERE chat_id = @chatId AND message_id = @messageId"
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'BotAutoDeleted'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return count > 0
+    }
+
+    member this.TryGetLlmTriageVerdict(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'verdict' FROM event
+WHERE event_type = 'LlmClassified'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
         let! verdicts = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return verdicts |> Seq.tryHead
+    }
+
+    /// Polls for the LLM triage verdict with retries (fireAndForget is async).
+    member this.WaitForLlmTriageVerdict(msg: TgMsg, ?maxRetries: int, ?delayMs: int) = task {
+        let maxRetries = defaultArg maxRetries 10
+        let delayMs = defaultArg delayMs 500
+        let mutable result = None
+        let mutable attempt = 0
+        while result.IsNone && attempt < maxRetries do
+            do! Task.Delay delayMs
+            let! verdict = this.TryGetLlmTriageVerdict(msg)
+            result <- verdict
+            attempt <- attempt + 1
+        return result
+    }
+
+    /// Inserts a CallbackCreated event with a backdated created_at for testing orphaned cleanup.
+    member _.InsertOrphanedCallback(callbackId: Guid, daysOld: int) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES ('callback:' || @callbackId, 1,
+        jsonb_build_object('Case', 'CallbackCreated',
+                           'data', 'test', 'targetUserId', 0, 'actionChannelId', 0),
+        NOW() - make_interval(days => @daysOld))
+            """
+        let! _ = conn.ExecuteAsync(sql, {| callbackId = callbackId; daysOld = daysOld |})
+        return ()
+    }
+
+    /// Runs the same orphaned callback cleanup as DB.expireOrphanedCallbacks.
+    member _.CleanupOrphanedCallbacks(howOld: TimeSpan) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let findSql =
+            """
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND created_at < @cutoff
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = event.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+            """
+        let! orphanedIds = conn.QueryAsync<Guid>(findSql, {| cutoff = DateTime.UtcNow.Subtract howOld |})
+        let ids = Array.ofSeq orphanedIds
+        //language=postgresql
+        let expireSql =
+            """
+INSERT INTO event(stream_id, stream_version, data)
+VALUES ('callback:' || @callbackId,
+        (SELECT MAX(stream_version) FROM event WHERE stream_id = 'callback:' || @callbackId) + 1,
+        '{"Case":"CallbackExpired"}'::JSONB)
+ON CONFLICT (stream_id, stream_version) DO NOTHING
+            """
+        for id in ids do
+            let! _ = conn.ExecuteAsync(expireSql, {| callbackId = id |})
+            ()
+        return ids.Length
+    }
+
+    /// Checks if a CallbackExpired event exists for the given callback.
+    member _.HasCallbackExpired(callbackId: Guid) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'callback:' || @callbackId AND event_type = 'CallbackExpired'
+            """
+        let! count = conn.ExecuteScalarAsync<int>(sql, {| callbackId = callbackId |})
+        return count > 0
     }
 
 type MlEnabledVahterTestContainers() =

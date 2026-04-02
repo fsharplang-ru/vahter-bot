@@ -10,9 +10,12 @@ open VahterBanBot.Utils
 /// Wrapper around Telegram.Bot.Types.Message.
 /// All sender resolution (channel sender → SenderChat) is baked in.
 /// The raw message is never mutated; enrichment text is kept separately.
-type TgMessage private (raw: Message) =
+type TgMessage private (raw: Message, isEdit: bool) =
     let mutable prefixText: string = null
     let mutable suffixText: string = null
+
+    /// Whether this message is an edit of a previously sent message.
+    member _.IsEdit = isEdit
 
     // ── Sender resolution ──────────────────────────────────────────
 
@@ -119,5 +122,5 @@ type TgMessage private (raw: Message) =
     // ── Factory ────────────────────────────────────────────────────
 
     /// Create a TgMessage from a raw Telegram Message.
-    static member Create(msg: Message) =
-        TgMessage(msg)
+    static member Create(msg: Message, ?isEdit: bool) =
+        TgMessage(msg, defaultArg isEdit false)
