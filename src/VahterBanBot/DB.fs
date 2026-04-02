@@ -226,6 +226,15 @@ let recordBotAutoDeleted (chatId: int64) (messageId: int) (userId: int64) (reaso
         return ()
     }
 
+/// Records an MlScoredMessage event for observability and determinism testing.
+let recordMlScoredMessage
+    (chatId: int64) (messageId: int) (score: float) (isSpam: bool) : Task<unit> =
+    task {
+        let! _ = appendEvent $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
+            [ MlScoredMessage {| chatId = chatId; messageId = messageId; score = score; isSpam = isSpam |} ])
+        return ()
+    }
+
 /// Records an LlmClassified event (replaces insertLlmTriage for writes).
 let recordLlmClassified
     (chatId: int64) (messageId: int) (verdict: string)
@@ -721,12 +730,17 @@ let getVahterActionStats (interval: TimeSpan option): Task<VahterActionStats> =
         //language=postgresql
         let sql =
             """
-SELECT * FROM (
-    SELECT (SELECT e2.data->>'username'
-            FROM event e2
-            WHERE e2.stream_id = 'user:' || (va.data->>'vahterId')
-              AND e2.event_type = 'UsernameChanged'
-            ORDER BY e2.id DESC LIMIT 1) AS "Vahter",
+SELECT (SELECT e2.data->>'username'
+        FROM event e2
+        WHERE e2.stream_id = 'user:' || va_stats.vahter_id
+          AND e2.event_type = 'UsernameChanged'
+        ORDER BY e2.id DESC LIMIT 1) AS "Vahter",
+       va_stats."KillsTotal",
+       va_stats."KillsInterval",
+       va_stats."NotSpamTotal",
+       va_stats."NotSpamInterval"
+FROM (
+    SELECT va.data->>'vahterId' AS vahter_id,
            COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')) AS "KillsTotal",
            COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')
                               AND va.created_at > NOW() - @interval::INTERVAL) AS "KillsInterval",
@@ -736,8 +750,8 @@ SELECT * FROM (
     FROM event va
     WHERE va.event_type = 'VahterActed'
     GROUP BY va.data->>'vahterId'
-) stats
-ORDER BY "KillsTotal" + "NotSpamTotal" DESC;
+) va_stats
+ORDER BY va_stats."KillsTotal" + va_stats."NotSpamTotal" DESC;
             """
 
         let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval |})

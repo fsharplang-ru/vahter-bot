@@ -51,7 +51,7 @@ let fakeTgApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
             resp.Content <- new ByteArrayContent(content)
             resp.Content.Headers.ContentType <- MediaTypeHeaderValue("application/octet-stream")
             resp
-        elif url.EndsWith "/deleteMessage" || url.EndsWith "/banChatMember" || url.EndsWith "/unbanChatMember" then
+        elif url.EndsWith "/deleteMessage" || url.EndsWith "/banChatMember" || url.EndsWith "/unbanChatMember" || url.EndsWith "/answerCallbackQuery" then
             // respond with "true"
            apiResult "true"
         elif url.EndsWith "/sendMessage" then
