@@ -482,6 +482,21 @@ WHERE event_type = 'LlmClassified'
         return result
     }
 
+    /// Gets the ML score recorded for a message via MlScoredMessage event.
+    member _.GetMlScore(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT (data->>'score')::DOUBLE PRECISION FROM event
+WHERE event_type = 'MlScoredMessage'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! scores = conn.QueryAsync<float>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return scores |> Seq.tryHead
+    }
+
     /// Inserts a CallbackCreated event with a backdated created_at for testing orphaned cleanup.
     member _.InsertOrphanedCallback(callbackId: Guid, daysOld: int) = task {
         use conn = new NpgsqlConnection(publicConnectionString)

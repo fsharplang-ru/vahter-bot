@@ -18,6 +18,7 @@
         <Compile Include="MessageTests.fs" />
         <Compile Include="EntitiesScanTests.fs" />
         <Compile Include="MLBanTests.fs" />
+        <Compile Include="MLScoreDeterminismTests.fs" />
         <Compile Include="BanTests.fs" />
         <Compile Include="ChannelSenderTests.fs" />
         <Compile Include="ReactionSpamTests.fs" />

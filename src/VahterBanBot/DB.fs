@@ -226,6 +226,15 @@ let recordBotAutoDeleted (chatId: int64) (messageId: int) (userId: int64) (reaso
         return ()
     }
 
+/// Records an MlScoredMessage event for observability and determinism testing.
+let recordMlScoredMessage
+    (chatId: int64) (messageId: int) (score: float) (isSpam: bool) : Task<unit> =
+    task {
+        let! _ = appendEvent $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
+            [ MlScoredMessage {| chatId = chatId; messageId = messageId; score = score; isSpam = isSpam |} ])
+        return ()
+    }
+
 /// Records an LlmClassified event (replaces insertLlmTriage for writes).
 let recordLlmClassified
     (chatId: int64) (messageId: int) (verdict: string)

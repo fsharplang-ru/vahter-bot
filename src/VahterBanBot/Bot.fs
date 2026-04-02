@@ -741,6 +741,7 @@ let justMessage
             match ml.Predict(msg.Text, usrMsgCount, msg.Entities)  with
             | Some prediction ->
                 %mlActivity.SetTag("spamScoreMl", prediction.Score)
+                do! DB.recordMlScoredMessage msg.ChatId msg.MessageId (float prediction.Score) (prediction.Score >= botConfig.MlSpamThreshold)
 
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message

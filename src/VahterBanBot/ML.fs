@@ -9,6 +9,7 @@ open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Microsoft.ML
 open Microsoft.ML.Data
+open Microsoft.ML.Trainers
 open Telegram.Bot
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
@@ -110,7 +111,7 @@ type MachineLearning(
                 x
 
         let dataView = mlContext.Data.LoadFromEnumerable data
-        let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction)
+        let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction, seed = botConf.MlSeed)
         let trainingData = trainTestSplit.TrainSet
         let testData = trainTestSplit.TestSet
         
@@ -120,19 +121,18 @@ type MachineLearning(
                 .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF"; "moreThanNEmojisF"|]))
 
         let dataProcessPipeline =
+            let options = SdcaLogisticRegressionBinaryTrainer.Options(
+                LabelColumnName = "spam",
+                FeatureColumnName = "Features",
+                MaximumNumberOfIterations = botConf.MlMaxNumberOfIterations
+            )
             if k > 0.0 then
-                featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
-                    labelColumnName = "spam",
-                    featureColumnName = "Features",
-                    exampleWeightColumnName = "weight",
-                    maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
-                ))
-            else
-                featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(
-                    labelColumnName = "spam",
-                    featureColumnName = "Features",
-                    maximumNumberOfIterations = botConf.MlMaxNumberOfIterations
-                ))
+                options.ExampleWeightColumnName <- "weight"
+            // When ML_SEED is set, use single thread for deterministic training.
+            // SDCA's parallel coordinate updates cause non-deterministic weight convergence.
+            if botConf.MlSeed.HasValue then
+                options.NumberOfThreads <- Nullable 1
+            featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(options))
                 
         logger.LogInformation "Fitting model..."
 
