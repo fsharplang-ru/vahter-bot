@@ -3,6 +3,7 @@ module VahterBanBot.Bot
 open System
 open System.Diagnostics
 open System.Text
+open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
@@ -750,8 +751,15 @@ let justMessage
                 elif prediction.Score >= botConfig.MlWarningThreshold then
                     // just warn — send to triage channel; shadow-classify with LLM for accuracy tracking
                     do! killSpammerAutomated botClient botConfig msg logger false (MlSpam {| score = float prediction.Score |})
-                    // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
-                    fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
+                    // shadow-classify with LLM (best-effort, does not fail the pipeline)
+                    try
+                        use cts = new CancellationTokenSource(TimeSpan.FromSeconds 5.)
+                        do! llmTriage.Classify(msg, usrMsgCount, cts.Token)
+                    with
+                    | :? OperationCanceledException ->
+                        logger.LogWarning("LLM triage timed out for message {MessageId} in chat {ChatId}", msg.MessageId, msg.ChatId)
+                    | ex ->
+                        logger.LogError(ex, "LLM triage failed for message {MessageId} in chat {ChatId}", msg.MessageId, msg.ChatId)
                 else
                     // not a spam
                     ()

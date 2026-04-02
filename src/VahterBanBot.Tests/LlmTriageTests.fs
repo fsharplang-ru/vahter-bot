@@ -1,6 +1,5 @@
 module VahterBanBot.Tests.LlmTriageTests
 
-open System.Threading.Tasks
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open Xunit
@@ -23,8 +22,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
-        // Poll for verdict (fireAndForget is async)
-        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
+        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "KILL", verdict)
     }
 
@@ -35,7 +33,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
-        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
+        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "SPAM", verdict)
     }
 
@@ -45,7 +43,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77")
         let! _ = fixture.SendMessage msgUpdate
 
-        let! verdict = fixture.WaitForLlmTriageVerdict msgUpdate.Message
+        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(Some "NOT_SPAM", verdict)
     }
 
@@ -54,9 +52,6 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         // "2222222" scores >= ML_SPAM_THRESHOLD (1.0) → detected spam path → no LLM call
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222")
         let! _ = fixture.SendMessage msgUpdate
-
-        // Give fireAndForget time to complete (if it runs at all)
-        do! Task.Delay 3000
 
         let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
         Assert.Equal(None, verdict)

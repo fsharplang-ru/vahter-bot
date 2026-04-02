@@ -446,20 +446,6 @@ WHERE event_type = 'LlmClassified'
         return verdicts |> Seq.tryHead
     }
 
-    /// Polls for the LLM triage verdict with retries (fireAndForget is async).
-    member this.WaitForLlmTriageVerdict(msg: TgMsg, ?maxRetries: int, ?delayMs: int) = task {
-        let maxRetries = defaultArg maxRetries 10
-        let delayMs = defaultArg delayMs 500
-        let mutable result = None
-        let mutable attempt = 0
-        while result.IsNone && attempt < maxRetries do
-            do! Task.Delay delayMs
-            let! verdict = this.TryGetLlmTriageVerdict(msg)
-            result <- verdict
-            attempt <- attempt + 1
-        return result
-    }
-
     /// Inserts a CallbackCreated event with a backdated created_at for testing orphaned cleanup.
     member _.InsertOrphanedCallback(callbackId: Guid, daysOld: int) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
