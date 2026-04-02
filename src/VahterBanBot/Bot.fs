@@ -741,6 +741,7 @@ let justMessage
             match ml.Predict(msg.Text, usrMsgCount, msg.Entities)  with
             | Some prediction ->
                 %mlActivity.SetTag("spamScoreMl", prediction.Score)
+                do! DB.recordMlScoredMessage msg.ChatId msg.MessageId (float prediction.Score) (prediction.Score >= botConfig.MlSpamThreshold)
 
                 if prediction.Score >= botConfig.MlSpamThreshold then
                     // delete message
@@ -1147,11 +1148,13 @@ let onCallbackAux
             do! vahterSoftSpam botUser botClient botConfig logger vahter tgMsg
         
         do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Done! +1 🎯")
+            |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
     else
         // Someone already handled via /ban
         %onCallbackActivity.SetTag("actionRecorded", false)
         logger.LogInformation $"Action already recorded for message {tgMsg.MessageId} in chat {tgMsg.ChatId}"
         do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Already handled by another vahter")
+            |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
     
     // Always delete message from action channel (empty inbox)
     // and cleanup related callbacks (for potential spam with two buttons)
@@ -1184,6 +1187,7 @@ let onCallback
         // Callback already processed by another vahter
         logger.LogInformation $"Callback {callbackId} already processed"
         do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Already processed")
+            |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
     | Some callbackState ->
         let callbackData = deserializeCallbackData callbackState.Data.Value
         %onCallbackActivity.SetTag("callbackData", callbackData)
@@ -1192,6 +1196,7 @@ let onCallback
         | None ->
             logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being in DB"
             do! botClient.AnswerCallbackQuery(callbackQuery.Id, "You are not in DB")
+                |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
         | Some vahter ->
             %onCallbackActivity.SetTag("vahterUsername", vahter.Username)
             %onCallbackActivity.SetTag("vahterId", vahter.Id)
@@ -1201,6 +1206,7 @@ let onCallback
             if not isAuthed then
                 logger.LogWarning $"User {callbackQuery.From.Username} ({callbackQuery.From.Id}) tried to press callback button while not being a certified vahter"
                 do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Not authorized")
+                    |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
             else
                 do! onCallbackAux
                         botUser

@@ -6,3 +6,4 @@ flyway.conf
 *sln.DotSettings.user
 TestResults
 *.trx
+test-artifacts/
