@@ -42,6 +42,7 @@ type VahterTestContainers(mlEnabled: bool) =
     let mutable uri: Uri = null
     let mutable httpClient: HttpClient = null
     let mutable publicConnectionString: string = null
+    let mutable testArtifactsDir: string = null
     
     // base image for the app, we'll build exactly how we build it in Azure
     let buildLogger = StringLogger()
@@ -117,6 +118,22 @@ type VahterTestContainers(mlEnabled: bool) =
         else
             builder.Build()
             
+    let dumpContainerLogs (containerName: string) (container: IContainer) =
+        task {
+            try
+                let! struct (stdout, stderr) = container.GetLogsAsync()
+                let dir = testArtifactsDir
+                if not (isNull dir) then
+                    Directory.CreateDirectory(dir) |> ignore
+                    let path = Path.Combine(dir, $"{containerName}.log")
+                    let content = $"=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}\n"
+                    File.WriteAllText(path, content)
+                return (stdout, stderr)
+            with ex ->
+                eprintfn $"Failed to get logs for {containerName}: {ex.Message}"
+                return ("", "")
+        }
+
     let startContainers() = task {
         try
             // start building the image and spin up db at the same time
@@ -135,6 +152,7 @@ type VahterTestContainers(mlEnabled: bool) =
 
     interface IAsyncLifetime with
         member this.InitializeAsync() = ValueTask(task {
+            testArtifactsDir <- Path.Combine(solutionDir.DirectoryPath, "test-artifacts", this.GetType().Name)
             try
                 do! startContainers()
                 publicConnectionString <- $"Server=127.0.0.1;Database=vahter_db;Port={dbContainer.GetMappedPublicPort(5432)};User Id=vahter_bot_ban_service;Password=vahter_bot_ban_service;Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
@@ -224,6 +242,10 @@ type VahterTestContainers(mlEnabled: bool) =
         })
     interface IAsyncDisposable with
         member this.DisposeAsync() = ValueTask(task {
+            // Dump logs FIRST — logs become inaccessible after container removal
+            let! _ = dumpContainerLogs "postgres" dbContainer
+            let! _ = dumpContainerLogs "flyway" flywayContainer
+            let! _ = dumpContainerLogs "app" appContainer
             // stop all the containers, flyway might be dead already
             do! flywayContainer.DisposeAsync()
             do! appContainer.DisposeAsync()
