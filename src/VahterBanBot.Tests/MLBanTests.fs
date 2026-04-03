@@ -138,9 +138,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     [<Fact>]
     let ``Potential spam NOT SPAM button does not ban user`` () = task {
         // For potential spam, we need a text that gives score >= 0 but < 1.0 (ML_SPAM_THRESHOLD)
-        // Using a shorter spam-like text that might give lower score
+        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
         // This tests the fix for the bug where NOT SPAM button was calling vahterMarkedAsSpam
-        let user = Tg.user()
+        let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
 
@@ -409,7 +409,8 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``MarkAsSpam (soft spam) button does NOT ban user`` () = task {
         // This test verifies the critical behavior that MarkAsSpam (soft spam)
         // deletes the message and marks it as spam for ML, but does NOT ban the user
-        let user = Tg.user()
+        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
         
@@ -436,7 +437,8 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     let ``Only vahter can click MarkAsSpam button`` () = task {
         // Similar to "Only vahter can press THE BUTTON(s)" test
         // Verifies non-vahter clicking MarkAsSpam has no effect
-        let user = Tg.user()
+        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
         
@@ -465,7 +467,8 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // from the "Potential spam NOT SPAM button does not ban user" test which inserts "77"
         // into false_positive_messages. The "3" family is in the training set as false negatives
         // so "33" triggers ML detection as potential spam just like "77" does.
-        let user = Tg.user()
+        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        let user = Tg.user(firstName = "spam test user")
         
         // First 3 messages should NOT trigger ban
         for i in 1..3 do
@@ -478,7 +481,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
             let! _ = fixture.SendMessage msgCallback
             
             // User should not be banned yet (score is -1, -2, -3)
-            let! userBanned = fixture.UserBanned user.Id
+            let! userBanned = fixture.UserBannedByBot user.Id
             Assert.False(userBanned, $"User should not be banned after {i} soft spam marks (score={-i})")
         
         // 4th soft spam should trigger auto-ban (score becomes -4 which is <= -4.0 threshold)
@@ -490,7 +493,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgCallback
         
         // Now user should be auto-banned due to low karma (score=-4 <= threshold=-4)
-        let! userBanned = fixture.UserBanned user.Id
+        let! userBanned = fixture.UserBannedByBot user.Id
         Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
     }
 

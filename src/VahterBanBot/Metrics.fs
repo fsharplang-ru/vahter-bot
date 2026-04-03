@@ -3,6 +3,7 @@ module VahterBanBot.Metrics
 open System
 open System.Collections.Generic
 open System.Diagnostics.Metrics
+open VahterBanBot.Types
 
 // Custom metrics
 let meter = new Meter("VahterBanBot.Metrics", "1.0.0")
@@ -41,10 +42,25 @@ let tagsForDeletedMessage (chatId: int64) (chatUsername: string) (reason: string
         KeyValuePair("reason", box reason)
     |]
 
-let tagsForVahter (vahterId: int64) (vahterUsername: string) =
+let tagsForVahter (actor: Actor): KeyValuePair<string, obj> array =
     [|
-        KeyValuePair("vahter_id", box vahterId)
-        KeyValuePair("vahter_username", box (if isNull vahterUsername then "" else vahterUsername))
+        match actor with
+        | Actor.User user ->
+            yield KeyValuePair("vahter_type", "user")
+            yield KeyValuePair("vahter_id", box user.userId)
+            yield KeyValuePair("vahter_username", box (defaultArg user.username ""))
+        | Actor.Bot None ->
+            yield KeyValuePair("vahter_type", "bot")
+        | Actor.Bot (Some bot) ->
+            yield KeyValuePair("vahter_type", "bot")
+            yield KeyValuePair("vahter_id", box bot.botUserId)
+            yield KeyValuePair("vahter_username", bot.botUsername)
+        | Actor.ML ->
+            yield KeyValuePair("vahter_type", "ml")
+        | Actor.LLM llm ->
+            yield KeyValuePair("vahter_type", "llm")
+            yield KeyValuePair("vahter_model", llm.modelName)
+            yield KeyValuePair("vahter_prompt_hash", llm.promptHash)
     |]
 
 let recordDeletedMessage (chatId: int64) (chatUsername: string) (reason: string) =

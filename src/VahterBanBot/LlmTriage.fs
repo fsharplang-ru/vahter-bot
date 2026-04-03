@@ -3,6 +3,7 @@ module VahterBanBot.LlmTriage
 open System
 open System.Diagnostics
 open System.Net.Http
+open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Threading
@@ -37,12 +38,37 @@ let private parseResponse (logger: ILogger) (json: string) =
 // ── Interface + implementation ────────────────────────────────────────────────
 
 type ILlmTriage =
-    abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<unit>
+    abstract member ModelName:  string
+    abstract member PromptHash: string
+    abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmVerdict>
 
 type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: ILogger<AzureLlmTriage>) =
+
+    // Static part of the system prompt — used to compute the prompt hash once at startup.
+    // Per-chat descriptions are configuration, not the prompt itself.
+    let staticSystemPrompt =
+        """You are a spam detection assistant for a Telegram community.
+Watch for advertising-style display names (e.g. "Зайди в мой био") as a strong spam signal.
+Classify the message as exactly one of:
+ - KILL     : obvious advertising/bot/malicious content — permanent ban warranted
+ - SPAM     : doesn't belong here, soft delete only
+ - NOT_SPAM : legitimate message, false positive
+
+Respond with exactly: {"verdict":"KILL"} or {"verdict":"SPAM"} or {"verdict":"NOT_SPAM"}"""
+
+    let promptHash =
+        SHA256.HashData(Encoding.UTF8.GetBytes(staticSystemPrompt))
+        |> Convert.ToHexString
+        |> _.ToLower()
+
+    let modelName = botConf.AzureOpenAiDeployment
+
     interface ILlmTriage with
+        member _.ModelName  = modelName
+        member _.PromptHash = promptHash
+
         member _.Classify(msg: TgMessage, userMsgCount: int64, ct: CancellationToken) = task {
-            if not botConf.LlmTriageEnabled then ()
+            if not botConf.LlmTriageEnabled then return LlmVerdict.Skip
             else
 
             use activity = botActivity.StartActivity("llmTriage")
@@ -53,14 +79,7 @@ type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: I
                 | _       -> ""
 
             let systemPrompt =
-                $"""You are a spam detection assistant for a Telegram community.{chatDescLine}
-Watch for advertising-style display names (e.g. "Зайди в мой био") as a strong spam signal.
-Classify the message as exactly one of:
- - KILL     : obvious advertising/bot/malicious content — permanent ban warranted
- - SPAM     : doesn't belong here, soft delete only
- - NOT_SPAM : legitimate message, false positive
-
-Respond with exactly: {{"verdict":"KILL"}} or {{"verdict":"SPAM"}} or {{"verdict":"NOT_SPAM"}}"""
+                $"""{staticSystemPrompt}{chatDescLine}"""
 
             let username    = if isNull msg.SenderUsername then "(none)" else $"@{msg.SenderUsername}"
             let displayName = msg.SenderDisplayName
@@ -108,16 +127,23 @@ Message:
 
             if response.IsSuccessStatusCode then
                 match parseResponse logger body with
-                | Some (verdict, promptTokens, completionTokens) ->
+                | Some (verdictStr, promptTokens, completionTokens) ->
                     if not (isNull activity) then
                         %activity
-                            .SetTag("verdict",      verdict)
+                            .SetTag("verdict",      verdictStr)
                             .SetTag("latency_ms",   sw.ElapsedMilliseconds)
                             .SetTag("total_tokens", promptTokens + completionTokens)
                             .SetTag("chat_id",      msg.ChatId)
                             .SetTag("user_id",      msg.SenderId)
-                    do! DB.insertLlmTriage msg.ChatId msg.MessageId msg.SenderId verdict promptTokens completionTokens (int sw.ElapsedMilliseconds)
-                | None -> ()  // warning already logged in parseResponse
+                    do! DB.recordLlmClassified
+                            msg.ChatId msg.MessageId verdictStr
+                            promptTokens completionTokens (int sw.ElapsedMilliseconds)
+                            (Some modelName) (Some promptHash)
+                    return LlmVerdict.FromString verdictStr
+                | None ->
+                    // warning already logged in parseResponse
+                    return LlmVerdict.Error
             else
                 logger.LogWarning("LLM triage returned {Status}: {Body}", int response.StatusCode, body)
+                return LlmVerdict.Error
         }

@@ -27,9 +27,35 @@ type ConcurrencyConflict = ConcurrencyConflict
 // Shared value types
 // ---------------------------------------------------------------------------
 
+// TODO: Add [<RequireQualifiedAccess>] to all DUs in the codebase for easier readability
+
+/// Represents WHO made a decision (ban, unban, triage, etc.)
+[<RequireQualifiedAccess>]
+type Actor =
+    | User of {| userId: int64; username: string option |}
+    | Bot of {| botUserId: int64; botUsername: string |} option   // deterministic code decisions (heuristic rules, static logic)
+    | ML    // ML model predictions (karma scoring, neural networks)
+    | LLM of {| modelName: string; promptHash: string |}  // external LLM hosted in Azure
+
+/// Legacy — will be removed after old events are migrated to Actor format.
+/// Only used for deserializing old UserBanned events that were written before Actor existed.
 type BannedBy =
-    | BannedByVahter of {| vahterId: int64; chatId: int64; messageId: int; messageText: string option |}
+    | BannedByVahter of {| vahterId: int64; vahterUsername: string option; chatId: int64; messageId: int; messageText: string option |}
     | BannedByAutoBan of {| chatId: int64; messageText: string option |}
+    | BannedByAI of {| chatId: int64; messageId: int; messageText: string option; modelName: string; promptHash: string |}
+
+[<RequireQualifiedAccess>]
+type LlmVerdict =
+    | Kill
+    | NotSpam
+    | Skip    // LLM "SPAM" verdict — message goes to human triage
+    | Error   // HTTP failure or parse error — falls back to human triage
+    static member FromString(verdictStr: string) =
+        match verdictStr with
+        | "KILL"     -> LlmVerdict.Kill
+        | "NOT_SPAM" -> LlmVerdict.NotSpam
+        | "SPAM"     -> LlmVerdict.Skip
+        | _          -> LlmVerdict.Error
 
 // ---------------------------------------------------------------------------
 // Per-stream event DUs
@@ -37,22 +63,33 @@ type BannedBy =
 
 type UserEvent =
     | UsernameChanged      of {| userId: int64; username: string option |}
-    | UserBanned           of {| userId: int64; bannedBy: BannedBy |}
-    | UserUnbanned         of {| userId: int64; unbannedBy: int64 |}
+    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option |}
+    | UserUnbanned         of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
     | UserReactionRecorded of {| userId: int64; delta: int |}
 
 type User =
     { Id:            int64
-      BannedBy:      BannedBy option
+      BannedByActor: Actor option
       Username:      string option
       ReactionCount: int }
-    member this.IsBanned = this.BannedBy.IsSome
-    static member Zero = { Id = 0L; BannedBy = None; Username = None; ReactionCount = 0 }
+    member this.IsBanned = this.BannedByActor.IsSome
+    static member Zero = { Id = 0L; BannedByActor = None; Username = None; ReactionCount = 0 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
         | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
-        | UserBanned e           -> { state with Id = e.userId; BannedBy = Some e.bannedBy }
-        | UserUnbanned e         -> { state with Id = e.userId; BannedBy = None }
+        | UserBanned e           ->
+            let actor =
+                match e.actor with
+                | Some a -> a
+                | None ->
+                    // backward compat: derive Actor from legacy BannedBy
+                    match e.bannedBy with
+                    | Some (BannedByVahter v) -> Actor.User {| userId = v.vahterId; username = v.vahterUsername |}
+                    | Some (BannedByAutoBan _) -> Actor.Bot None
+                    | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
+                    | None -> Actor.Bot None
+            { state with Id = e.userId; BannedByActor = Some actor }
+        | UserUnbanned e         -> { state with Id = e.userId; BannedByActor = None }
         | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
 
     static member fromTgUser (user: Telegram.Bot.Types.User) =
@@ -142,7 +179,7 @@ type Callback =
 
 type DetectionEvent =
     | MlScoredMessage          of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
-    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int |}
+    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
     | InvisibleMentionDetected of {| chatId: int64; messageId: int; userId: int64 |}
 
 type Detection =
@@ -259,6 +296,18 @@ type CallbackMessage =
     | NotASpam of MessageWrapper
     | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
     | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
+
+/// JSON serializer options for event store (de)serialization.
+/// Uses internal tag, unwrapped record cases, named fields, and unwrapped options.
+/// WithSkippableOptionFields ensures missing JSONB keys deserialize as None (not an error).
+let eventJsonOpts =
+    JsonFSharpOptions.Default()
+        .WithUnionInternalTag()
+        .WithUnionUnwrapRecordCases()
+        .WithUnionNamedFields()
+        .WithUnwrapOption()
+        .WithSkippableOptionFields()
+        .ToJsonSerializerOptions()
 
 // Callback data serialization uses different JSON options (Telegram-aware)
 let private callbackJsonOpts =

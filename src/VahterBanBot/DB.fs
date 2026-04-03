@@ -18,19 +18,10 @@ let private connString = getEnv "DATABASE_URL"
 // ---------------------------------------------------------------------------
 
 open System.Text.Json
-open System.Text.Json.Serialization
-
-let fsharpJsonOpts =
-    JsonFSharpOptions.Default()
-        .WithUnionInternalTag()
-        .WithUnionUnwrapRecordCases()
-        .WithUnionNamedFields()
-        .WithUnwrapOption()
-        .ToJsonSerializerOptions()
 
 /// Deserializes data JSON → DU event.
 let deserializeEvent<'Event> (raw: RawEvent) : 'Event =
-    JsonSerializer.Deserialize<'Event>(raw.data, options = fsharpJsonOpts)
+    JsonSerializer.Deserialize<'Event>(raw.data, options = eventJsonOpts)
 
 /// SRTP helper — folds raw events into aggregate state using Fold/Zero from the state type.
 let inline foldEvents<'Event, 'State
@@ -83,7 +74,7 @@ RETURNING id
             """
         let mutable insertedCount = 0
         for (i, e) in events |> List.indexed do
-            let data = JsonSerializer.Serialize<'Event>(e, fsharpJsonOpts)
+            let data = JsonSerializer.Serialize<'Event>(e, eventJsonOpts)
             let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data |})
             insertedCount <- insertedCount + Seq.length rows
         if insertedCount < events.Length then
@@ -152,21 +143,22 @@ let recordUserReaction (userId: int64) (username: string option) (reactionIncrem
         return state
     }
 
-/// Records a UserBanned event (replaces banUser for writes).
-let recordUserBanned (userId: int64) (bannedBy: BannedBy) : Task<unit> =
+/// Records a UserBanned event with the new Actor format.
+let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (messageText: string option) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
             if state.IsBanned then []   // idempotent — already banned
-            else [ UserBanned {| userId = userId; bannedBy = bannedBy |} ])
+            else [ UserBanned {| userId = userId; bannedBy = None; actor = Some actor
+                                 chatId = Some chatId; messageId = Some messageId; messageText = messageText |} ])
         return ()
     }
 
-/// Records a UserUnbanned event (replaces unbanUser for writes).
-let recordUserUnbanned (userId: int64) (unbannedBy: int64) : Task<unit> =
+/// Records a UserUnbanned event with the new Actor format.
+let recordUserUnbanned (userId: int64) (actor: Actor) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
             if not state.IsBanned then []
-            else [ UserUnbanned {| userId = userId; unbannedBy = unbannedBy |} ])
+            else [ UserUnbanned {| userId = userId; unbannedBy = None; actor = Some actor |} ])
         return ()
     }
 
@@ -236,13 +228,17 @@ let recordMlScoredMessage
     }
 
 /// Records an LlmClassified event (replaces insertLlmTriage for writes).
+// TODO: once all historical LlmClassified events have been backfilled with modelName and
+// promptHash, the option wrappers can be removed from those fields.
 let recordLlmClassified
     (chatId: int64) (messageId: int) (verdict: string)
-    (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task<unit> =
+    (promptTokens: int) (completionTokens: int) (latencyMs: int)
+    (modelName: string option) (promptHash: string option) : Task<unit> =
     task {
         let! _ = appendEvent $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
             [ LlmClassified {| chatId = chatId; messageId = messageId; verdict = verdict
-                               promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs |} ])
+                               promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
+                               modelName = modelName; promptHash = promptHash |} ])
         return ()
     }
 
@@ -605,8 +601,8 @@ ORDER BY MAX(created_at);
         return Array.ofSeq data
     }
 
-let unbanUser (userId: int64) (vahterId: int64): Task =
-    recordUserUnbanned userId vahterId
+let unbanUser (userId: int64) (actor: Actor): Task =
+    recordUserUnbanned userId actor
 
 let markMessageAsFalsePositive (chatId: int64) (messageId: int) (text: string): Task =
     recordMessageMarkedHam chatId messageId (if isNull text then "" else text) None
@@ -633,7 +629,11 @@ WHERE event_type = 'MessageReceived'
         return result
     }
 
-let isBannedByVahter (vahterId: int64) (userId: int64): Task<bool> =
+/// Checks whether a user was auto-banned (by bot, ML, or LLM).
+/// Handles both legacy events (BannedByVahter with bot's vahterId, BannedByAutoBan)
+/// and new Actor-format events (Bot, ML, LLM).
+// TODO: Add index on data->'actor'->>'Case' after old events are migrated to Actor format
+let isAutoBanned (botUserId: int64) (userId: int64): Task<bool> =
     task {
         use conn = new NpgsqlConnection(connString)
 
@@ -644,12 +644,18 @@ SELECT EXISTS(
     SELECT 1 FROM event
     WHERE stream_id = 'user:' || @userId
       AND event_type = 'UserBanned'
-      AND data->'bannedBy'->>'Case' = 'BannedByVahter'
-      AND (data->'bannedBy'->>'vahterId')::BIGINT = @vahterId
+      AND (
+          -- legacy events
+          (data->'bannedBy'->>'Case' = 'BannedByVahter' AND (data->'bannedBy'->>'vahterId')::BIGINT = @botUserId)
+          OR data->'bannedBy'->>'Case' = 'BannedByAutoBan'
+          OR data->'bannedBy'->>'Case' = 'BannedByAI'
+          -- new Actor-format events
+          OR data->'actor'->>'Case' IN ('Bot', 'ML', 'LLM')
+      )
 )
             """
 
-        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; vahterId = vahterId |})
+        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; botUserId = botUserId |})
         return result
     }
 
@@ -865,12 +871,6 @@ WHERE job_name = @jobName;
         let! _ = conn.ExecuteAsync(sql, {| jobName = jobName |})
         return ()
     }
-
-/// Records an LLM triage verdict via event stream.
-let insertLlmTriage
-    (chatId: int64) (messageId: int) (_userId: int64)
-    (verdict: string) (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task =
-    recordLlmClassified chatId messageId verdict promptTokens completionTokens latencyMs
 
 /// Gets LLM triage stats from the event table, joined with VahterActed events for accuracy.
 let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
