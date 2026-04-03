@@ -82,6 +82,23 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
     }
 
     [<Fact>]
+    let ``LLM triage KILL verdict stores message in DB before banning`` () = task {
+        // Regression: DB.insertMessage was called after processMessage, so totalBan → getUserMessages
+        // found 0 messages even though the spam message had just been received.
+        let spammer = Tg.user(firstName = "kill message-count regression")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
+        let! _ = fixture.SendMessage msgUpdate
+
+        // Message must be stored in the event store (inserted before ban ran, not after)
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        Assert.True(dbMsg.IsSome, "Message should be stored in DB even after LLM Kill ban")
+
+        // Message must have a BotAutoDeleted event (reportSpam Detected path records it)
+        let! wasAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True(wasAutoDeleted, "Message should have BotAutoDeleted event after KILL verdict")
+    }
+
+    [<Fact>]
     let ``LLM triage KILL event contains modelName and promptHash`` () = task {
         let spammer = Tg.user(firstName = "kill spammer with metadata")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)

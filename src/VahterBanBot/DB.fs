@@ -629,36 +629,6 @@ WHERE event_type = 'MessageReceived'
         return result
     }
 
-/// Checks whether a user was auto-banned (by bot, ML, or LLM).
-/// Handles both legacy events (BannedByVahter with bot's vahterId, BannedByAutoBan)
-/// and new Actor-format events (Bot, ML, LLM).
-// TODO: Add index on data->'actor'->>'Case' after old events are migrated to Actor format
-let isAutoBanned (botUserId: int64) (userId: int64): Task<bool> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-SELECT EXISTS(
-    SELECT 1 FROM event
-    WHERE stream_id = 'user:' || @userId
-      AND event_type = 'UserBanned'
-      AND (
-          -- legacy events
-          (data->'bannedBy'->>'Case' = 'BannedByVahter' AND (data->'bannedBy'->>'vahterId')::BIGINT = @botUserId)
-          OR data->'bannedBy'->>'Case' = 'BannedByAutoBan'
-          OR data->'bannedBy'->>'Case' = 'BannedByAI'
-          -- new Actor-format events
-          OR data->'actor'->>'Case' IN ('Bot', 'ML', 'LLM')
-      )
-)
-            """
-
-        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; botUserId = botUserId |})
-        return result
-    }
-
 let getUserStatsByLastNMessages (n: int) (userId: int64): Task<UserStats> =
     task {
         use conn = new NpgsqlConnection(connString)
