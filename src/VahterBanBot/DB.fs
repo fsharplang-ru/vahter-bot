@@ -882,7 +882,12 @@ let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
             """
 SELECT
     lt.data->>'verdict'                                                   AS "LlmVerdict",
-    COALESCE(va.data->>'actionType', '(pending)')                          AS "VahterAction",
+    COALESCE(
+        CASE WHEN jsonb_typeof(va.data->'actionType') = 'object'
+             THEN va.data->'actionType'->>'Case'
+             ELSE va.data->>'actionType'
+        END,
+        '(pending)')                                                        AS "VahterAction",
     COUNT(*)::INT                                                          AS "Count",
     COALESCE(SUM((lt.data->>'promptTokens')::INT + (lt.data->>'completionTokens')::INT), 0) AS "TotalTokens",
     COALESCE(AVG((lt.data->>'latencyMs')::INT), 0)                         AS "AvgLatencyMs"
@@ -893,7 +898,11 @@ LEFT JOIN event va
       AND va.data->>'messageId' = lt.data->>'messageId'
 WHERE lt.event_type = 'LlmClassified'
   AND (@interval::INTERVAL IS NULL OR lt.created_at > NOW() - @interval::INTERVAL)
-GROUP BY lt.data->>'verdict', va.data->>'actionType'
+GROUP BY lt.data->>'verdict',
+    CASE WHEN jsonb_typeof(va.data->'actionType') = 'object'
+         THEN va.data->'actionType'->>'Case'
+         ELSE va.data->>'actionType'
+    END
 ORDER BY "Count" DESC
             """
 
