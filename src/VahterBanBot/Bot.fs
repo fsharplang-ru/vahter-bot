@@ -143,38 +143,67 @@ let safeTaskAwait onError (task: Task) =
             onError t.Exception
     )
 
-let aggregateResultInLogMsg
-    (isBan: bool)
-    (chat: Chat)
-    (actorId: int64)
-    (actorName: string option)
-    (user: User)
+[<RequireQualifiedAccess>]
+type LoggedAction =
+    | Ban of {| chat: Chat; actor: Actor; target: User; deletedUserMessages: int |}
+    | Unban of {| chat: Chat; actor: Actor; target: User |}
+    member this.Chat = 
+        match this with
+        | Ban x -> x.chat
+        | Unban x -> x.chat
+    member this.Actor =
+        match this with
+        | Ban x -> x.actor
+        | Unban x -> x.actor
+    member this.Target =
+        match this with
+        | Ban x -> x.target
+        | Unban x -> x.target
 
+let aggregateResultInLogMsg
+    (loggedAction: LoggedAction)
     (logger: ILogger)
-    (deletedUserMessages: int) // 0 for unban
     (results: Result<string * int64, string * int64 * exn> []) =
 
-    let resultType = if isBan then "ban" else "unban"
-    let sanitizedUsername = defaultArg user.Username null |> prependUsername
-    let targetUserId = user.Id
-    let actorDisplayName = defaultArg actorName null |> prependUsername
+    let resultType =
+        match loggedAction with
+        | LoggedAction.Ban _ -> "ban"
+        | LoggedAction.Unban _ -> "unban"
+    
+    let maybeActorId, actorDisplayName =
+        match loggedAction.Actor with
+        | Actor.User u -> Some u.userId, defaultArg u.username null |> prependUsername
+        | Actor.Bot    -> None, "Bot"
+        | Actor.ML     -> None, "ML"
+        | Actor.LLM l  -> None, $"LLM/{l.modelName}"
 
-    let chatName = chat.Username
-    let chatId = chat.Id
+    let sanitizedUsername = defaultArg loggedAction.Target.Username null |> prependUsername
+    let targetUserId = loggedAction.Target.Id
+    let actorIdStr =
+        match maybeActorId with
+        | Some id -> $"({id})"
+        | None -> ""
+
+    let chatName = loggedAction.Chat.Username
+    let chatId = loggedAction.Chat.Id
     
     let logMsgBuilder = StringBuilder()
-    %logMsgBuilder.Append($"Vahter {prependUsername actorDisplayName}({actorId}) {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
+    %logMsgBuilder.Append($"Vahter {prependUsername actorDisplayName}{actorIdStr} {resultType}ned {sanitizedUsername} ({targetUserId}) in {prependUsername chatName}({chatId})")
     
     // we don't want to spam logs channel if all is good
     let allChatsOk = results |> Array.forall Result.isOk
     if allChatsOk then
         %logMsgBuilder.AppendLine " in all chats"
-        if isBan then
-            %logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages"
+        match loggedAction with
+        | LoggedAction.Ban banInfo ->
+            %logMsgBuilder.AppendLine $"Deleted {banInfo.deletedUserMessages} messages"
+        | _ -> ()
     else
-        if isBan then
+        match loggedAction with
+        | LoggedAction.Ban banInfo ->
             %logMsgBuilder.AppendLine ""
-            %logMsgBuilder.AppendLine $"Deleted {deletedUserMessages} messages in chats:"
+            %logMsgBuilder.AppendLine $"Deleted {banInfo.deletedUserMessages} messages in chats:"
+        | _ -> ()
 
         (logMsgBuilder, results)
         ||> Array.fold (fun (sb: StringBuilder) result ->
@@ -193,24 +222,6 @@ let private actorDisplayInfo (actor: Actor) =
     | Actor.Bot    -> 0L, "Bot"
     | Actor.ML     -> 0L, "ML"
     | Actor.LLM l  -> 0L, $"LLM/{l.modelName}"
-
-let aggregateBanResultInLogMsg chat (actor: Actor) user =
-    let actorId, actorName = actorDisplayInfo actor
-    aggregateResultInLogMsg
-        true
-        chat
-        actorId
-        (Some actorName)
-        user
-
-let aggregateUnbanResultInLogMsg chat (actor: Actor) user =
-    let actorId, actorName = actorDisplayInfo actor
-    aggregateResultInLogMsg
-        false
-        chat
-        actorId
-        (Some actorName)
-        user
 
 let softBanResultInLogMsg (msg: TgMessage) (vahter: User) (duration: int) =
     let logMsgBuilder = StringBuilder()
@@ -323,7 +334,11 @@ let totalBan
     do! cleanupCallbacksTask
 
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg msg.Chat actor updatedUser logger deletedUserMessages banResults
+    let logMsg =
+        aggregateResultInLogMsg
+            (LoggedAction.Ban {| chat = msg.Chat; actor = actor; target = updatedUser; deletedUserMessages = deletedUserMessages |})
+            logger
+            banResults
 
     // metrics: count banned user per vahter for successful bans
     let actorId, actorUsername = actorDisplayInfo actor
@@ -448,7 +463,11 @@ let unban
     let! unbanResults = unbanInAllChats botConfig botClient targetUserId
     
     // produce aggregated log message
-    let logMsg = aggregateUnbanResultInLogMsg msg.Chat actor userToUnban logger 0 unbanResults
+    let logMsg =
+        aggregateResultInLogMsg
+            (LoggedAction.Unban {| chat = msg.Chat; actor = actor; target = userToUnban |})
+            logger
+            unbanResults
 
     // log both to logger and to All Logs channel
     do! botClient.SendMessage(
