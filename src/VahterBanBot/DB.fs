@@ -143,21 +143,22 @@ let recordUserReaction (userId: int64) (username: string option) (reactionIncrem
         return state
     }
 
-/// Records a UserBanned event (replaces banUser for writes).
-let recordUserBanned (userId: int64) (bannedBy: BannedBy) : Task<unit> =
+/// Records a UserBanned event with the new Actor format.
+let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (messageText: string option) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
             if state.IsBanned then []   // idempotent — already banned
-            else [ UserBanned {| userId = userId; bannedBy = bannedBy |} ])
+            else [ UserBanned {| userId = userId; bannedBy = None; actor = Some actor
+                                 chatId = Some chatId; messageId = Some messageId; messageText = messageText |} ])
         return ()
     }
 
-/// Records a UserUnbanned event (replaces unbanUser for writes).
-let recordUserUnbanned (userId: int64) (unbannedBy: int64) : Task<unit> =
+/// Records a UserUnbanned event with the new Actor format.
+let recordUserUnbanned (userId: int64) (actor: Actor) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
             if not state.IsBanned then []
-            else [ UserUnbanned {| userId = userId; unbannedBy = unbannedBy |} ])
+            else [ UserUnbanned {| userId = userId; unbannedBy = None; actor = Some actor |} ])
         return ()
     }
 
@@ -600,8 +601,8 @@ ORDER BY MAX(created_at);
         return Array.ofSeq data
     }
 
-let unbanUser (userId: int64) (vahterId: int64): Task =
-    recordUserUnbanned userId vahterId
+let unbanUser (userId: int64) (actor: Actor): Task =
+    recordUserUnbanned userId actor
 
 let markMessageAsFalsePositive (chatId: int64) (messageId: int) (text: string): Task =
     recordMessageMarkedHam chatId messageId (if isNull text then "" else text) None
@@ -628,7 +629,11 @@ WHERE event_type = 'MessageReceived'
         return result
     }
 
-let isBannedByVahter (vahterId: int64) (userId: int64): Task<bool> =
+/// Checks whether a user was auto-banned (by bot, ML, or LLM).
+/// Handles both legacy events (BannedByVahter with bot's vahterId, BannedByAutoBan)
+/// and new Actor-format events (Bot, ML, LLM).
+// TODO: Add index on data->'actor'->>'Case' after old events are migrated to Actor format
+let isAutoBanned (botUserId: int64) (userId: int64): Task<bool> =
     task {
         use conn = new NpgsqlConnection(connString)
 
@@ -639,12 +644,18 @@ SELECT EXISTS(
     SELECT 1 FROM event
     WHERE stream_id = 'user:' || @userId
       AND event_type = 'UserBanned'
-      AND data->'bannedBy'->>'Case' = 'BannedByVahter'
-      AND (data->'bannedBy'->>'vahterId')::BIGINT = @vahterId
+      AND (
+          -- legacy events
+          (data->'bannedBy'->>'Case' = 'BannedByVahter' AND (data->'bannedBy'->>'vahterId')::BIGINT = @botUserId)
+          OR data->'bannedBy'->>'Case' = 'BannedByAutoBan'
+          OR data->'bannedBy'->>'Case' = 'BannedByAI'
+          -- new Actor-format events
+          OR data->'actor'->>'Case' IN ('Bot', 'ML', 'LLM')
+      )
 )
             """
 
-        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; vahterId = vahterId |})
+        let! result = conn.QuerySingleAsync<bool>(sql, {| userId = userId; botUserId = botUserId |})
         return result
     }
 

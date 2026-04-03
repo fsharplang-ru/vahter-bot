@@ -312,8 +312,13 @@ WHERE event_type = 'MessageReceived'
 SELECT EXISTS (
     SELECT 1 FROM event ub
     WHERE ub.event_type = 'UserBanned'
-      AND (ub.data->'bannedBy'->>'chatId')::BIGINT = @chatId
-      AND (ub.data->'bannedBy'->>'messageId')::INT = @messageId
+      AND (
+          (ub.data->'bannedBy'->>'chatId')::BIGINT = @chatId
+          AND (ub.data->'bannedBy'->>'messageId')::INT = @messageId
+        OR
+          (ub.data->>'chatId')::BIGINT = @chatId
+          AND (ub.data->>'messageId')::INT = @messageId
+      )
       AND NOT EXISTS (
           SELECT 1 FROM event uub
           WHERE uub.event_type = 'UserUnbanned'
@@ -333,7 +338,8 @@ SELECT EXISTS (
 SELECT COUNT(*) FROM event
 WHERE stream_id   = 'user:' || @userId
   AND event_type  = 'UserBanned'
-  AND data->'bannedBy'->>'Case' = 'BannedByVahter'
+  AND (data->'actor'->>'Case' = 'User'
+       OR data->'bannedBy'->>'Case' = 'BannedByVahter')
             """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
@@ -419,7 +425,8 @@ SELECT EXISTS (
 SELECT COUNT(*) FROM event
 WHERE stream_id  = 'user:' || @userId
   AND event_type = 'UserBanned'
-  AND data->'bannedBy'->>'Case' = 'BannedByAutoBan'
+  AND (data->'actor'->>'Case' IN ('Bot', 'ML')
+       OR data->'bannedBy'->>'Case' = 'BannedByAutoBan')
             """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
@@ -433,7 +440,8 @@ WHERE stream_id  = 'user:' || @userId
 SELECT COUNT(*) FROM event
 WHERE stream_id  = 'user:' || @userId
   AND event_type = 'UserBanned'
-  AND data->'bannedBy'->>'Case' = 'BannedByAI'
+  AND (data->'actor'->>'Case' = 'LLM'
+       OR data->'bannedBy'->>'Case' = 'BannedByAI')
             """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0

@@ -481,7 +481,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
             let! _ = fixture.SendMessage msgCallback
             
             // User should not be banned yet (score is -1, -2, -3)
-            let! userBanned = fixture.UserBanned user.Id
+            let! userBanned = fixture.UserBannedByBot user.Id
             Assert.False(userBanned, $"User should not be banned after {i} soft spam marks (score={-i})")
         
         // 4th soft spam should trigger auto-ban (score becomes -4 which is <= -4.0 threshold)
@@ -493,7 +493,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgCallback
         
         // Now user should be auto-banned due to low karma (score=-4 <= threshold=-4)
-        let! userBanned = fixture.UserBanned user.Id
+        let! userBanned = fixture.UserBannedByBot user.Id
         Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
     }
 

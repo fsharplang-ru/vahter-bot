@@ -27,6 +27,18 @@ type ConcurrencyConflict = ConcurrencyConflict
 // Shared value types
 // ---------------------------------------------------------------------------
 
+// TODO: Add [<RequireQualifiedAccess>] to all DUs in the codebase for easier readability
+
+/// Represents WHO made a decision (ban, unban, triage, etc.)
+[<RequireQualifiedAccess>]
+type Actor =
+    | User of {| userId: int64; username: string option |}
+    | Bot   // deterministic code decisions (heuristic rules, static logic)
+    | ML    // ML model predictions (karma scoring, neural networks)
+    | LLM of {| modelName: string; promptHash: string |}  // external LLM hosted in Azure
+
+/// Legacy — will be removed after old events are migrated to Actor format.
+/// Only used for deserializing old UserBanned events that were written before Actor existed.
 type BannedBy =
     | BannedByVahter of {| vahterId: int64; vahterUsername: string option; chatId: int64; messageId: int; messageText: string option |}
     | BannedByAutoBan of {| chatId: int64; messageText: string option |}
@@ -51,22 +63,33 @@ type LlmVerdict =
 
 type UserEvent =
     | UsernameChanged      of {| userId: int64; username: string option |}
-    | UserBanned           of {| userId: int64; bannedBy: BannedBy |}
-    | UserUnbanned         of {| userId: int64; unbannedBy: int64 |}
+    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option |}
+    | UserUnbanned         of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
     | UserReactionRecorded of {| userId: int64; delta: int |}
 
 type User =
     { Id:            int64
-      BannedBy:      BannedBy option
+      BannedByActor: Actor option
       Username:      string option
       ReactionCount: int }
-    member this.IsBanned = this.BannedBy.IsSome
-    static member Zero = { Id = 0L; BannedBy = None; Username = None; ReactionCount = 0 }
+    member this.IsBanned = this.BannedByActor.IsSome
+    static member Zero = { Id = 0L; BannedByActor = None; Username = None; ReactionCount = 0 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
         | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
-        | UserBanned e           -> { state with Id = e.userId; BannedBy = Some e.bannedBy }
-        | UserUnbanned e         -> { state with Id = e.userId; BannedBy = None }
+        | UserBanned e           ->
+            let actor =
+                match e.actor with
+                | Some a -> a
+                | None ->
+                    // backward compat: derive Actor from legacy BannedBy
+                    match e.bannedBy with
+                    | Some (BannedByVahter v) -> Actor.User {| userId = v.vahterId; username = v.vahterUsername |}
+                    | Some (BannedByAutoBan _) -> Actor.Bot
+                    | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
+                    | None -> Actor.Bot
+            { state with Id = e.userId; BannedByActor = Some actor }
+        | UserUnbanned e         -> { state with Id = e.userId; BannedByActor = None }
         | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
 
     static member fromTgUser (user: Telegram.Bot.Types.User) =
