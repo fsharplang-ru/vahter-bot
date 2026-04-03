@@ -69,8 +69,8 @@ type SpamClassification =
     | Ham
 
 type MessageEvent =
-    | MessageReceived    of {| chatId: int64; messageId: int; userId: int64; text: string; rawMessage: string |}
-    | MessageEdited      of {| chatId: int64; messageId: int; userId: int64; text: string; rawMessage: string |}
+    | MessageReceived    of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: string |}
+    | MessageEdited      of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: string |}
     | MessageDeleted     of {| chatId: int64; messageId: int; deletedBy: int64 |}
     | MessageMarkedSpam  of {| chatId: int64; messageId: int; markedBy: int64 option |}
     | MessageMarkedHam   of {| chatId: int64; messageId: int; text: string; markedBy: int64 option |}

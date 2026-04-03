@@ -115,6 +115,20 @@ type Tg() =
                 else null
         )
 
+    /// Creates an edit-only Update referencing an existing message's chat+id.
+    static member editMsg (msg: Message, ?text: string) =
+        Update(
+            Id = next(),
+            EditedMessage =
+                Message(
+                    Id = msg.Id,
+                    Text = (text |> Option.defaultValue msg.Text),
+                    Chat = msg.Chat,
+                    From = msg.From,
+                    Date = DateTime.UtcNow
+                )
+        )
+
     static member replyMsg (msg: Message, ?text: string, ?from: User, ?date: DateTime) =
         Update(
             Id = next(),
