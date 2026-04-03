@@ -68,7 +68,7 @@ Respond with exactly: {"verdict":"KILL"} or {"verdict":"SPAM"} or {"verdict":"NO
         member _.PromptHash = promptHash
 
         member _.Classify(msg: TgMessage, userMsgCount: int64, ct: CancellationToken) = task {
-            if not botConf.LlmTriageEnabled then return LlmVerdict.Error
+            if not botConf.LlmTriageEnabled then return LlmVerdict.Skip
             else
 
             use activity = botActivity.StartActivity("llmTriage")
@@ -139,12 +139,7 @@ Message:
                             msg.ChatId msg.MessageId verdictStr
                             promptTokens completionTokens (int sw.ElapsedMilliseconds)
                             (Some modelName) (Some promptHash)
-                    return
-                        match verdictStr with
-                        | "KILL"     -> LlmVerdict.Kill
-                        | "NOT_SPAM" -> LlmVerdict.NotSpam
-                        | "SPAM"     -> LlmVerdict.Skip
-                        | _          -> LlmVerdict.Error
+                    return LlmVerdict.FromString verdictStr
                 | None ->
                     // warning already logged in parseResponse
                     return LlmVerdict.Error

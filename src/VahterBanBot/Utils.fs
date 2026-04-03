@@ -4,8 +4,13 @@ open System
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
+open Microsoft.FSharp.Reflection
 
 let inline (~%) x = ignore x
+
+let caseName (x: 'a) =
+    let case, _ = FSharpValue.GetUnionFields(x, x.GetType())
+    case.Name
 
 let getEnv name =
     let value = Environment.GetEnvironmentVariable name

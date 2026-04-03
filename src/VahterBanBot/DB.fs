@@ -19,12 +19,9 @@ let private connString = getEnv "DATABASE_URL"
 
 open System.Text.Json
 
-/// Alias for the shared event JSON options defined in Types.
-let fsharpJsonOpts = eventJsonOpts
-
 /// Deserializes data JSON → DU event.
 let deserializeEvent<'Event> (raw: RawEvent) : 'Event =
-    JsonSerializer.Deserialize<'Event>(raw.data, options = fsharpJsonOpts)
+    JsonSerializer.Deserialize<'Event>(raw.data, options = eventJsonOpts)
 
 /// SRTP helper — folds raw events into aggregate state using Fold/Zero from the state type.
 let inline foldEvents<'Event, 'State
@@ -77,7 +74,7 @@ RETURNING id
             """
         let mutable insertedCount = 0
         for (i, e) in events |> List.indexed do
-            let data = JsonSerializer.Serialize<'Event>(e, fsharpJsonOpts)
+            let data = JsonSerializer.Serialize<'Event>(e, eventJsonOpts)
             let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data |})
             insertedCount <- insertedCount + Seq.length rows
         if insertedCount < events.Length then
@@ -863,12 +860,6 @@ WHERE job_name = @jobName;
         let! _ = conn.ExecuteAsync(sql, {| jobName = jobName |})
         return ()
     }
-
-/// Records an LLM triage verdict via event stream.
-let insertLlmTriage
-    (chatId: int64) (messageId: int) (_userId: int64)
-    (verdict: string) (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task =
-    recordLlmClassified chatId messageId verdict promptTokens completionTokens latencyMs None None
 
 /// Gets LLM triage stats from the event table, joined with VahterActed events for accuracy.
 let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =

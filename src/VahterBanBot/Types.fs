@@ -28,7 +28,7 @@ type ConcurrencyConflict = ConcurrencyConflict
 // ---------------------------------------------------------------------------
 
 type BannedBy =
-    | BannedByVahter of {| vahterId: int64; chatId: int64; messageId: int; messageText: string option |}
+    | BannedByVahter of {| vahterId: int64; vahterUsername: string option; chatId: int64; messageId: int; messageText: string option |}
     | BannedByAutoBan of {| chatId: int64; messageText: string option |}
     | BannedByAI of {| chatId: int64; messageId: int; messageText: string option; modelName: string; promptHash: string |}
 
@@ -38,6 +38,12 @@ type LlmVerdict =
     | NotSpam
     | Skip    // LLM "SPAM" verdict — message goes to human triage
     | Error   // HTTP failure or parse error — falls back to human triage
+    static member FromString(verdictStr: string) =
+        match verdictStr with
+        | "KILL"     -> LlmVerdict.Kill
+        | "NOT_SPAM" -> LlmVerdict.NotSpam
+        | "SPAM"     -> LlmVerdict.Skip
+        | _          -> LlmVerdict.Error
 
 // ---------------------------------------------------------------------------
 // Per-stream event DUs
