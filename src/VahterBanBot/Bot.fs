@@ -3,6 +3,7 @@ module VahterBanBot.Bot
 open System
 open System.Diagnostics
 open System.Text
+open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Telegram.Bot
@@ -222,14 +223,30 @@ let totalBan
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (msg: TgMessage)
-    (vahter: User)
+    (bannedBy: BannedBy)
     (logger: ILogger) = task {
     use banOnReplyActivity = botActivity.StartActivity("totalBan")
+    let bannedByTag =
+        match bannedBy with
+        | BannedByVahter _ -> "BannedByVahter"
+        | BannedByAutoBan _ -> "BannedByAutoBan"
+        | BannedByAI _ -> "BannedByAI"
+    let actorId =
+        match bannedBy with
+        | BannedByVahter v -> v.vahterId
+        | BannedByAutoBan _ -> botConfig.BotUserId
+        | BannedByAI _ -> 0L
     %banOnReplyActivity
-        .SetTag("vahterId", vahter.Id)
-        .SetTag("vahterUsername", (defaultArg vahter.Username null))
+        .SetTag("bannedBy", bannedByTag)
+        .SetTag("vahterId", actorId)
         .SetTag("targetId", msg.SenderId)
         .SetTag("targetUsername", msg.SenderUsername)
+    match bannedBy with
+    | BannedByAI a ->
+        %banOnReplyActivity
+            .SetTag("modelName", a.modelName)
+            .SetTag("promptHash", a.promptHash)
+    | _ -> ()
         
     // delete message
     let deleteMsgTask = task {
@@ -303,19 +320,25 @@ let totalBan
     let! deletedUserMessages = deletedUserMessagesTask
     do! cleanupCallbacksTask
     
+    // derive actor user for log message (username may not be available for non-vahter bans)
+    let actorUser =
+        match bannedBy with
+        | BannedByVahter v -> { User.Zero with Id = v.vahterId }
+        | BannedByAutoBan _ -> { User.Zero with Id = botConfig.BotUserId; Username = Some botConfig.BotUserName }
+        | BannedByAI a -> { User.Zero with Id = 0L; Username = Some $"AI/{a.modelName}" }
+
     // produce aggregated log message
-    let logMsg = aggregateBanResultInLogMsg msg.Chat vahter updatedUser logger deletedUserMessages banResults
+    let logMsg = aggregateBanResultInLogMsg msg.Chat actorUser updatedUser logger deletedUserMessages banResults
 
     // metrics: count banned user per vahter for successful bans
-    let vahterUsername = defaultArg vahter.Username null
-    bannedUsersCounter.Add(1L, tagsForVahter vahter.Id vahterUsername)
-    
+    let actorUsername = defaultArg actorUser.Username null
+    bannedUsersCounter.Add(1L, tagsForVahter actorUser.Id actorUsername)
+
     // add ban record to DB
     // NOTE: This writes to user:{userId} stream — separate from moderation:{chatId}:{messageId}.
     // Cross-stream writes are not atomic (standard ES tradeoff). If the process crashes between
     // writing moderation and user events, one stream may be ahead. This is acceptable because
     // recordUserBanned is idempotent (skips if already banned) and can be retried.
-    let bannedBy = BannedByVahter {| vahterId = vahter.Id; chatId = msg.ChatId; messageId = msg.MessageId; messageText = Option.ofObj msg.Text |}
     do! DB.recordUserBanned msg.SenderId bannedBy
 
     // log both to logger and to All Logs channel
@@ -349,11 +372,12 @@ let banOnReply
     
     if actionRecorded then
         %banOnReplyActivity.SetTag("actionRecorded", true)
+        let bannedBy = BannedByVahter {| vahterId = vahter.Id; chatId = targetMsg.ChatId; messageId = targetMsg.MessageId; messageText = Option.ofObj targetMsg.Text |}
         do! totalBan
                 botClient
                 botConfig
                 targetMsg
-                vahter
+                bannedBy
                 logger
     else
         %banOnReplyActivity.SetTag("actionRecorded", false)
@@ -537,8 +561,9 @@ let checkAndAutoBan
         %banOnReplyActivity.SetTag("socialScore", socialScore)
         
         if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
-            // ban user in all monitored chats
-            do! totalBan botClient botConfig msg botUser logger
+            // ban user in all monitored chats (bot acts as the banning vahter)
+            let bannedBy = BannedByVahter {| vahterId = botUser.Id; chatId = msg.ChatId; messageId = msg.MessageId; messageText = Option.ofObj msg.Text |}
+            do! totalBan botClient botConfig msg bannedBy logger
             let logStr = $"Auto-banned user {prependUsername msg.SenderUsername} ({msg.SenderId}) due to the low social score {socialScore}"
             logger.LogInformation logStr
             do! botClient.SendMessage(
@@ -749,10 +774,24 @@ let justMessage
                     // trigger auto-ban check (checkAndAutoBan handles MlSpamAutobanEnabled internally)
                     do! autoBan botUser botClient botConfig msg logger
                 elif prediction.Score >= botConfig.MlWarningThreshold then
-                    // just warn — send to triage channel; shadow-classify with LLM for accuracy tracking
-                    do! killSpammerAutomated botClient botConfig msg logger false (MlSpam {| score = float prediction.Score |})
-                    // shadow-classify with LLM (fire-and-forget, best-effort, does not block pipeline)
-                    fireAndForget logger 60_000 "llmTriage" (fun ct -> llmTriage.Classify(msg, usrMsgCount, ct))
+                    // LLM is the primary decision maker for warning-range messages
+                    use cts = new CancellationTokenSource(TimeSpan.FromSeconds 60.)
+                    let! verdict = llmTriage.Classify(msg, usrMsgCount, cts.Token)
+                    match verdict with
+                    | LlmVerdict.Kill ->
+                        // Post to detected spam channel for human oversight (NOT SPAM override) + ban user
+                        do! killSpammerAutomated botClient botConfig msg logger true (MlSpam {| score = float prediction.Score |})
+                        let bannedBy = BannedByAI {| chatId = msg.ChatId; messageId = msg.MessageId
+                                                     messageText = Option.ofObj msg.Text
+                                                     modelName = llmTriage.ModelName
+                                                     promptHash = llmTriage.PromptHash |}
+                        do! totalBan botClient botConfig msg bannedBy logger
+                    | LlmVerdict.NotSpam ->
+                        // LlmClassified event already recorded inside Classify; no further action
+                        ()
+                    | LlmVerdict.Skip | LlmVerdict.Error ->
+                        // SPAM verdict or LLM failure — send to human triage
+                        do! killSpammerAutomated botClient botConfig msg logger false (MlSpam {| score = float prediction.Score |})
                 else
                     // not a spam
                     ()
@@ -1056,11 +1095,12 @@ let vahterMarkedAsSpam
 
     let isAuthed = isBanAuthorized botConfig tgMsg vahter logger
     if isAuthed then
+        let bannedBy = BannedByVahter {| vahterId = vahter.Id; chatId = tgMsg.ChatId; messageId = tgMsg.MessageId; messageText = Option.ofObj tgMsg.Text |}
         do! totalBan
                 botClient
                 botConfig
                 tgMsg
-                vahter
+                bannedBy
                 logger
 }
 

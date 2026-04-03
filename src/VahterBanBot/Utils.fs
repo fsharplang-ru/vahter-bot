@@ -66,29 +66,6 @@ type Telegram.Bot.Types.Update with
         else
             msg.EditedMessage
 
-/// Runs an async action fire-and-forget style on the thread pool.
-/// The action receives a CancellationToken — pass it to HttpClient and other I/O so
-/// the work is cancelled when the timeout fires.
-/// Any exception is logged; the caller is never affected.
-let fireAndForget
-    (logger: ILogger)
-    (timeoutMs: int)
-    (taskName: string)
-    (action: CancellationToken -> Task) : unit =
-    let _ =
-        Task.Run(fun () ->
-            let work = task {
-                use cts = new CancellationTokenSource(timeoutMs)
-                try
-                    do! action cts.Token
-                with
-                | :? OperationCanceledException ->
-                    logger.LogWarning("Fire-and-forget task '{TaskName}' timed out or was cancelled", taskName)
-                | ex ->
-                    logger.LogError(ex, "Fire-and-forget task '{TaskName}' failed", taskName)
-            }
-            work :> Task)
-    ()
 
 // needed for STJ
 let jsonOptions =

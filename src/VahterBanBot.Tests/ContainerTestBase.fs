@@ -424,6 +424,20 @@ WHERE stream_id  = 'user:' || @userId
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
     }
+
+    member _.UserBannedByAI(userId: int64) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id  = 'user:' || @userId
+  AND event_type = 'UserBanned'
+  AND data->'bannedBy'->>'Case' = 'BannedByAI'
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
     
     member _.GetUserReactionCount(userId: int64) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
@@ -482,18 +496,34 @@ WHERE event_type = 'LlmClassified'
         return verdicts |> Seq.tryHead
     }
 
-    /// Polls for the LLM triage verdict with retries (fireAndForget is async).
-    member this.WaitForLlmTriageVerdict(msg: TgMsg, ?maxRetries: int, ?delayMs: int) = task {
-        let maxRetries = defaultArg maxRetries 10
-        let delayMs = defaultArg delayMs 500
-        let mutable result = None
-        let mutable attempt = 0
-        while result.IsNone && attempt < maxRetries do
-            do! Task.Delay delayMs
-            let! verdict = this.TryGetLlmTriageVerdict(msg)
-            result <- verdict
-            attempt <- attempt + 1
-        return result
+    /// Gets the modelName from the LlmClassified event for a message (None if event absent or field missing).
+    member _.TryGetLlmClassifiedModelName(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'modelName' FROM event
+WHERE event_type = 'LlmClassified'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! values = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return values |> Seq.tryHead
+    }
+
+    /// Gets the promptHash from the LlmClassified event for a message (None if event absent or field missing).
+    member _.TryGetLlmClassifiedPromptHash(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'promptHash' FROM event
+WHERE event_type = 'LlmClassified'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! values = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return values |> Seq.tryHead
     }
 
     /// Gets the ML score recorded for a message via MlScoredMessage event.

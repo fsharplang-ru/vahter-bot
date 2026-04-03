@@ -18,15 +18,9 @@ let private connString = getEnv "DATABASE_URL"
 // ---------------------------------------------------------------------------
 
 open System.Text.Json
-open System.Text.Json.Serialization
 
-let fsharpJsonOpts =
-    JsonFSharpOptions.Default()
-        .WithUnionInternalTag()
-        .WithUnionUnwrapRecordCases()
-        .WithUnionNamedFields()
-        .WithUnwrapOption()
-        .ToJsonSerializerOptions()
+/// Alias for the shared event JSON options defined in Types.
+let fsharpJsonOpts = eventJsonOpts
 
 /// Deserializes data JSON → DU event.
 let deserializeEvent<'Event> (raw: RawEvent) : 'Event =
@@ -236,13 +230,17 @@ let recordMlScoredMessage
     }
 
 /// Records an LlmClassified event (replaces insertLlmTriage for writes).
+// TODO: once all historical LlmClassified events have been backfilled with modelName and
+// promptHash, the option wrappers can be removed from those fields.
 let recordLlmClassified
     (chatId: int64) (messageId: int) (verdict: string)
-    (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task<unit> =
+    (promptTokens: int) (completionTokens: int) (latencyMs: int)
+    (modelName: string option) (promptHash: string option) : Task<unit> =
     task {
         let! _ = appendEvent $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
             [ LlmClassified {| chatId = chatId; messageId = messageId; verdict = verdict
-                               promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs |} ])
+                               promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
+                               modelName = modelName; promptHash = promptHash |} ])
         return ()
     }
 
@@ -870,7 +868,7 @@ WHERE job_name = @jobName;
 let insertLlmTriage
     (chatId: int64) (messageId: int) (_userId: int64)
     (verdict: string) (promptTokens: int) (completionTokens: int) (latencyMs: int) : Task =
-    recordLlmClassified chatId messageId verdict promptTokens completionTokens latencyMs
+    recordLlmClassified chatId messageId verdict promptTokens completionTokens latencyMs None None
 
 /// Gets LLM triage stats from the event table, joined with VahterActed events for accuracy.
 let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =

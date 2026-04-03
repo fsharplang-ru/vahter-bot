@@ -30,6 +30,14 @@ type ConcurrencyConflict = ConcurrencyConflict
 type BannedBy =
     | BannedByVahter of {| vahterId: int64; chatId: int64; messageId: int; messageText: string option |}
     | BannedByAutoBan of {| chatId: int64; messageText: string option |}
+    | BannedByAI of {| chatId: int64; messageId: int; messageText: string option; modelName: string; promptHash: string |}
+
+[<RequireQualifiedAccess>]
+type LlmVerdict =
+    | Kill
+    | NotSpam
+    | Skip    // LLM "SPAM" verdict — message goes to human triage
+    | Error   // HTTP failure or parse error — falls back to human triage
 
 // ---------------------------------------------------------------------------
 // Per-stream event DUs
@@ -142,7 +150,7 @@ type Callback =
 
 type DetectionEvent =
     | MlScoredMessage          of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
-    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int |}
+    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
     | InvisibleMentionDetected of {| chatId: int64; messageId: int; userId: int64 |}
 
 type Detection =
@@ -259,6 +267,18 @@ type CallbackMessage =
     | NotASpam of MessageWrapper
     | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
     | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
+
+/// JSON serializer options for event store (de)serialization.
+/// Uses internal tag, unwrapped record cases, named fields, and unwrapped options.
+/// WithSkippableOptionFields ensures missing JSONB keys deserialize as None (not an error).
+let eventJsonOpts =
+    JsonFSharpOptions.Default()
+        .WithUnionInternalTag()
+        .WithUnionUnwrapRecordCases()
+        .WithUnionNamedFields()
+        .WithUnwrapOption()
+        .WithSkippableOptionFields()
+        .ToJsonSerializerOptions()
 
 // Callback data serialization uses different JSON options (Telegram-aware)
 let private callbackJsonOpts =
