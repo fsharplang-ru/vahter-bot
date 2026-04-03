@@ -60,6 +60,27 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
     }
 
     [<Fact>]
+    let ``Editing a media message stored with null text succeeds`` () = task {
+        let chat = fixture.ChatsToMonitor[0]
+
+        // Send photo-only message (no text) — bot records MessageReceived with text = null
+        let original = Tg.quickMsg(chat = chat, text = null, photos = [| Tg.hamPhoto |])
+        let! _ = fixture.SendMessage original
+
+        let! dbMsg = fixture.TryGetDbMessage original.Message
+        Assert.Null(dbMsg.Value.text)
+
+        // Send edit update for the same message
+        let editUpdate = Tg.editMsg(original.Message, text = "caption added on edit")
+        let! resp = fixture.SendMessage editUpdate
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
+
+        // Assert MessageEdited event was recorded
+        let! editRecorded = fixture.MessageEditedRecorded(chat.Id, original.Message.MessageId)
+        Assert.True editRecorded
+    }
+
+    [<Fact>]
     let ``Message reaction update returns OK`` () = task {
         // first send a message to have a valid message_id
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0])

@@ -171,7 +171,7 @@ let recordUserUnbanned (userId: int64) (unbannedBy: int64) : Task<unit> =
     }
 
 /// Records a MessageReceived event (replaces insertMessage for writes).
-let recordMessageReceived (chatId: int64) (messageId: int) (userId: int64) (text: string) (rawMessage: string) : Task<unit> =
+let recordMessageReceived (chatId: int64) (messageId: int) (userId: int64) (text: string option) (rawMessage: string) : Task<unit> =
     task {
         let! _ = appendEvent $"message:{chatId}:{messageId}" (fun state ->
             if state.Received then []
@@ -180,7 +180,7 @@ let recordMessageReceived (chatId: int64) (messageId: int) (userId: int64) (text
     }
 
 /// Records a MessageEdited event (appends to existing message stream).
-let recordMessageEdited (chatId: int64) (messageId: int) (userId: int64) (text: string) (rawMessage: string) : Task<unit> =
+let recordMessageEdited (chatId: int64) (messageId: int) (userId: int64) (text: string option) (rawMessage: string) : Task<unit> =
     task {
         let! _ = appendEvent $"message:{chatId}:{messageId}" (fun (_: Message) ->
             [ MessageEdited {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = rawMessage |} ])
@@ -264,7 +264,7 @@ let insertMessage (msg: TgMessage): Task =
     task {
         do! recordUsernameChanged msg.SenderId (Option.ofObj msg.SenderUsername)
         do! recordMessageReceived msg.ChatId msg.MessageId msg.SenderId
-                msg.Text
+                (Option.ofObj msg.Text)
                 msg.RawJson
     }
 
@@ -272,7 +272,7 @@ let editMessage (msg: TgMessage): Task =
     task {
         do! recordUsernameChanged msg.SenderId (Option.ofObj msg.SenderUsername)
         do! recordMessageEdited msg.ChatId msg.MessageId msg.SenderId
-                msg.Text
+                (Option.ofObj msg.Text)
                 msg.RawJson
     }
 

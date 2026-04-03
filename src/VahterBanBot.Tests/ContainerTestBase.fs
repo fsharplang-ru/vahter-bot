@@ -339,6 +339,20 @@ WHERE stream_id   = 'user:' || @userId
         return count > 0
     }
 
+    member _.MessageEditedRecorded(chatId: int64, messageId: int) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'MessageEdited'
+  AND (data->>'chatId')::BIGINT = @chatId
+  AND (data->>'messageId')::INT  = @messageId
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = chatId; messageId = messageId |})
+        return count > 0
+    }
+
     member _.MessageIsAutoDeleted(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(publicConnectionString)
         //language=postgresql
