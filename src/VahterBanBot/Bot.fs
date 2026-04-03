@@ -172,10 +172,11 @@ let aggregateResultInLogMsg
     
     let maybeActorId, actorDisplayName =
         match loggedAction.Actor with
-        | Actor.User u -> Some u.userId, defaultArg u.username null |> prependUsername
-        | Actor.Bot    -> None, "Bot"
-        | Actor.ML     -> None, "ML"
-        | Actor.LLM l  -> None, $"LLM/{l.modelName}"
+        | Actor.User u       -> Some u.userId, defaultArg u.username null |> prependUsername
+        | Actor.Bot None     -> None, "Bot"
+        | Actor.Bot (Some b) -> Some b.botUserId, b.botUsername |> prependUsername
+        | Actor.ML           -> None, "ML"
+        | Actor.LLM l        -> None, $"LLM/{l.modelName}"
 
     let sanitizedUsername = defaultArg loggedAction.Target.Username null |> prependUsername
     let targetUserId = loggedAction.Target.Id
@@ -215,13 +216,6 @@ let aggregateResultInLogMsg
                 sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - FAILED. {e.Message}")
         ) |> ignore
     string logMsgBuilder
-
-let private actorDisplayInfo (actor: Actor) =
-    match actor with
-    | Actor.User u -> u.userId, defaultArg u.username null
-    | Actor.Bot    -> 0L, "Bot"
-    | Actor.ML     -> 0L, "ML"
-    | Actor.LLM l  -> 0L, $"LLM/{l.modelName}"
 
 let softBanResultInLogMsg (msg: TgMessage) (vahter: User) (duration: int) =
     let logMsgBuilder = StringBuilder()
@@ -341,8 +335,7 @@ let totalBan
             banResults
 
     // metrics: count banned user per vahter for successful bans
-    let actorId, actorUsername = actorDisplayInfo actor
-    bannedUsersCounter.Add(1L, tagsForVahter actorId actorUsername)
+    bannedUsersCounter.Add(1L, tagsForVahter actor)
 
     // add ban record to DB
     // NOTE: This writes to user:{userId} stream — separate from moderation:{chatId}:{messageId}.
@@ -659,10 +652,11 @@ let totalBanByReaction
     // Record the auto-deletion and ban events (cross-stream, not atomic — see totalBan comment)
     do! DB.recordBotAutoDeleted reaction.Chat.Id reaction.MessageId targetUser.Id (ReactionSpam {| reactionCount = targetUser.ReactionCount |})
     // No messageText for reaction spam — the ban reason is in the BotAutoDeleted event
-    do! DB.recordUserBanned targetUser.Id Actor.Bot reaction.Chat.Id reaction.MessageId None
+    let actor = Actor.Bot (Some {| botUserId = botConfig.BotUserId; botUsername = botConfig.BotUserName |})
+    do! DB.recordUserBanned targetUser.Id actor reaction.Chat.Id reaction.MessageId None
     
     // metrics
-    bannedUsersCounter.Add(1L, tagsForVahter botConfig.BotUserId botConfig.BotUserName)
+    bannedUsersCounter.Add(1L, tagsForVahter actor)
     
     // produce log message
     let sanitizedUsername = defaultArg targetUser.Username null |> prependUsername

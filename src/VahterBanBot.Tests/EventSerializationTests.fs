@@ -114,7 +114,7 @@ let ``Old UserBanned with BannedByAutoBan folds into Actor.Bot`` () =
     let user = [event] |> List.fold (fun s e -> User.Fold(s, e)) User.Zero
     Assert.True(user.IsBanned)
     match user.BannedByActor with
-    | Some Actor.Bot -> ()
+    | Some (Actor.Bot None) -> ()
     | other -> Assert.Fail $"Expected Actor.Bot but got {other}"
 
 [<Fact>]

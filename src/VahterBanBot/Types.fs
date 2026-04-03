@@ -33,7 +33,7 @@ type ConcurrencyConflict = ConcurrencyConflict
 [<RequireQualifiedAccess>]
 type Actor =
     | User of {| userId: int64; username: string option |}
-    | Bot   // deterministic code decisions (heuristic rules, static logic)
+    | Bot of {| botUserId: int64; botUsername: string |} option   // deterministic code decisions (heuristic rules, static logic)
     | ML    // ML model predictions (karma scoring, neural networks)
     | LLM of {| modelName: string; promptHash: string |}  // external LLM hosted in Azure
 
@@ -85,9 +85,9 @@ type User =
                     // backward compat: derive Actor from legacy BannedBy
                     match e.bannedBy with
                     | Some (BannedByVahter v) -> Actor.User {| userId = v.vahterId; username = v.vahterUsername |}
-                    | Some (BannedByAutoBan _) -> Actor.Bot
+                    | Some (BannedByAutoBan _) -> Actor.Bot None
                     | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
-                    | None -> Actor.Bot
+                    | None -> Actor.Bot None
             { state with Id = e.userId; BannedByActor = Some actor }
         | UserUnbanned e         -> { state with Id = e.userId; BannedByActor = None }
         | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
