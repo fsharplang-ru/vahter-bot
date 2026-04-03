@@ -616,4 +616,36 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.True msgBanned
     }
 
+    [<Fact>]
+    let ``Unbanned user messages are not deleted`` () = task {
+        // Regression: isAutoBanned checked for existence of UserBanned events,
+        // ignoring subsequent UserUnbanned events. After auto-ban + unban,
+        // new messages were silently deleted instead of processed normally.
+        let user = Tg.user()
+        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+
+        // Trigger auto-ban: 4 consecutive spam messages hit karma threshold
+        for _ in 1..4 do
+            let! _ = fixture.SendMessage spam
+            ()
+
+        let! userBanned = fixture.UserBannedByBot user.Id
+        Assert.True(userBanned, "User should be auto-banned after 4 spam messages")
+
+        // Unban the user
+        let! unbanResp =
+            Tg.quickMsg($"/unban {user.Id}", chat = fixture.ChatsToMonitor[0], from = fixture.Vahters[0])
+            |> fixture.SendMessage
+        Assert.Equal(System.Net.HttpStatusCode.OK, unbanResp.StatusCode)
+
+        // Send an innocuous message after unban
+        let newMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello after unban", from = user)
+        let! _ = fixture.SendMessage newMsg
+
+        // With the fix, processMessage runs → ML scores the message.
+        // With the bug, isAutoBanned short-circuits → no ML scoring.
+        let! mlScore = fixture.GetMlScore newMsg.Message
+        Assert.True(mlScore.IsSome, "Message from unbanned user should be ML-scored, not short-circuited by stale ban check")
+    }
+
     interface IClassFixture<MlAwaitFixture>

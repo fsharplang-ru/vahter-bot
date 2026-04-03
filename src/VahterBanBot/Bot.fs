@@ -704,7 +704,7 @@ let llmTriageWarning
         do! killSpammerAutomated botClient botConfig msg logger false (MlSpam {| score = float mlScore |})
 }
 
-let justMessage
+let processMessage
     (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
@@ -712,23 +712,6 @@ let justMessage
     (ml: MachineLearning)
     (llmTriage: ILlmTriage)
     (msg: TgMessage) = task {
-
-    use _ =
-        botActivity
-            .StartActivity("justMessage")
-            .SetTag("fromUserId", msg.SenderId)
-            .SetTag("fromUsername", msg.SenderUsername)
-
-    // check if user got auto-banned already
-    // that could happen due to the race condition between spammers mass messages
-    // and the bot's processing queue
-    let! isAutoBanned = DB.isAutoBanned botUser.Id msg.SenderId 
-    if isAutoBanned then
-        // just delete message and move on
-        recordDeletedMessage msg.ChatId msg.ChatUsername "alreadyAutoBanned"
-        do! botClient.DeleteMessage(ChatId(msg.ChatId), msg.MessageId)
-            |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msg.MessageId} from chat {msg.ChatId}", e))
-
     let containsInvisibleMention =
         // Define all zero-width and whitespace-like characters to check
         let zeroWidthChars =
@@ -813,6 +796,48 @@ let justMessage
             | None ->
                 // no prediction (error or not ready yet)
                 ()
+}
+
+let justMessage
+    (botUser: User)
+    (botClient: ITelegramBotClient)
+    (botConfig: BotConfiguration)
+    (logger: ILogger)
+    (ml: MachineLearning)
+    (llmTriage: ILlmTriage)
+    (msg: TgMessage) = task {
+
+    use _ =
+        botActivity
+            .StartActivity("justMessage")
+            .SetTag("fromUserId", msg.SenderId)
+            .SetTag("fromUsername", msg.SenderUsername)
+
+    // check if user got auto-banned already
+    // that could happen due to the race condition between spammers mass messages
+    // and the bot's processing queue
+    let! user = DB.getUserById msg.SenderId
+    if user |> Option.exists _.IsBanned then
+        // just delete message and move on
+        let logMsg = $"Bot deleted message {msg.MessageId} from {prependUsername msg.SenderUsername}({msg.SenderId}) in {prependUsername msg.ChatUsername}({msg.ChatId}) because user was already banned"
+        logger.LogInformation logMsg
+        do! botClient.SendMessage(
+                chatId = ChatId(botConfig.AllLogsChannelId),
+                text = logMsg
+            ) |> taskIgnore
+        recordDeletedMessage msg.ChatId msg.ChatUsername "alreadyAutoBanned"
+        do! botClient.DeleteMessage(ChatId(msg.ChatId), msg.MessageId)
+            |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msg.MessageId} from chat {msg.ChatId}", e))
+
+    else do!
+        processMessage
+            botUser
+            botClient
+            botConfig
+            logger
+            ml
+            llmTriage
+            msg
 
     if msg.IsEdit then
         do! DB.editMessage msg
