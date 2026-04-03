@@ -140,6 +140,16 @@ type AutoDeleteReason =
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
 
+/// Models how an automated spam detection should be reported to the action channels.
+[<RequireQualifiedAccess>]
+type SpamReport =
+    /// High-confidence spam: delete the message and post to Detected Spam channel
+    /// with a single "NOT A SPAM" override button for vahter review.
+    | Detected of reason: AutoDeleteReason
+    /// Uncertain spam: do NOT delete the message, post to Potential Spam channel
+    /// with Kill / MarkAsSpam / NotSpam buttons for human triage.
+    | Potential of reason: AutoDeleteReason
+
 type ModerationEvent =
     | VahterActed      of {| vahterId: int64; actionType: VahterAction; targetUserId: int64; chatId: int64; messageId: int |}
     | BotAutoDeleted   of {| chatId: int64; messageId: int; userId: int64; reason: AutoDeleteReason |}

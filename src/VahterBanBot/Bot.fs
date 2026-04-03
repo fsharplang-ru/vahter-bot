@@ -470,50 +470,54 @@ let unban
     logger.LogInformation logMsg
 }
 
-let killSpammerAutomated
+let reportSpam
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (msg: TgMessage)
     (logger: ILogger)
-    (deleteMessage: bool)
-    (reason: AutoDeleteReason) = task {
-    use banOnReplyActivity = botActivity.StartActivity("killAutomated")
+    (report: SpamReport) = task {
+    use banOnReplyActivity = botActivity.StartActivity("reportSpam")
     %banOnReplyActivity
         .SetTag("spammerId", msg.SenderId)
         .SetTag("spammerUsername", msg.SenderUsername)
-        
-    if deleteMessage then
-        // delete message
+
+    let channelId, reason =
+        match report with
+        | SpamReport.Detected reason -> botConfig.DetectedSpamChannelId, reason
+        | SpamReport.Potential reason -> botConfig.PotentialSpamChannelId, reason
+
+    match report with
+    | SpamReport.Detected _ ->
+        // delete message and record the automated deletion event
         recordDeletedMessage msg.ChatId msg.ChatUsername "spamDeletion"
         do! botClient.DeleteMessage(ChatId(msg.ChatId), msg.MessageId)
             |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msg.MessageId} from chat {msg.ChatId}", e))
-        // Record the automated deletion event
         do! DB.recordBotAutoDeleted msg.ChatId msg.MessageId msg.SenderId reason
+    | SpamReport.Potential _ -> ()
 
     let reasonStr =
         match reason with
         | MlSpam r -> $"score: {r.score}"
         | ReactionSpam r -> $"reactions: {r.reactionCount}"
         | InvisibleMention -> "invisible mention"
-    let msgType = if deleteMessage then "Deleted" else "Detected"
+    let msgType =
+        match report with
+        | SpamReport.Detected _ -> "Deleted"
+        | SpamReport.Potential _ -> "Detected"
     let logMsg = $"{msgType} spam ({reasonStr}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
-
-    // Determine which channel
-    let channelId =
-        if deleteMessage then botConfig.DetectedSpamChannelId
-        else botConfig.PotentialSpamChannelId
 
     // Phase 1: Create callback events
     let! callbackIds, markup = task {
-        if deleteMessage then
-            // Detected spam → one NotASpam callback
+        match report with
+        | SpamReport.Detected _ ->
+            // one NotASpam callback for vahter override
             let callbackId = Guid.NewGuid()
             do! DB.recordCallbackCreated callbackId (CallbackMessage.NotASpam { message = msg.RawMessage }) msg.SenderId channelId
             return [callbackId], InlineKeyboardMarkup [
                 InlineKeyboardButton.WithCallbackData("✅ NOT a spam", string callbackId)
             ]
-        else
-            // Potential spam → three callbacks
+        | SpamReport.Potential _ ->
+            // three callbacks for human triage
             let killId = Guid.NewGuid()
             let softSpamId = Guid.NewGuid()
             let notSpamId = Guid.NewGuid()
@@ -526,24 +530,24 @@ let killSpammerAutomated
                 InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string notSpamId)
             |]
     }
-    
+
     // Phase 2: Post to action channel
     let! sent = botClient.SendMessage(
         chatId = ChatId(channelId),
         text = logMsg,
         replyMarkup = markup
     )
-    
+
     // Phase 3: Record message ID for all callbacks
     for callbackId in callbackIds do
         do! DB.recordCallbackMessagePosted callbackId sent.MessageId
-    
+
     // Send to All Logs channel (readonly, no buttons)
     do! botClient.SendMessage(
             chatId = ChatId(botConfig.AllLogsChannelId),
             text = logMsg
         ) |> taskIgnore
-    
+
     logger.LogInformation logMsg
 }
 
@@ -693,7 +697,7 @@ let llmTriageWarning
     match verdict with
     | LlmVerdict.Kill ->
         // Post to detected spam channel for human oversight (NOT SPAM override) + ban user
-        do! killSpammerAutomated botClient botConfig msg logger true (MlSpam {| score = float mlScore |})
+        do! reportSpam botClient botConfig msg logger (SpamReport.Detected (MlSpam {| score = float mlScore |}))
         let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
         do! totalBan botClient botConfig msg actor logger
     | LlmVerdict.NotSpam ->
@@ -701,7 +705,7 @@ let llmTriageWarning
         ()
     | LlmVerdict.Skip | LlmVerdict.Error ->
         // SPAM verdict or LLM failure — send to human triage
-        do! killSpammerAutomated botClient botConfig msg logger false (MlSpam {| score = float mlScore |})
+        do! reportSpam botClient botConfig msg logger (SpamReport.Potential (MlSpam {| score = float mlScore |}))
 }
 
 let processMessage
@@ -749,7 +753,7 @@ let processMessage
 
     if containsInvisibleMention then
         // delete message
-        do! killSpammerAutomated botClient botConfig msg logger true InvisibleMention
+        do! reportSpam botClient botConfig msg logger (SpamReport.Detected InvisibleMention)
 
     elif botConfig.MlEnabled && msg.Text <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
@@ -784,8 +788,11 @@ let processMessage
                 do! DB.recordMlScoredMessage msg.ChatId msg.MessageId (float prediction.Score) (prediction.Score >= botConfig.MlSpamThreshold)
 
                 if prediction.Score >= botConfig.MlSpamThreshold then
-                    // delete message
-                    do! killSpammerAutomated botClient botConfig msg logger botConfig.MlSpamDeletionEnabled (MlSpam {| score = float prediction.Score |})
+                    let mlReport =
+                        if botConfig.MlSpamDeletionEnabled
+                        then SpamReport.Detected (MlSpam {| score = float prediction.Score |})
+                        else SpamReport.Potential (MlSpam {| score = float prediction.Score |})
+                    do! reportSpam botClient botConfig msg logger mlReport
                     // trigger auto-ban check (checkAndAutoBan handles MlSpamAutobanEnabled internally)
                     do! autoBan botUser botClient botConfig msg logger
                 elif prediction.Score >= botConfig.MlWarningThreshold then
@@ -813,6 +820,12 @@ let justMessage
             .SetTag("fromUserId", msg.SenderId)
             .SetTag("fromUsername", msg.SenderUsername)
 
+    // Record message first so it's available for ban operations (e.g. totalBan → getUserMessages)
+    if msg.IsEdit then
+        do! DB.editMessage msg
+    else
+        do! DB.insertMessage msg
+
     // check if user got auto-banned already
     // that could happen due to the race condition between spammers mass messages
     // and the bot's processing queue
@@ -838,11 +851,6 @@ let justMessage
             ml
             llmTriage
             msg
-
-    if msg.IsEdit then
-        do! DB.editMessage msg
-    else
-        do! DB.insertMessage msg
 }
 
 let adminCommand
