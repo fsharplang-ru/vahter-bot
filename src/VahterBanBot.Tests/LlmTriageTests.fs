@@ -123,16 +123,16 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
             let! _ = fixture.SendMessage msg
             ()
 
-        // Now send a message with spam-like text "77" (scores in warning range).
-        // Old user immunity should kick in — no ML score, no LLM call, no deletion.
+        // Now send a message with spam-like text "77" (scores > 0 in warning range).
+        // Old user immunity should kick in — ML score recorded but no LLM call, no deletion.
         let spamMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage spamMsg
 
-        // No ML score should be recorded for this message
+        // ML score IS recorded (prediction runs first), but immunity prevents further action
         let! mlScore = fixture.GetMlScore spamMsg.Message
-        Assert.True(mlScore.IsNone, "ML score should NOT be recorded for old user — triage was skipped")
+        Assert.True(mlScore.IsSome, "ML score should be recorded even for old user")
 
-        // No LLM verdict should be recorded
+        // No LLM verdict should be recorded — immunity kicked in before LLM
         let! llmVerdict = fixture.TryGetLlmTriageVerdict spamMsg.Message
         Assert.Equal(None, llmVerdict)
 
