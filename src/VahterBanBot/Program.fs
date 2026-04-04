@@ -125,6 +125,7 @@ let botConf =
       MlCustomEmojiThreshold = getSettingOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
       MlStopWordsInChats = getSettingOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
       MlWeightDecayK = getSettingOr "ML_WEIGHT_DECAY_K" "0" |> float
+      MlOldUserMsgCount = getSettingOr "ML_OLD_USER_MSG_COUNT" "50" |> int
       // Reaction spam detection
       ReactionSpamEnabled = getSettingOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
       ReactionSpamMinMessages = getSettingOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
@@ -240,9 +241,8 @@ let otelBuilder =
             )
         )
 
-let botUser =
-    DB.upsertUser botConf.BotUserId (Some botConf.BotUserName)
-    |> fun x -> x.Result
+// Ensure bot user record exists in DB (result not needed — identity comes from BotConfiguration.BotActor)
+(DB.upsertUser botConf.BotUserId (Some botConf.BotUserName)).Result |> ignore
 
 let webApp = choose [
     // Readiness check for ML model (used by startupProbe)
@@ -278,7 +278,7 @@ let webApp = choose [
         let llmTriage = scope.ServiceProvider.GetRequiredService<ILlmTriage>()
         let logger = ctx.GetLogger<Root>()
         try
-            do! onUpdate botUser telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision llmTriage update
+            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision llmTriage update
             %topActivity.SetTag("update-error", false)
             %topActivity.SetStatus(ActivityStatusCode.Ok)
         with e ->
@@ -309,7 +309,7 @@ if botConf.UsePolling then
                     let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
                     let ocr = ctx.ServiceProvider.GetRequiredService<IComputerVision>()
                     let llmTriage = ctx.ServiceProvider.GetRequiredService<ILlmTriage>()
-                    do! onUpdate botUser client botConf logger ml ocr llmTriage update
+                    do! onUpdate client botConf logger ml ocr llmTriage update
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask

@@ -493,7 +493,9 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgCallback
         
         // Now user should be auto-banned due to low karma (score=-4 <= threshold=-4)
-        let! userBanned = fixture.UserBannedByBot user.Id
+        // Uses UserBanned (not UserBannedByBot) because autoban triggered by vahter's soft spam click
+        // records Actor.User — the vahter who clicked MarkAsSpam
+        let! userBanned = fixture.UserBanned user.Id
         Assert.True(userBanned, "User should be auto-banned after reaching karma threshold via soft spam")
     }
 

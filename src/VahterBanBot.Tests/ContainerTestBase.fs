@@ -212,6 +212,7 @@ type VahterTestContainers(mlEnabled: bool) =
                         "REACTION_SPAM_MAX_REACTIONS",         "5",     "FREE_FORM",    "REACTION_SPAM"
                         "FORWARD_SPAM_DETECTION_ENABLED",      "true",  "FEATURE_FLAG", "FORWARD_SPAM"
                         "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED","true","FEATURE_FLAG", "INLINE_KEYBOARD_SPAM"
+                        "ML_OLD_USER_MSG_COUNT",               "10",    "FREE_FORM",    "ML"
                         "LLM_TRIAGE_ENABLED",                  "true",  "FEATURE_FLAG", "LLM"
                         "AZURE_OPENAI_ENDPOINT",               "https://fake-azure-openai.openai.azure.com", "FREE_FORM", "LLM"
                     ] else [

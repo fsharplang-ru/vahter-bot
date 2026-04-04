@@ -205,8 +205,8 @@ let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
                 else request.Content.ReadAsStringAsync()
             // Three-way routing based on keywords in the user message content (role="user" only).
             // System prompt is excluded — it always contains "spam detection".
-            //   "kill"  → KILL     (permanent ban)
-            //   "spam"  → SPAM     (soft delete, no ban)
+            //   "kill"  → SPAM     (delete + reduce karma)
+            //   "spam"  → SKIP     (human triage)
             //   neither → NOT_SPAM
             let verdict =
                 try
@@ -223,8 +223,8 @@ let fakeLlmApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
                             | true, c -> Some (c.GetString())
                             | _ -> None)
                         |> Option.defaultValue ""
-                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "KILL"
-                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
                     else "NOT_SPAM"
                 with _ -> "NOT_SPAM"
             let r = new HttpResponseMessage(HttpStatusCode.OK)

@@ -52,9 +52,9 @@ type LlmVerdict =
     | Error   // HTTP failure or parse error — falls back to human triage
     static member FromString(verdictStr: string) =
         match verdictStr with
-        | "KILL"     -> LlmVerdict.Kill
+        | "SPAM"     -> LlmVerdict.Kill
         | "NOT_SPAM" -> LlmVerdict.NotSpam
-        | "SPAM"     -> LlmVerdict.Skip
+        | "SKIP"     -> LlmVerdict.Skip
         | _          -> LlmVerdict.Error
 
 // ---------------------------------------------------------------------------
@@ -140,15 +140,15 @@ type AutoDeleteReason =
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
 
-/// Models how an automated spam detection should be reported to the action channels.
+/// Result of automated spam triage (ML + optional LLM).
 [<RequireQualifiedAccess>]
-type SpamReport =
-    /// High-confidence spam: delete the message and post to Detected Spam channel
-    /// with a single "NOT A SPAM" override button for vahter review.
-    | Detected of reason: AutoDeleteReason
-    /// Uncertain spam: do NOT delete the message, post to Potential Spam channel
-    /// with Kill / MarkAsSpam / NotSpam buttons for human triage.
-    | Potential of reason: AutoDeleteReason
+type AutoVerdict =
+    /// Spam detected — delete message, reduce karma, check autoban
+    | Spam of score: float * actor: Actor
+    /// Not spam — no action
+    | NotSpam of actor: Actor
+    /// Uncertain — route to human triage channel
+    | Uncertain of score: float
 
 type ModerationEvent =
     | VahterActed      of {| vahterId: int64; actionType: VahterAction; targetUserId: int64; chatId: int64; messageId: int |}
@@ -248,6 +248,8 @@ type BotConfiguration =
       MlStopWordsInChats: Dictionary<int64, string list>
       /// Time-decay weight parameter: w(t) = exp(-k * age_in_days). 0 = no decay (all weights 1.0).
       MlWeightDecayK: float
+      /// Users with >= this many unique messages are immune from ML/LLM triage.
+      MlOldUserMsgCount: int
       // Reaction spam detection
       ReactionSpamEnabled: bool
       ReactionSpamMinMessages: int
@@ -262,6 +264,8 @@ type BotConfiguration =
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
       LlmChatDescriptions: Dictionary<int64, string> }
+    member this.BotActor =
+        Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 
 [<CLIMutable>]
 type VahterStat =
@@ -388,58 +392,3 @@ type VahterActionStats =
                 %sb.AppendLine $"  %d{i+1}. {prependUsername stat.Vahter} - {total}")
         sb.ToString()
 
-[<CLIMutable>]
-type LlmTriageRow =
-    { LlmVerdict:       string
-      VahterAction:     string   // "(pending)" when vahter hasn't acted yet
-      Count:            int
-      TotalTokens:      int64
-      AvgLatencyMs:     float }
-
-type LlmTriageStats =
-    { rows:     LlmTriageRow array
-      interval: TimeSpan option }
-    override this.ToString() =
-        let sb = StringBuilder()
-        if this.rows.Length > 0 then
-            let totalCalls   = this.rows |> Array.sumBy (fun r -> r.Count)
-            let totalTokens  = this.rows |> Array.sumBy (fun r -> r.TotalTokens)
-            let avgLatencyMs =
-                if totalCalls > 0
-                then this.rows |> Array.sumBy (fun r -> r.AvgLatencyMs * float r.Count) |> fun s -> s / float totalCalls
-                else 0.0
-
-            // Agreement: LLM verdict matches vahter action
-            let agreed =
-                this.rows
-                |> Array.sumBy (fun r ->
-                    let isMatch =
-                        (r.LlmVerdict = "KILL"     && (r.VahterAction = "PotentialKill" || r.VahterAction = "ManualBan")) ||
-                        (r.LlmVerdict = "SPAM"     && r.VahterAction = "PotentialSoftSpam") ||
-                        (r.LlmVerdict = "NOT_SPAM" && (r.VahterAction = "PotentialNotSpam" || r.VahterAction = "DetectedNotSpam"))
-                    if isMatch then r.Count else 0)
-            let decided = this.rows |> Array.sumBy (fun r -> if r.VahterAction = "(pending)" then 0 else r.Count)
-            let agreementPct = if decided > 0 then int (float agreed / float decided * 100.0) else 0
-
-            let intervalStr =
-                match this.interval with
-                | Some ts -> $"last {timeSpanAsHumanReadable ts}"
-                | None    -> "all time"
-
-            %sb.AppendLine $"\nLLM triage ({intervalStr}): {totalCalls} calls | avg {int avgLatencyMs}ms | {totalTokens} tokens"
-            %sb.AppendLine $"Agreement: {agreed}/{decided} ({agreementPct}%%)"
-
-            // group rows by LLM verdict for display
-            let byVerdict =
-                this.rows
-                |> Array.groupBy (fun r -> r.LlmVerdict)
-                |> Array.sortBy fst
-
-            for verdict, rows in byVerdict do
-                let verdictTotal = rows |> Array.sumBy (fun r -> r.Count)
-                %sb.Append $"  {verdict,-10} ({verdictTotal})"
-                for row in rows |> Array.sortBy (fun r -> r.VahterAction) do
-                    %sb.Append $" | {row.VahterAction}: {row.Count}"
-                %sb.AppendLine ""
-
-        sb.ToString()

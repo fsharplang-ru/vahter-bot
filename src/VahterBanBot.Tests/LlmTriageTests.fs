@@ -10,44 +10,44 @@ open Xunit
 ///
 /// "77" scores in the ML warning range (>= ML_WARNING_THRESHOLD=0.0, < ML_SPAM_THRESHOLD=1.0).
 /// The fake Azure OpenAI handler uses three-way routing on the user message content (role="user" only):
-///   firstName containing "kill"  → KILL     (permanent ban)
-///   firstName containing "spam"  → SPAM     (soft delete, human triage)
+///   firstName containing "kill"  → SPAM     (delete + reduce karma)
+///   firstName containing "spam"  → SKIP     (human triage)
 ///   neither                      → NOT_SPAM
 type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) =
 
     [<Fact>]
-    let ``LLM triage KILL verdict bans user and posts to detected spam channel`` () = task {
-        // Display name contains "kill" → fake LLM handler returns KILL → user must be banned by AI
+    let ``LLM triage SPAM verdict deletes message and reduces karma without banning`` () = task {
+        // Display name contains "kill" → fake LLM handler returns SPAM → message deleted, karma reduced, no instant ban
         let spammer = Tg.user(firstName = "kill advertiser")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
         // LLM is now synchronous — verdict committed before handler returns
         let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
-        Assert.Equal(Some "KILL", verdict)
+        Assert.Equal(Some "SPAM", verdict)
 
-        // User must be banned by AI
+        // User must NOT be instantly banned — goes through karma system instead
         let! isBannedByAI = fixture.UserBannedByAI spammer.Id
-        Assert.True(isBannedByAI, "User should be banned by AI after KILL verdict")
+        Assert.False(isBannedByAI, "User should NOT be instantly banned after SPAM verdict — karma system handles it")
 
-        // Message should appear in detected spam channel (with NOT SPAM override button)
-        let! isBanned = fixture.MessageBanned msgUpdate.Message
-        Assert.True(isBanned, "Message should be flagged as banned after KILL verdict")
+        // Message should be auto-deleted (deleteSpam records BotAutoDeleted)
+        let! wasAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        Assert.True(wasAutoDeleted, "Message should be auto-deleted after SPAM verdict")
     }
 
     [<Fact>]
-    let ``LLM triage SPAM verdict routes to human triage without banning`` () = task {
-        // Display name contains "spam" (but not "kill") → fake LLM handler returns SPAM → human triage
+    let ``LLM triage SKIP verdict routes to human triage without banning`` () = task {
+        // Display name contains "spam" (but not "kill") → fake LLM handler returns SKIP → human triage
         let spammer = Tg.user(firstName = "spam advertiser")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
         let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message
-        Assert.Equal(Some "SPAM", verdict)
+        Assert.Equal(Some "SKIP", verdict)
 
-        // User must NOT be banned — SPAM goes to human triage
+        // User must NOT be banned — SKIP goes to human triage
         let! isBannedByAI = fixture.UserBannedByAI spammer.Id
-        Assert.False(isBannedByAI, "User should NOT be banned for SPAM verdict — goes to humans")
+        Assert.False(isBannedByAI, "User should NOT be banned for SKIP verdict — goes to humans")
 
         let! isBannedByVahter = fixture.UserBanned spammer.Id
         Assert.False(isBannedByVahter, "User should NOT be banned by vahter either")
@@ -82,24 +82,24 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
     }
 
     [<Fact>]
-    let ``LLM triage KILL verdict stores message in DB before banning`` () = task {
-        // Regression: DB.insertMessage was called after processMessage, so totalBan → getUserMessages
+    let ``LLM triage SPAM verdict stores message in DB before deleting`` () = task {
+        // Regression: DB.insertMessage was called after processMessage, so deleteSpam → getUserMessages
         // found 0 messages even though the spam message had just been received.
         let spammer = Tg.user(firstName = "kill message-count regression")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
 
-        // Message must be stored in the event store (inserted before ban ran, not after)
+        // Message must be stored in the event store (inserted before deletion ran, not after)
         let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
-        Assert.True(dbMsg.IsSome, "Message should be stored in DB even after LLM Kill ban")
+        Assert.True(dbMsg.IsSome, "Message should be stored in DB even after LLM SPAM verdict")
 
-        // Message must have a BotAutoDeleted event (reportSpam Detected path records it)
+        // Message must have a BotAutoDeleted event (deleteSpam path records it)
         let! wasAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
-        Assert.True(wasAutoDeleted, "Message should have BotAutoDeleted event after KILL verdict")
+        Assert.True(wasAutoDeleted, "Message should have BotAutoDeleted event after SPAM verdict")
     }
 
     [<Fact>]
-    let ``LLM triage KILL event contains modelName and promptHash`` () = task {
+    let ``LLM triage SPAM event contains modelName and promptHash`` () = task {
         let spammer = Tg.user(firstName = "kill spammer with metadata")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate
@@ -111,6 +111,38 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         let! promptHash = fixture.TryGetLlmClassifiedPromptHash msgUpdate.Message
         Assert.True(promptHash.IsSome, "LlmClassified event should contain promptHash")
         Assert.False(System.String.IsNullOrEmpty(promptHash.Value), "promptHash should not be empty")
+    }
+
+    [<Fact>]
+    let ``Old user with many messages is spared from ML and LLM triage`` () = task {
+        // ML_OLD_USER_MSG_COUNT is set to 10 in test settings.
+        // Send 10 unique harmless messages first so countUniqueUserMsg >= 10.
+        let user = Tg.user(firstName = "old trusted user")
+        for text in ["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"] do
+            let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = user)
+            let! _ = fixture.SendMessage msg
+            ()
+
+        // Now send a message with spam-like text "77" (scores in warning range).
+        // Old user immunity should kick in — no ML score, no LLM call, no deletion.
+        let spamMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage spamMsg
+
+        // No ML score should be recorded for this message
+        let! mlScore = fixture.GetMlScore spamMsg.Message
+        Assert.True(mlScore.IsNone, "ML score should NOT be recorded for old user — triage was skipped")
+
+        // No LLM verdict should be recorded
+        let! llmVerdict = fixture.TryGetLlmTriageVerdict spamMsg.Message
+        Assert.Equal(None, llmVerdict)
+
+        // User should NOT be banned
+        let! isBanned = fixture.UserBanned user.Id
+        Assert.False(isBanned, "Old user should NOT be banned")
+
+        // Message should NOT be auto-deleted
+        let! wasAutoDeleted = fixture.MessageIsAutoDeleted spamMsg.Message
+        Assert.False(wasAutoDeleted, "Old user's message should NOT be auto-deleted")
     }
 
     interface IClassFixture<MlAwaitFixture>
