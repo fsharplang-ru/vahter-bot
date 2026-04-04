@@ -696,19 +696,28 @@ let totalBanByReaction
     logger.LogInformation logMsg
 }
 
-/// Pure decision function: runs ML prediction + optional LLM triage, returns verdict.
+/// Runs ML prediction + optional LLM triage, returns verdict.
+/// Old users (>= MlOldUserMsgCount unique messages) are spared when ML score is positive.
 let getAutoVerdict
     (botConfig: BotConfiguration)
+    (botClient: ITelegramBotClient)
     (llmTriage: ILlmTriage)
     (msg: TgMessage)
     (ml: MachineLearning)
+    (logger: ILogger)
     (usrMsgCount: int) = task {
     match ml.Predict(msg.Text, usrMsgCount, msg.Entities) with
     | None -> return None
     | Some prediction ->
         do! DB.recordMlScoredMessage msg.ChatId msg.MessageId (float prediction.Score) (prediction.Score >= botConfig.MlSpamThreshold)
 
-        if prediction.Score >= botConfig.MlSpamThreshold then
+        // Old user immunity: skip triage when ML score is positive but user has enough history
+        if prediction.Score > 0f && usrMsgCount >= botConfig.MlOldUserMsgCount then
+            let logMsg = $"User {prependUsername msg.SenderUsername} ({msg.SenderId}) has {usrMsgCount} msgs (score: {prediction.Score}) — ML god shows mercy today, skipping triage"
+            do! botClient.SendMessage(ChatId(botConfig.AllLogsChannelId), text = logMsg) |> taskIgnore
+            logger.LogInformation logMsg
+            return Some (AutoVerdict.NotSpam Actor.ML)
+        elif prediction.Score >= botConfig.MlSpamThreshold then
             return Some (AutoVerdict.Spam (float prediction.Score, Actor.ML))
         elif prediction.Score >= botConfig.MlWarningThreshold then
             use cts = new CancellationTokenSource(TimeSpan.FromSeconds 60.)
@@ -797,13 +806,7 @@ let processMessage
         if not shouldBeSkipped then
             let! usrMsgCount = DB.countUniqueUserMsg msg.SenderId
 
-            if usrMsgCount >= botConfig.MlOldUserMsgCount then
-                let logMsg = $"User {prependUsername msg.SenderUsername} ({msg.SenderId}) has {usrMsgCount} msgs — ML god shows mercy today, skipping triage"
-                do! botClient.SendMessage(ChatId(botConfig.AllLogsChannelId), text = logMsg) |> taskIgnore
-                logger.LogInformation logMsg
-            else
-
-            let! autoVerdict = getAutoVerdict botConfig llmTriage msg ml usrMsgCount
+            let! autoVerdict = getAutoVerdict botConfig botClient llmTriage msg ml logger usrMsgCount
             match autoVerdict with
             | Some (AutoVerdict.Spam (score, actor)) ->
                 %mlActivity.SetTag("spamScoreMl", score)
