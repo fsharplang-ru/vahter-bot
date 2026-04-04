@@ -607,16 +607,6 @@ ORDER BY MAX(m.created_at);
         return Array.ofSeq data
     }
 
-let unbanUser (userId: int64) (actor: Actor): Task =
-    recordUserUnbanned userId actor
-
-let markMessageAsFalsePositive (chatId: int64) (messageId: int) (text: string): Task =
-    recordMessageMarkedHam chatId messageId (if isNull text then "" else text) None
-
-/// Marks a message as false negative (spam that was not auto-detected)
-/// Used for soft spam marking - counts toward karma but doesn't ban
-let markMessageAsFalseNegative (chatId: int64) (messageId: int): Task =
-    recordMessageMarkedSpam chatId messageId None
 
 let countUniqueUserMsg (userId: int64): Task<int> =
     task {
@@ -848,43 +838,6 @@ WHERE job_name = @jobName;
         return ()
     }
 
-/// Gets LLM triage stats from the event table, joined with VahterActed events for accuracy.
-let getLlmTriageStats (interval: TimeSpan option) : Task<LlmTriageStats> =
-    task {
-        use conn = new NpgsqlConnection(connString)
-
-        //language=postgresql
-        let sql =
-            """
-SELECT
-    lt.data->>'verdict'                                                   AS "LlmVerdict",
-    COALESCE(
-        CASE WHEN jsonb_typeof(va.data->'actionType') = 'object'
-             THEN va.data->'actionType'->>'Case'
-             ELSE va.data->>'actionType'
-        END,
-        '(pending)')                                                        AS "VahterAction",
-    COUNT(*)::INT                                                          AS "Count",
-    COALESCE(SUM((lt.data->>'promptTokens')::INT + (lt.data->>'completionTokens')::INT), 0) AS "TotalTokens",
-    COALESCE(AVG((lt.data->>'latencyMs')::INT), 0)                         AS "AvgLatencyMs"
-FROM event lt
-LEFT JOIN event va
-       ON va.event_type = 'VahterActed'
-      AND va.data->>'chatId'    = lt.data->>'chatId'
-      AND va.data->>'messageId' = lt.data->>'messageId'
-WHERE lt.event_type = 'LlmClassified'
-  AND (@interval::INTERVAL IS NULL OR lt.created_at > NOW() - @interval::INTERVAL)
-GROUP BY lt.data->>'verdict',
-    CASE WHEN jsonb_typeof(va.data->'actionType') = 'object'
-         THEN va.data->'actionType'->>'Case'
-         ELSE va.data->>'actionType'
-    END
-ORDER BY "Count" DESC
-            """
-
-        let! rows = conn.QueryAsync<LlmTriageRow>(sql, {| interval = interval |})
-        return { interval = interval; rows = Array.ofSeq rows }
-    }
 
 let loadBotSettings () =
     task {

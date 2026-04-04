@@ -49,12 +49,20 @@ type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: I
     let staticSystemPrompt =
         """You are a spam detection assistant for a Telegram community.
 Watch for advertising-style display names (e.g. "Зайди в мой био") as a strong spam signal.
+
+Message count context (provided as "Total messages seen from this user"):
+ - < 10 messages: new user — almost all spammers fall in this range
+ - 10-20 messages: could be a hidden spammer who posted random stuff to blend in
+ - 20-50 messages: most probably not a spammer — message must be really advertising something or be malicious
+
 Classify the message as exactly one of:
- - KILL     : obvious advertising/bot/malicious content — permanent ban warranted
- - SPAM     : doesn't belong here, soft delete only
+ - SPAM     : obvious advertising/bot/malicious content — delete and reduce user karma
+ - SKIP     : not sure — route to human moderators for review
  - NOT_SPAM : legitimate message, false positive
 
-Respond with exactly: {"verdict":"KILL"} or {"verdict":"SPAM"} or {"verdict":"NOT_SPAM"}"""
+In case of doubt, select SKIP.
+
+Respond with exactly: {"verdict":"SPAM"} or {"verdict":"SKIP"} or {"verdict":"NOT_SPAM"}"""
 
     let promptHash =
         SHA256.HashData(Encoding.UTF8.GetBytes(staticSystemPrompt))
@@ -104,7 +112,7 @@ Message:
       "strict": true,
       "schema": {{
         "type": "object",
-        "properties": {{"verdict": {{"type": "string", "enum": ["KILL","SPAM","NOT_SPAM"]}}}},
+        "properties": {{"verdict": {{"type": "string", "enum": ["SPAM","SKIP","NOT_SPAM"]}}}},
         "required": ["verdict"],
         "additionalProperties": false
       }}

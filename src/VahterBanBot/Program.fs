@@ -125,6 +125,7 @@ let botConf =
       MlCustomEmojiThreshold = getSettingOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
       MlStopWordsInChats = getSettingOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
       MlWeightDecayK = getSettingOr "ML_WEIGHT_DECAY_K" "0" |> float
+      MlOldUserMsgCount = getSettingOr "ML_OLD_USER_MSG_COUNT" "50" |> int
       // Reaction spam detection
       ReactionSpamEnabled = getSettingOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
       ReactionSpamMinMessages = getSettingOr "REACTION_SPAM_MIN_MESSAGES" "10" |> int
