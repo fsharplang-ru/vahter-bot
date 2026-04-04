@@ -113,4 +113,36 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         Assert.False(System.String.IsNullOrEmpty(promptHash.Value), "promptHash should not be empty")
     }
 
+    [<Fact>]
+    let ``Old user with many messages is spared from ML and LLM triage`` () = task {
+        // ML_OLD_USER_MSG_COUNT is set to 10 in test settings.
+        // Send 10 unique harmless messages first so countUniqueUserMsg >= 10.
+        let user = Tg.user(firstName = "old trusted user")
+        for text in ["a"; "b"; "c"; "d"; "e"; "f"; "g"; "h"; "i"; "j"] do
+            let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = user)
+            let! _ = fixture.SendMessage msg
+            ()
+
+        // Now send a message with spam-like text "77" (scores in warning range).
+        // Old user immunity should kick in — no ML score, no LLM call, no deletion.
+        let spamMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
+        let! _ = fixture.SendMessage spamMsg
+
+        // No ML score should be recorded for this message
+        let! mlScore = fixture.GetMlScore spamMsg.Message
+        Assert.True(mlScore.IsNone, "ML score should NOT be recorded for old user — triage was skipped")
+
+        // No LLM verdict should be recorded
+        let! llmVerdict = fixture.TryGetLlmTriageVerdict spamMsg.Message
+        Assert.Equal(None, llmVerdict)
+
+        // User should NOT be banned
+        let! isBanned = fixture.UserBanned user.Id
+        Assert.False(isBanned, "Old user should NOT be banned")
+
+        // Message should NOT be auto-deleted
+        let! wasAutoDeleted = fixture.MessageIsAutoDeleted spamMsg.Message
+        Assert.False(wasAutoDeleted, "Old user's message should NOT be auto-deleted")
+    }
+
     interface IClassFixture<MlAwaitFixture>

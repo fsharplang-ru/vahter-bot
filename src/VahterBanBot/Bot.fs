@@ -473,10 +473,10 @@ let unban
 /// Checks user's social score and triggers auto-ban if below threshold
 /// Returns true if user was auto-banned, false otherwise
 let checkAndAutoBan
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (msg: TgMessage)
+    (actor: Actor)
     (logger: ILogger) = task {
     if not botConfig.MlSpamAutobanEnabled then
         return false
@@ -485,6 +485,7 @@ let checkAndAutoBan
         %banOnReplyActivity
             .SetTag("spammerId", msg.SenderId)
             .SetTag("spammerUsername", msg.SenderUsername)
+            .SetTag("actor", caseName actor)
 
         let! userStats = DB.getUserStatsByLastNMessages botConfig.MlSpamAutobanCheckLastMsgCount msg.SenderId
         let socialScore = userStats.good - userStats.bad
@@ -492,8 +493,8 @@ let checkAndAutoBan
         %banOnReplyActivity.SetTag("socialScore", socialScore)
 
         if double socialScore <= botConfig.MlSpamAutobanScoreThreshold then
-            // ban user in all monitored chats (ML karma scoring decision)
-            do! totalBan botClient botConfig msg Actor.ML logger
+            // ban user in all monitored chats
+            do! totalBan botClient botConfig msg actor logger
             let logStr = $"Auto-banned user {prependUsername msg.SenderUsername} ({msg.SenderId}) due to the low social score {socialScore}"
             logger.LogInformation logStr
             do! botClient.SendMessage(
@@ -514,16 +515,17 @@ let private formatReasonStr (reason: AutoDeleteReason) =
 /// Deletes spam message, posts to detected spam channel with override button,
 /// and checks karma for auto-ban.
 let deleteSpam
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (msg: TgMessage)
+    (actor: Actor)
     (logger: ILogger)
     (reason: AutoDeleteReason) = task {
     use activity = botActivity.StartActivity("deleteSpam")
     %activity
         .SetTag("spammerId", msg.SenderId)
         .SetTag("spammerUsername", msg.SenderUsername)
+        .SetTag("actor", caseName actor)
 
     // 1. Delete message + record BotAutoDeleted
     recordDeletedMessage msg.ChatId msg.ChatUsername "spamDeletion"
@@ -553,7 +555,7 @@ let deleteSpam
     logger.LogInformation logMsg
 
     // 4. Karma check + autoban
-    let! _ = checkAndAutoBan botUser botClient botConfig msg logger
+    let! _ = checkAndAutoBan botClient botConfig msg actor logger
     ()
 }
 
@@ -767,7 +769,7 @@ let processMessage
         | _ -> false
 
     if containsInvisibleMention then
-        do! deleteSpam botUser botClient botConfig msg logger InvisibleMention
+        do! deleteSpam botClient botConfig msg (Actor.Bot None) logger InvisibleMention
 
     elif botConfig.MlEnabled && msg.Text <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
@@ -804,11 +806,11 @@ let processMessage
 
             let! autoVerdict = getAutoVerdict botConfig llmTriage msg ml usrMsgCount
             match autoVerdict with
-            | Some (AutoVerdict.Spam (score, _actor)) ->
+            | Some (AutoVerdict.Spam (score, actor)) ->
                 %mlActivity.SetTag("spamScoreMl", score)
                 let reason = MlSpam {| score = score |}
                 if botConfig.MlSpamDeletionEnabled then
-                    do! deleteSpam botUser botClient botConfig msg logger reason
+                    do! deleteSpam botClient botConfig msg actor logger reason
                 else
                     do! reportPotentialSpam botClient botConfig msg logger reason
             | Some (AutoVerdict.Uncertain score) ->
@@ -1201,7 +1203,8 @@ let vahterSoftSpam
     logger.LogInformation logMsg
     
     // 4. Check auto-ban using shared logic (karma system)
-    let! _ = checkAndAutoBan botUser botClient botConfig tgMsg logger
+    let actor = Actor.User {| userId = vahter.Id; username = vahter.Username |}
+    let! _ = checkAndAutoBan botClient botConfig tgMsg actor logger
     ()
 }
 
