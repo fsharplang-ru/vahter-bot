@@ -264,6 +264,8 @@ type BotConfiguration =
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
       LlmChatDescriptions: Dictionary<int64, string> }
+    member this.BotActor =
+        Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 
 [<CLIMutable>]
 type VahterStat =

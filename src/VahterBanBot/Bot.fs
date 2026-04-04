@@ -668,7 +668,7 @@ let totalBanByReaction
     // Record the auto-deletion and ban events (cross-stream, not atomic — see totalBan comment)
     do! DB.recordBotAutoDeleted reaction.Chat.Id reaction.MessageId targetUser.Id (ReactionSpam {| reactionCount = targetUser.ReactionCount |})
     // No messageText for reaction spam — the ban reason is in the BotAutoDeleted event
-    let actor = Actor.Bot (Some {| botUserId = botConfig.BotUserId; botUsername = botConfig.BotUserName |})
+    let actor = botConfig.BotActor
     do! DB.recordUserBanned targetUser.Id actor reaction.Chat.Id reaction.MessageId None
     
     // metrics
@@ -726,7 +726,6 @@ let getAutoVerdict
 }
 
 let processMessage
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -769,7 +768,7 @@ let processMessage
         | _ -> false
 
     if containsInvisibleMention then
-        do! deleteSpam botClient botConfig msg (Actor.Bot None) logger InvisibleMention
+        do! deleteSpam botClient botConfig msg botConfig.BotActor logger InvisibleMention
 
     elif botConfig.MlEnabled && msg.Text <> null then
         use mlActivity = botActivity.StartActivity("mlPrediction")
@@ -821,7 +820,6 @@ let processMessage
 }
 
 let justMessage
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -859,7 +857,6 @@ let justMessage
 
     else do!
         processMessage
-            botUser
             botClient
             botConfig
             logger
@@ -935,7 +932,6 @@ let adminCommand
     }
 
 let onMessage
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -971,7 +967,7 @@ let onMessage
 
     // if message is not a command from authorized user, just save it ID to DB
     else
-        do! justMessage botUser botClient botConfig logger ml llmTriage msg
+        do! justMessage botClient botConfig logger ml llmTriage msg
 }
 
 let private selectLargestPhoto (photos: PhotoSize array) =
@@ -1170,7 +1166,6 @@ let vahterMarkedAsSpam
 /// Soft spam handler - deletes message and marks as spam for ML, but does NOT ban user
 /// User may get auto-banned if karma threshold is reached
 let vahterSoftSpam
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -1210,7 +1205,6 @@ let vahterSoftSpam
 
 // just an aux function to reduce indentation in onCallback and prevent FS3511
 let onCallbackAux
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -1249,7 +1243,7 @@ let onCallbackAux
             do! vahterMarkedAsSpam botClient botConfig logger vahter tgMsg
         | MarkAsSpam _ ->
             %onCallbackActivity.SetTag("type", "MarkAsSpam")
-            do! vahterSoftSpam botUser botClient botConfig logger vahter tgMsg
+            do! vahterSoftSpam botClient botConfig logger vahter tgMsg
         
         do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Done! +1 🎯")
             |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
@@ -1275,7 +1269,6 @@ let onCallbackAux
 }
 
 let onCallback
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -1313,7 +1306,6 @@ let onCallback
                     |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
             else
                 do! onCallbackAux
-                        botUser
                         botClient
                         botConfig
                         logger
@@ -1382,7 +1374,6 @@ let onMessageReaction
 }
 
 let onUpdate
-    (botUser: User)
     (botClient: ITelegramBotClient)
     (botConfig: BotConfiguration)
     (logger: ILogger)
@@ -1392,7 +1383,7 @@ let onUpdate
     (update: Update) = task {
     use _ = botActivity.StartActivity("onUpdate")
     if update.CallbackQuery <> null then
-        do! onCallback botUser botClient botConfig logger update.CallbackQuery
+        do! onCallback botClient botConfig logger update.CallbackQuery
     elif update.MessageReaction <> null then
         do! onMessageReaction botClient botConfig logger update.MessageReaction
     elif update.EditedOrMessage <> null then
@@ -1401,7 +1392,7 @@ let onUpdate
         do! tryEnrichWithForwardedContent botClient botConfig computerVision logger msg
         do! tryEnrichWithOcr botClient botConfig computerVision logger msg
         do! tryEnrichWithInlineKeyboardText botConfig logger msg
-        do! onMessage botUser botClient botConfig logger ml llmTriage msg
+        do! onMessage botClient botConfig logger ml llmTriage msg
     elif update.ChatMember <> null || update.MyChatMember <> null then
         // expected update type, nothing to do
         ()
