@@ -71,62 +71,65 @@ let loadData () =
 
     let sql =
         """
-WITH custom_emojis AS (SELECT message.id, COUNT(*) FILTER (WHERE entities ->> 'type' = 'custom_emoji') AS custom_emoji_count
-                       FROM message,
-                            LATERAL JSONB_ARRAY_ELEMENTS(raw_message -> 'entities') AS entities
-                       GROUP BY message.id),
-     less_than_n_messages AS (SELECT u.id, COUNT(DISTINCT m.text) < @criticalMsgCount AS less_than_n_messages
-                              FROM "user" u
-                                       LEFT JOIN message m ON u.id = m.user_id
-                              GROUP BY u.id),
-     really_banned AS (SELECT *
-                       FROM banned b
-                       -- known false positive spam messages
-                       WHERE NOT EXISTS(SELECT 1 FROM false_positive_users fpu WHERE fpu.user_id = b.banned_user_id)
-                         AND NOT EXISTS(SELECT 1
-                                        FROM false_positive_messages fpm
-                                        WHERE fpm.text_hash = md5(b.message_text)::uuid
-                                          AND fpm.text = b.message_text)
-                         AND b.message_text IS NOT NULL
-                         AND b.banned_at >= @criticalDate),
-     spam_or_ham AS (SELECT x.text,
-                            x.spam,
-                            x.less_than_n_messages,
-                            x.custom_emoji_count,
-                            MAX(x.created_at) AS created_at
-                     FROM (SELECT DISTINCT COALESCE(m.text, re_id.message_text)                       AS text,
-                                           CASE
-                                               -- known false negative spam messages
-                                               WHEN (EXISTS(SELECT 1
-                                                            FROM false_negative_messages fnm
-                                                            WHERE fnm.chat_id = m.chat_id
-                                                              AND fnm.message_id = m.message_id)
-                                                   -- known banned spam messages by bot, and not marked as false positive
-                                                   OR EXISTS(SELECT 1
-                                                             FROM banned_by_bot bbb
-                                                             WHERE bbb.banned_in_chat_id = m.chat_id
-                                                               AND bbb.message_id = m.message_id))
-                                                   THEN TRUE
-                                               WHEN re_id.banned_user_id IS NULL AND re_text.banned_user_id IS NULL
-                                                   THEN FALSE
-                                               ELSE TRUE
-                                               END                                                    AS spam,
-                                           COALESCE(l.less_than_n_messages, TRUE)                     AS less_than_n_messages,
-                                           COALESCE(ce.custom_emoji_count, 0)                         AS custom_emoji_count,
-                                           COALESCE(re_id.banned_at, re_text.banned_at, m.created_at) AS created_at
-                           FROM (SELECT *
-                                 FROM message
-                                 WHERE text IS NOT NULL
-                                   AND created_at >= @criticalDate) m
-                                    FULL OUTER JOIN really_banned re_id
-                                                    ON m.message_id = re_id.message_id AND m.chat_id = re_id.banned_in_chat_id
-                                    LEFT JOIN really_banned re_text ON m.text = re_text.message_text
-                                    LEFT JOIN custom_emojis ce ON m.id = ce.id
-                                    LEFT JOIN less_than_n_messages l ON m.user_id = l.id) x
-                     GROUP BY text, spam, less_than_n_messages, custom_emoji_count)
-SELECT *
-FROM spam_or_ham
-ORDER BY created_at;
+WITH final_messages AS (
+    -- Latest text per message (edits override original)
+    SELECT DISTINCT ON (stream_id)
+        stream_id,
+        (data->>'chatId')::BIGINT              AS chat_id,
+        (data->>'messageId')::INT              AS message_id,
+        (data->>'userId')::BIGINT              AS user_id,
+        data->>'text'                          AS text,
+        data->'rawMessage'->'entities'         AS entities,
+        created_at
+    FROM event
+    WHERE event_type IN ('MessageReceived', 'MessageEdited')
+      AND data->>'text' IS NOT NULL
+      AND created_at >= @criticalDate
+    ORDER BY stream_id, id DESC
+),
+user_msg_counts AS (
+    SELECT user_id,
+           COUNT(DISTINCT text) < @criticalMsgCount AS less_than_n_messages
+    FROM final_messages
+    GROUP BY user_id
+),
+verdicts AS (
+    -- All verdict-bearing events, unified across message and moderation streams
+    SELECT
+        (data->>'chatId')::BIGINT  AS chat_id,
+        (data->>'messageId')::INT  AS message_id,
+        id                         AS event_id,
+        CASE
+            WHEN event_type = 'BotAutoDeleted' THEN TRUE
+            WHEN event_type = 'VahterActed'
+                 AND data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan') THEN TRUE
+            WHEN event_type = 'VahterActed'
+                 AND data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam') THEN FALSE
+            WHEN event_type = 'MessageMarkedSpam' THEN TRUE
+            WHEN event_type = 'MessageMarkedHam'  THEN FALSE
+        END AS is_spam
+    FROM event
+    WHERE event_type IN ('BotAutoDeleted', 'VahterActed', 'MessageMarkedSpam', 'MessageMarkedHam')
+),
+last_verdict AS (
+    -- Last decisive verdict per message (highest event id wins)
+    SELECT DISTINCT ON (chat_id, message_id)
+        chat_id, message_id, is_spam
+    FROM verdicts
+    WHERE is_spam IS NOT NULL
+    ORDER BY chat_id, message_id, event_id DESC
+)
+SELECT m.text,
+       COALESCE(v.is_spam, FALSE)                                          AS spam,
+       COALESCE(u.less_than_n_messages, TRUE)                              AS less_than_n_messages,
+       (SELECT COUNT(*) FROM jsonb_array_elements(m.entities) ent
+        WHERE ent->>'type' = 'custom_emoji')::INT                          AS custom_emoji_count,
+       MAX(m.created_at)                                                   AS created_at
+FROM final_messages m
+LEFT JOIN last_verdict v ON v.chat_id = m.chat_id AND v.message_id = m.message_id
+LEFT JOIN user_msg_counts u ON u.user_id = m.user_id
+GROUP BY m.text, v.is_spam, u.less_than_n_messages, m.entities
+ORDER BY MAX(m.created_at);
 """
 
     let data = conn.Query<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})

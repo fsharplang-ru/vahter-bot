@@ -542,59 +542,65 @@ let mlData (criticalMsgCount: int) (criticalDate: DateTime) : Task<SpamOrHamDb a
         //language=postgresql
         let sql =
             """
-WITH msg_events AS (
-    SELECT (e.data->>'chatId')::BIGINT                                                AS chat_id,
-           (e.data->>'messageId')::INT                                                AS message_id,
-           e.data->>'text'                                                            AS text,
-           (e.data->>'userId')::BIGINT                                                AS user_id,
-           (SELECT COUNT(*) FROM jsonb_array_elements(e.data->'rawMessage'->'entities') ent
-            WHERE ent->>'type' = 'custom_emoji')::INT                                 AS custom_emoji_count,
-           e.created_at
-    FROM event e
-    WHERE e.event_type = 'MessageReceived'
-      AND e.created_at >= @criticalDate
-      AND e.data->>'text' IS NOT NULL
+WITH final_messages AS (
+    -- Latest text per message (edits override original)
+    SELECT DISTINCT ON (stream_id)
+        stream_id,
+        (data->>'chatId')::BIGINT              AS chat_id,
+        (data->>'messageId')::INT              AS message_id,
+        (data->>'userId')::BIGINT              AS user_id,
+        data->>'text'                          AS text,
+        data->'rawMessage'->'entities'         AS entities,
+        created_at
+    FROM event
+    WHERE event_type IN ('MessageReceived', 'MessageEdited')
+      AND data->>'text' IS NOT NULL
+      AND created_at >= @criticalDate
+    ORDER BY stream_id, id DESC
 ),
 user_msg_counts AS (
-    SELECT (data->>'userId')::BIGINT AS user_id,
-           COUNT(DISTINCT data->>'text') < @criticalMsgCount AS less_than_n_messages
-    FROM event
-    WHERE event_type = 'MessageReceived'
-    GROUP BY 1
+    SELECT user_id,
+           COUNT(DISTINCT text) < @criticalMsgCount AS less_than_n_messages
+    FROM final_messages
+    GROUP BY user_id
 ),
-spam_or_ham AS (
-    SELECT m.text,
-           m.user_id,
-           EXISTS(
-               SELECT 1 FROM event e2
-               WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
-                 AND e2.event_type IN ('BotAutoDeleted', 'VahterActed')
-                 AND (e2.data->>'actionType' IS NULL
-                      OR e2.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan'))
-           ) OR EXISTS(
-               SELECT 1 FROM event e3
-               WHERE e3.event_type = 'MessageMarkedSpam'
-                 AND e3.stream_id = 'message:' || m.chat_id || ':' || m.message_id
-           )                                                                          AS spam,
-           COALESCE(u.less_than_n_messages, TRUE)                                     AS less_than_n_messages,
-           m.custom_emoji_count,
-           m.created_at
-    FROM msg_events m
-    LEFT JOIN user_msg_counts u ON u.user_id = m.user_id
-    WHERE NOT EXISTS(
-        SELECT 1 FROM event e_fp
-        WHERE e_fp.event_type = 'MessageMarkedHam'
-          AND e_fp.data->>'text' = m.text
-    )
+verdicts AS (
+    -- All verdict-bearing events, unified across message and moderation streams
+    SELECT
+        (data->>'chatId')::BIGINT  AS chat_id,
+        (data->>'messageId')::INT  AS message_id,
+        id                         AS event_id,
+        CASE
+            WHEN event_type = 'BotAutoDeleted' THEN TRUE
+            WHEN event_type = 'VahterActed'
+                 AND data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan') THEN TRUE
+            WHEN event_type = 'VahterActed'
+                 AND data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam') THEN FALSE
+            WHEN event_type = 'MessageMarkedSpam' THEN TRUE
+            WHEN event_type = 'MessageMarkedHam'  THEN FALSE
+        END AS is_spam
+    FROM event
+    WHERE event_type IN ('BotAutoDeleted', 'VahterActed', 'MessageMarkedSpam', 'MessageMarkedHam')
+),
+last_verdict AS (
+    -- Last decisive verdict per message (highest event id wins)
+    SELECT DISTINCT ON (chat_id, message_id)
+        chat_id, message_id, is_spam
+    FROM verdicts
+    WHERE is_spam IS NOT NULL
+    ORDER BY chat_id, message_id, event_id DESC
 )
-SELECT text,
-       spam,
-       less_than_n_messages,
-       custom_emoji_count,
-       MAX(created_at) AS created_at
-FROM spam_or_ham
-GROUP BY text, spam, less_than_n_messages, custom_emoji_count
-ORDER BY MAX(created_at);
+SELECT m.text,
+       COALESCE(v.is_spam, FALSE)                                          AS spam,
+       COALESCE(u.less_than_n_messages, TRUE)                              AS less_than_n_messages,
+       (SELECT COUNT(*) FROM jsonb_array_elements(m.entities) ent
+        WHERE ent->>'type' = 'custom_emoji')::INT                          AS custom_emoji_count,
+       MAX(m.created_at)                                                   AS created_at
+FROM final_messages m
+LEFT JOIN last_verdict v ON v.chat_id = m.chat_id AND v.message_id = m.message_id
+LEFT JOIN user_msg_counts u ON u.user_id = m.user_id
+GROUP BY m.text, v.is_spam, u.less_than_n_messages, m.entities
+ORDER BY MAX(m.created_at);
 """
 
         let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})
