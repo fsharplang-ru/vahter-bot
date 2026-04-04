@@ -570,7 +570,7 @@ spam_or_ham AS (
                WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
                  AND e2.event_type IN ('BotAutoDeleted', 'VahterActed')
                  AND (e2.data->>'actionType' IS NULL
-                      OR e2.data->>'actionType' IN ('PotentialKill', 'ManualBan'))
+                      OR e2.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan'))
            ) OR EXISTS(
                SELECT 1 FROM event e3
                WHERE e3.event_type = 'MessageMarkedSpam'
@@ -659,7 +659,7 @@ expanded AS (
                SELECT 1 FROM event e2
                WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
                  AND e2.event_type = 'VahterActed'
-                 AND e2.data->>'actionType' IN ('PotentialKill', 'ManualBan')
+                 AND e2.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')
            ) AS banned_by_vahter,
            EXISTS(
                SELECT 1 FROM event e3
@@ -717,11 +717,11 @@ SELECT (SELECT e2.data->>'username'
        va_stats."NotSpamInterval"
 FROM (
     SELECT va.data->>'vahterId' AS vahter_id,
-           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')) AS "KillsTotal",
-           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialKill', 'ManualBan')
+           COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')) AS "KillsTotal",
+           COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')
                               AND va.created_at > NOW() - @interval::INTERVAL) AS "KillsInterval",
-           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialNotSpam', 'DetectedNotSpam')) AS "NotSpamTotal",
-           COUNT(*) FILTER (WHERE va.data->>'actionType' IN ('PotentialNotSpam', 'DetectedNotSpam')
+           COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam')) AS "NotSpamTotal",
+           COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam')
                               AND va.created_at > NOW() - @interval::INTERVAL) AS "NotSpamInterval"
     FROM event va
     WHERE va.event_type = 'VahterActed'
