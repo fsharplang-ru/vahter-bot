@@ -67,15 +67,15 @@ let tryAppend<'Event> (streamId: string) (expectedVersion: int) (events: 'Event 
         //language=postgresql
         let sql =
             """
-INSERT INTO event(stream_id, stream_version, data)
-VALUES (@stream_id, @stream_version, @data::JSONB)
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES (@stream_id, @stream_version, @data::JSONB, @created_at)
 ON CONFLICT (stream_id, stream_version) DO NOTHING
 RETURNING id
             """
         let mutable insertedCount = 0
         for (i, e) in events |> List.indexed do
             let data = JsonSerializer.Serialize<'Event>(e, eventJsonOpts)
-            let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data |})
+            let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data; created_at = Time.utcNow() |})
             insertedCount <- insertedCount + Seq.length rows
         if insertedCount < events.Length then
             do! tx.RollbackAsync()
@@ -144,12 +144,13 @@ let recordUserReaction (userId: int64) (username: string option) (reactionIncrem
     }
 
 /// Records a UserBanned event with the new Actor format.
-let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (messageText: string option) : Task<unit> =
+let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (messageText: string option) (banExpiryDays: int) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
-            if state.IsBanned then []   // idempotent — already banned
+            if state.IsBanned(banExpiryDays) then []   // idempotent — already banned
             else [ UserBanned {| userId = userId; bannedBy = None; actor = Some actor
-                                 chatId = Some chatId; messageId = Some messageId; messageText = messageText |} ])
+                                 chatId = Some chatId; messageId = Some messageId; messageText = messageText
+                                 bannedAt = Time.utcNow() |} ])
         return ()
     }
 
@@ -157,7 +158,7 @@ let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: 
 let recordUserUnbanned (userId: int64) (actor: Actor) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
-            if not state.IsBanned then []
+            if state.Banned.IsNone then []
             else [ UserUnbanned {| userId = userId; unbannedBy = None; actor = Some actor |} ])
         return ()
     }
@@ -392,7 +393,7 @@ WHERE e.event_type = 'CallbackCreated'
   )
             """
 
-        let! result = conn.QueryAsync<Guid>(sql, {| cutoff = DateTime.UtcNow.Subtract age |})
+        let! result = conn.QueryAsync<Guid>(sql, {| cutoff = Time.utcNow().Subtract age |})
         return Array.ofSeq result
     }
 
@@ -423,7 +424,7 @@ WHERE e.event_type = 'CallbackCreated'
   )
             """
 
-        let! result = conn.QueryAsync<ActiveCallbackInfo>(sql, {| channelId = channelId; cutoff = DateTime.UtcNow.Subtract age |})
+        let! result = conn.QueryAsync<ActiveCallbackInfo>(sql, {| channelId = channelId; cutoff = Time.utcNow().Subtract age |})
         return Array.ofSeq result
     }
 
@@ -471,7 +472,7 @@ WHERE event_type = 'CallbackCreated'
   )
             """
 
-        let! orphanedIds = conn.QueryAsync<Guid>(sql, {| cutoff = DateTime.UtcNow.Subtract howOld |})
+        let! orphanedIds = conn.QueryAsync<Guid>(sql, {| cutoff = Time.utcNow().Subtract howOld |})
         let ids = Array.ofSeq orphanedIds
         for callbackId in ids do
             do! expireCallback callbackId
@@ -488,14 +489,14 @@ let getVahterStats(banInterval: TimeSpan option): Task<VahterStats> =
 SELECT * FROM (
     SELECT vahter.username                                                      AS "Vahter"
           , COUNT(*)                                                             AS "KillCountTotal"
-          , COUNT(*) FILTER (WHERE b.banned_at > NOW() - @banInterval::INTERVAL) AS "KillCountInterval"
+          , COUNT(*) FILTER (WHERE b.banned_at > @now - @banInterval::INTERVAL) AS "KillCountInterval"
      FROM banned b
               JOIN "user" vahter ON vahter.id = b.banned_by
      GROUP BY b.banned_by, vahter.username
      UNION
      SELECT 'bot'                                                          AS "Vahter",
             COUNT(*)                                                       AS "KillCountTotal",
-            COUNT(*) FILTER (WHERE bbb.banned_at > NOW() - @banInterval::INTERVAL) AS "KillCountInterval"
+            COUNT(*) FILTER (WHERE bbb.banned_at > @now - @banInterval::INTERVAL) AS "KillCountInterval"
      FROM (SELECT banned_user_id, MIN(banned_at) AS banned_at
            FROM banned_by_bot
            GROUP BY banned_user_id) bbb
@@ -503,7 +504,7 @@ SELECT * FROM (
 ORDER BY "KillCountTotal" DESC;
             """
 
-        let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval |})
+        let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval; now = Time.utcNow() |})
         return { VahterStats.interval = banInterval; stats = Array.ofSeq stats }
     }
 
@@ -715,10 +716,10 @@ FROM (
     SELECT va.data->>'vahterId' AS vahter_id,
            COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')) AS "KillsTotal",
            COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')
-                              AND va.created_at > NOW() - @interval::INTERVAL) AS "KillsInterval",
+                              AND va.created_at > @now - @interval::INTERVAL) AS "KillsInterval",
            COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam')) AS "NotSpamTotal",
            COUNT(*) FILTER (WHERE va.data->'actionType'->>'Case' IN ('PotentialNotSpam', 'DetectedNotSpam')
-                              AND va.created_at > NOW() - @interval::INTERVAL) AS "NotSpamInterval"
+                              AND va.created_at > @now - @interval::INTERVAL) AS "NotSpamInterval"
     FROM event va
     WHERE va.event_type = 'VahterActed'
     GROUP BY va.data->>'vahterId'
@@ -726,7 +727,7 @@ FROM (
 ORDER BY va_stats."KillsTotal" + va_stats."NotSpamTotal" DESC;
             """
 
-        let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval |})
+        let! stats = conn.QueryAsync<VahterActionStat>(sql, {| interval = interval; now = Time.utcNow() |})
         return { interval = interval; stats = Array.ofSeq stats }
     }
 
@@ -741,7 +742,7 @@ let saveTrainedModel (modelStream: Stream): Task =
         let sql =
             """
 INSERT INTO ml_trained_model (id, model_data, created_at)
-VALUES (1, @modelData, NOW())
+VALUES (1, @modelData, @now)
 ON CONFLICT (id) DO UPDATE
     SET model_data = EXCLUDED.model_data,
         created_at = EXCLUDED.created_at;
@@ -749,6 +750,7 @@ ON CONFLICT (id) DO UPDATE
 
         use cmd = new NpgsqlCommand(sql, conn)
         cmd.Parameters.Add(NpgsqlParameter("modelData", NpgsqlTypes.NpgsqlDbType.Bytea, Value = modelStream)) |> ignore
+        cmd.Parameters.AddWithValue("now", Time.utcNow()) |> ignore
         let! _ = cmd.ExecuteNonQueryAsync()
         return ()
     }
@@ -806,16 +808,16 @@ let tryAcquireScheduledJob (jobName: string) (scheduledTime: TimeSpan) (podId: s
         let sql =
             """
 UPDATE scheduled_job
-SET locked_until = NOW() + INTERVAL '1 hour',
+SET locked_until = @now + INTERVAL '1 hour',
     locked_by = @podId
 WHERE job_name = @jobName
-  AND NOW() >= (CURRENT_DATE + @scheduledTime)
+  AND @now >= (CURRENT_DATE + @scheduledTime)
   AND (last_completed_at IS NULL OR last_completed_at < (CURRENT_DATE + @scheduledTime))
-  AND (locked_until IS NULL OR locked_until < NOW())
+  AND (locked_until IS NULL OR locked_until < @now)
 RETURNING job_name;
             """
 
-        let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; scheduledTime = scheduledTime; podId = podId |})
+        let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; scheduledTime = scheduledTime; podId = podId; now = Time.utcNow() |})
         return Seq.length result > 0
     }
 
@@ -828,13 +830,13 @@ let completeScheduledJob (jobName: string): Task =
         let sql =
             """
 UPDATE scheduled_job 
-SET last_completed_at = NOW(),
+SET last_completed_at = @now,
     locked_until = NULL,
     locked_by = NULL
 WHERE job_name = @jobName;
             """
 
-        let! _ = conn.ExecuteAsync(sql, {| jobName = jobName |})
+        let! _ = conn.ExecuteAsync(sql, {| jobName = jobName; now = Time.utcNow() |})
         return ()
     }
 

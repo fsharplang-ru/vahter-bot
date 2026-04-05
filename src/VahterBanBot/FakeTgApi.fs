@@ -59,7 +59,7 @@ let fakeTgApi (botConf: BotConfiguration) (request: HttpRequestMessage) =
             let message =
                 Message(
                     Id = 1,
-                    Date = DateTime.UtcNow,
+                    Date = Time.utcNow(),
                     Chat = Chat(
                         Id = 1L,
                         Type = ChatType.Private

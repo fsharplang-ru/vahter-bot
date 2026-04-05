@@ -1,7 +1,9 @@
 module VahterBanBot.Tests.EventSerializationTests
 
+open System
 open System.Text.Json
 open VahterBanBot.Types
+open VahterBanBot.Utils
 open Xunit
 
 /// Tests that optional fields missing from JSONB deserialize to None (not an error).
@@ -51,7 +53,7 @@ let ``LlmClassified serialization round-trip preserves optional fields`` () =
 let ``Old BannedByAI event deserializes with backward compat`` () =
     // Simulates an old-format event stored in the database before the Actor migration
     let json =
-        """{"Case":"UserBanned","userId":999,"bannedBy":{"Case":"BannedByAI","chatId":123,"messageId":77,"messageText":"buy crypto","modelName":"gpt-4o-mini","promptHash":"cafebabe"}}"""
+        """{"Case":"UserBanned","userId":999,"bannedBy":{"Case":"BannedByAI","chatId":123,"messageId":77,"messageText":"buy crypto","modelName":"gpt-4o-mini","promptHash":"cafebabe"},"bannedAt":"2026-01-25T22:52:48Z"}"""
     let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
     match event with
     | UserBanned e ->
@@ -75,7 +77,8 @@ let ``New Actor-format UserBanned round-trips correctly`` () =
                       actor = Some (Actor.LLM {| modelName = "gpt-4o-mini"; promptHash = "cafebabe" |})
                       chatId = Some 123L
                       messageId = Some 77
-                      messageText = Some "buy crypto" |}
+                      messageText = Some "buy crypto"
+                      bannedAt = DateTime(2026, 1, 25, 22, 52, 48, DateTimeKind.Utc) |}
     let json = JsonSerializer.Serialize(original, eventJsonOpts)
     let roundtripped = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
     match roundtripped with
@@ -96,12 +99,12 @@ let ``New Actor-format UserBanned round-trips correctly`` () =
 let ``Old UserBanned with BannedByVahter folds into Actor.User`` () =
     // Actual old-format event from production (before vahterUsername was added)
     let json =
-        """{"Case":"UserBanned","userId":555,"bannedBy":{"Case":"BannedByVahter","vahterId":42,"chatId":123,"messageId":77,"messageText":"some text"}}"""
+        """{"Case":"UserBanned","userId":555,"bannedBy":{"Case":"BannedByVahter","vahterId":42,"chatId":123,"messageId":77,"messageText":"some text"},"bannedAt":"2026-01-25T22:52:48Z"}"""
     let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
     let user = [event] |> List.fold (fun s e -> User.Fold(s, e)) User.Zero
-    Assert.True(user.IsBanned)
-    match user.BannedByActor with
-    | Some (Actor.User u) ->
+    Assert.True(user.Banned.IsSome)
+    match user.Banned with
+    | Some (Actor.User u, _) ->
         Assert.Equal(42L, u.userId)
         Assert.Equal(None, u.username)  // old events don't have vahterUsername
     | other -> Assert.Fail $"Expected Actor.User but got {other}"
@@ -109,12 +112,12 @@ let ``Old UserBanned with BannedByVahter folds into Actor.User`` () =
 [<Fact>]
 let ``Old UserBanned with BannedByAutoBan folds into Actor.Bot`` () =
     let json =
-        """{"Case":"UserBanned","userId":555,"bannedBy":{"Case":"BannedByAutoBan","chatId":123,"messageText":"spam"}}"""
+        """{"Case":"UserBanned","userId":555,"bannedBy":{"Case":"BannedByAutoBan","chatId":123,"messageText":"spam"},"bannedAt":"2026-01-25T22:52:48Z"}"""
     let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
     let user = [event] |> List.fold (fun s e -> User.Fold(s, e)) User.Zero
-    Assert.True(user.IsBanned)
-    match user.BannedByActor with
-    | Some (Actor.Bot None) -> ()
+    Assert.True(user.Banned.IsSome)
+    match user.Banned with
+    | Some (Actor.Bot None, _) -> ()
     | other -> Assert.Fail $"Expected Actor.Bot but got {other}"
 
 [<Fact>]
@@ -125,13 +128,14 @@ let ``New Actor.ML UserBanned folds correctly`` () =
                       actor = Some Actor.ML
                       chatId = Some 123L
                       messageId = Some 77
-                      messageText = Some "suspicious" |}
+                      messageText = Some "suspicious"
+                      bannedAt = Time.utcNow() |}
     let json = JsonSerializer.Serialize(original, eventJsonOpts)
     let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
     let user = [event] |> List.fold (fun s e -> User.Fold(s, e)) User.Zero
-    Assert.True(user.IsBanned)
-    match user.BannedByActor with
-    | Some Actor.ML -> ()
+    Assert.True(user.Banned.IsSome)
+    match user.Banned with
+    | Some (Actor.ML, _) -> ()
     | other -> Assert.Fail $"Expected Actor.ML but got {other}"
 
 [<Fact>]

@@ -48,12 +48,14 @@ let botConfJsonOptions =
 let fromJson<'a> (json: string) =
     JsonSerializer.Deserialize<'a>(json, botConfJsonOptions)
 
-let dbSettings =
+let loadDbSettings () =
     try
         DB.loadBotSettings().GetAwaiter().GetResult()
     with e ->
         eprintfn "[FATAL] Failed to load bot settings from database: %O" e
         reraise()
+
+let mutable dbSettings = loadDbSettings()
 
 let getSetting key =
     match dbSettings.TryGetValue key with
@@ -70,7 +72,7 @@ let getRequiredSetting key =
     | null -> failwithf "Required setting '%s' not found in bot_setting table" key
     | v -> v
 
-let botConf =
+let buildBotConf () =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getSettingOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
@@ -139,7 +141,16 @@ let botConf =
       AzureOpenAiEndpoint   = getSettingOr "AZURE_OPENAI_ENDPOINT" ""
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
-      LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson }
+      LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
+      BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int }
+
+// TODO: Replace mutable global with DI-registered BotConfiguration when codebase moves to class-based services.
+let mutable botConf = buildBotConf()
+
+let reloadSettings () =
+    dbSettings <- loadDbSettings()
+    botConf <- buildBotConf()
+    Time.provider <- Time.fromString (getSettingOr "BOT_FIXED_UTC_NOW" "")
 
 let validateApiKey (ctx : HttpContext) =
     match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
@@ -260,6 +271,12 @@ let webApp = choose [
     
     // Fallback for any GET (Azure health checks on any route)
     GET >=> text "OK"
+
+    POST >=> route "/reload-settings" >=> requiresApiKey >=> fun next ctx -> task {
+        reloadSettings()
+        ctx.GetLogger<Root>().LogInformation "Settings reloaded"
+        return! Successful.OK "Settings reloaded" next ctx
+    }
 
     POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
         let updateBodyJson =

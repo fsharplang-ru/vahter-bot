@@ -560,9 +560,9 @@ INSERT INTO event(stream_id, stream_version, data, created_at)
 VALUES ('callback:' || @callbackId, 1,
         jsonb_build_object('Case', 'CallbackCreated',
                            'data', 'test', 'targetUserId', 0, 'actionChannelId', 0),
-        NOW() - make_interval(days => @daysOld))
+        @now - make_interval(days => @daysOld))
             """
-        let! _ = conn.ExecuteAsync(sql, {| callbackId = callbackId; daysOld = daysOld |})
+        let! _ = conn.ExecuteAsync(sql, {| callbackId = callbackId; daysOld = daysOld; now = Time.utcNow() |})
         return ()
     }
 
@@ -582,7 +582,7 @@ WHERE event_type = 'CallbackCreated'
         AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
   )
             """
-        let! orphanedIds = conn.QueryAsync<Guid>(findSql, {| cutoff = DateTime.UtcNow.Subtract howOld |})
+        let! orphanedIds = conn.QueryAsync<Guid>(findSql, {| cutoff = Time.utcNow().Subtract howOld |})
         let ids = Array.ofSeq orphanedIds
         //language=postgresql
         let expireSql =
@@ -610,6 +610,24 @@ WHERE stream_id = 'callback:' || @callbackId AND event_type = 'CallbackExpired'
             """
         let! count = conn.ExecuteScalarAsync<int>(sql, {| callbackId = callbackId |})
         return count > 0
+    }
+
+    member _.SetBotSetting(key: string, value: string) = task {
+        use conn = new NpgsqlConnection(publicConnectionString)
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO bot_setting(key, value, type, feature_group)
+VALUES(@key, @value, 'FREE_FORM', 'RUNTIME')
+ON CONFLICT (key) DO UPDATE SET value = @value
+            """
+        let! _ = conn.ExecuteAsync(sql, {| key = key; value = value |})
+        return ()
+    }
+
+    member this.ReloadSettings() = task {
+        let! resp = httpClient.PostAsync("/reload-settings", null)
+        resp.EnsureSuccessStatusCode() |> ignore
     }
 
 type MlEnabledVahterTestContainers() =
