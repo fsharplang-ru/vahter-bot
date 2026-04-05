@@ -677,6 +677,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // Without ban expiry, the "already banned" check short-circuits → no ML scoring.
         let! mlScore = fixture.GetMlScore newMsg.Message
         Assert.True(mlScore.IsSome, "Message from user with expired ban should be ML-scored, not suppressed")
+
+        // Revert time to system clock
+        do! fixture.SetBotSetting("BOT_FIXED_UTC_NOW", "")
+        do! fixture.ReloadSettings()
     }
 
     interface IClassFixture<MlAwaitFixture>

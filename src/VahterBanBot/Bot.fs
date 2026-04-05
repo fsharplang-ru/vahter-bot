@@ -341,7 +341,7 @@ let totalBan
     // Cross-stream writes are not atomic (standard ES tradeoff). If the process crashes between
     // writing moderation and user events, one stream may be ahead. This is acceptable because
     // recordUserBanned is idempotent (skips if already banned) and can be retried.
-    do! DB.recordUserBanned msg.SenderId actor msg.ChatId msg.MessageId (Option.ofObj msg.Text) botConfig.BanExpiryDays
+    do! DB.recordUserBanned actor msg botConfig.BanExpiryDays
 
     // log both to logger and to All Logs channel
     do! botClient.SendMessage(
@@ -669,7 +669,7 @@ let totalBanByReaction
     do! DB.recordBotAutoDeleted reaction.Chat.Id reaction.MessageId targetUser.Id (ReactionSpam {| reactionCount = targetUser.ReactionCount |})
     // No messageText for reaction spam — the ban reason is in the BotAutoDeleted event
     let actor = botConfig.BotActor
-    do! DB.recordUserBanned targetUser.Id actor reaction.Chat.Id reaction.MessageId None botConfig.BanExpiryDays
+    do! DB.recordUserBannedNoMessage targetUser.Id actor reaction.Chat.Id reaction.MessageId botConfig.BanExpiryDays
     
     // metrics
     bannedUsersCounter.Add(1L, tagsForVahter actor)

@@ -39,8 +39,7 @@ type Actor =
     member this.DisplayName =
         match this with
         | User u       -> defaultArg u.username (string u.userId)
-        | Bot None     -> "Bot"
-        | Bot (Some b) -> b.botUsername
+        | Bot _        -> "Bot"
         | ML           -> "ML"
         | LLM l        -> $"LLM/{l.modelName}"
 

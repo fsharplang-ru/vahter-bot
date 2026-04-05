@@ -67,15 +67,15 @@ let tryAppend<'Event> (streamId: string) (expectedVersion: int) (events: 'Event 
         //language=postgresql
         let sql =
             """
-INSERT INTO event(stream_id, stream_version, data, created_at)
-VALUES (@stream_id, @stream_version, @data::JSONB, @created_at)
+INSERT INTO event(stream_id, stream_version, data)
+VALUES (@stream_id, @stream_version, @data::JSONB)
 ON CONFLICT (stream_id, stream_version) DO NOTHING
 RETURNING id
             """
         let mutable insertedCount = 0
         for (i, e) in events |> List.indexed do
             let data = JsonSerializer.Serialize<'Event>(e, eventJsonOpts)
-            let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data; created_at = Time.utcNow() |})
+            let! rows = conn.QueryAsync<int64>(sql, {| stream_id = streamId; stream_version = expectedVersion + i + 1; data = data |})
             insertedCount <- insertedCount + Seq.length rows
         if insertedCount < events.Length then
             do! tx.RollbackAsync()
@@ -143,16 +143,23 @@ let recordUserReaction (userId: int64) (username: string option) (reactionIncrem
         return state
     }
 
-/// Records a UserBanned event with the new Actor format.
-let recordUserBanned (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (messageText: string option) (banExpiryDays: int) : Task<unit> =
+let private recordUserBannedImpl (userId: int64) (actor: Actor) (chatId: int64 option) (messageId: int option) (messageText: string option) (banExpiryDays: int) : Task<unit> =
     task {
         let! _ = appendEvent $"user:{userId}" (fun (state: User) ->
             if state.IsBanned(banExpiryDays) then []   // idempotent — already banned
             else [ UserBanned {| userId = userId; bannedBy = None; actor = Some actor
-                                 chatId = Some chatId; messageId = Some messageId; messageText = messageText
-                                 bannedAt = Time.utcNow() |} ])
+                                 chatId = chatId; messageId = messageId
+                                 messageText = messageText; bannedAt = Time.utcNow() |} ])
         return ()
     }
+
+/// Records a UserBanned event from a TgMessage.
+let recordUserBanned (actor: Actor) (msg: TgMessage) (banExpiryDays: int) : Task<unit> =
+    recordUserBannedImpl msg.SenderId actor (Some msg.ChatId) (Some msg.MessageId) (Option.ofObj msg.Text) banExpiryDays
+
+/// Records a UserBanned event without a TgMessage (e.g. reaction spam).
+let recordUserBannedNoMessage (userId: int64) (actor: Actor) (chatId: int64) (messageId: int) (banExpiryDays: int) : Task<unit> =
+    recordUserBannedImpl userId actor (Some chatId) (Some messageId) None banExpiryDays
 
 /// Records a UserUnbanned event with the new Actor format.
 let recordUserUnbanned (userId: int64) (actor: Actor) : Task<unit> =
