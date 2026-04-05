@@ -332,7 +332,7 @@ let eventJsonOpts =
         .WithUnionUnwrapRecordCases()
         .WithUnionNamedFields()
         .WithUnwrapOption()
-        .WithSkippableOptionFields()
+        .WithSkippableOptionFields(SkippableOptionFields.Always, deserializeNullAsNone = true)
         .ToJsonSerializerOptions()
 
 // Callback data serialization uses different JSON options (Telegram-aware)
