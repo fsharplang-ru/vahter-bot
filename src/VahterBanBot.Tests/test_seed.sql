@@ -949,7 +949,8 @@ SELECT
         'bannedBy', CASE
             WHEN is_bot_ban THEN jsonb_build_object('Case', 'BannedByAutoBan', 'chatId', banned_in_chat_id, 'messageText', message_text)
             ELSE jsonb_build_object('Case', 'BannedByVahter', 'vahterId', banned_by, 'chatId', COALESCE(banned_in_chat_id, 0), 'messageId', COALESCE(message_id, 0), 'messageText', message_text)
-        END
+        END,
+        'bannedAt', to_char(banned_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
     ),
     banned_at
 FROM numbered

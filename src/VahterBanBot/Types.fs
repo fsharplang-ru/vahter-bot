@@ -36,6 +36,12 @@ type Actor =
     | Bot of {| botUserId: int64; botUsername: string |} option   // deterministic code decisions (heuristic rules, static logic)
     | ML    // ML model predictions (karma scoring, neural networks)
     | LLM of {| modelName: string; promptHash: string |}  // external LLM hosted in Azure
+    member this.DisplayName =
+        match this with
+        | User u       -> defaultArg u.username (string u.userId)
+        | Bot _        -> "Bot"
+        | ML           -> "ML"
+        | LLM l        -> $"LLM/{l.modelName}"
 
 /// Legacy — will be removed after old events are migrated to Actor format.
 /// Only used for deserializing old UserBanned events that were written before Actor existed.
@@ -63,17 +69,21 @@ type LlmVerdict =
 
 type UserEvent =
     | UsernameChanged      of {| userId: int64; username: string option |}
-    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option |}
+    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option; bannedAt: DateTime |}
     | UserUnbanned         of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
     | UserReactionRecorded of {| userId: int64; delta: int |}
 
 type User =
     { Id:            int64
-      BannedByActor: Actor option
+      Banned:        (Actor * DateTime) option  // (bannedBy, bannedAt)
       Username:      string option
       ReactionCount: int }
-    member this.IsBanned = this.BannedByActor.IsSome
-    static member Zero = { Id = 0L; BannedByActor = None; Username = None; ReactionCount = 0 }
+    member this.IsBanned(banExpiryDays: int) =
+        match this.Banned with
+        | None -> false
+        | Some (_, bannedAt) ->
+            Time.utcNow() - bannedAt < TimeSpan.FromDays(float banExpiryDays)
+    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
         | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
@@ -88,8 +98,8 @@ type User =
                     | Some (BannedByAutoBan _) -> Actor.Bot None
                     | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
                     | None -> Actor.Bot None
-            { state with Id = e.userId; BannedByActor = Some actor }
-        | UserUnbanned e         -> { state with Id = e.userId; BannedByActor = None }
+            { state with Id = e.userId; Banned = Some (actor, e.bannedAt) }
+        | UserUnbanned e         -> { state with Id = e.userId; Banned = None }
         | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
 
     static member fromTgUser (user: Telegram.Bot.Types.User) =
@@ -263,7 +273,9 @@ type BotConfiguration =
       AzureOpenAiEndpoint: string
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
-      LlmChatDescriptions: Dictionary<int64, string> }
+      LlmChatDescriptions: Dictionary<int64, string>
+      /// Bans older than this many days are considered expired. Default: 7.
+      BanExpiryDays: int }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 

@@ -90,7 +90,7 @@ let banInAllChats (botConfig: BotConfiguration) (botClient: ITelegramBotClient) 
         |> Seq.map (fun (KeyValue(chatUserName, chatId)) -> task {
             // ban user in each chat
             try
-                do! botClient.BanChatMember(ChatId chatId, targetUserId, DateTime.UtcNow.AddMonths 13)
+                do! botClient.BanChatMember(ChatId chatId, targetUserId, Time.utcNow().AddMonths 13)
                 return Ok(chatUserName, chatId) 
             with e ->
                 return Error (chatUserName, chatId, e)
@@ -115,7 +115,7 @@ let softBanInChat (botClient: ITelegramBotClient) (chatId: ChatId) targetUserId 
         CanPinMessages = false,
         CanManageTopics = false
         )
-    let untilDate = DateTime.UtcNow.AddHours duration
+    let untilDate = Time.utcNow().AddHours duration
     try 
         do! botClient.RestrictChatMember(chatId, targetUserId, permissions, untilDate = untilDate)
         return Ok(chatId, targetUserId)
@@ -170,13 +170,12 @@ let aggregateResultInLogMsg
         | LoggedAction.Ban _ -> "ban"
         | LoggedAction.Unban _ -> "unban"
     
-    let maybeActorId, actorDisplayName =
+    let maybeActorId =
         match loggedAction.Actor with
-        | Actor.User u       -> Some u.userId, defaultArg u.username null |> prependUsername
-        | Actor.Bot None     -> None, "Bot"
-        | Actor.Bot (Some b) -> Some b.botUserId, b.botUsername |> prependUsername
-        | Actor.ML           -> None, "ML"
-        | Actor.LLM l        -> None, $"LLM/{l.modelName}"
+        | Actor.User u       -> Some u.userId
+        | Actor.Bot (Some b) -> Some b.botUserId
+        | Actor.Bot None | Actor.ML | Actor.LLM _ -> None
+    let actorDisplayName = loggedAction.Actor.DisplayName
 
     let sanitizedUsername = defaultArg loggedAction.Target.Username null |> prependUsername
     let targetUserId = loggedAction.Target.Id
@@ -220,7 +219,7 @@ let aggregateResultInLogMsg
 let softBanResultInLogMsg (msg: TgMessage) (vahter: User) (duration: int) =
     let logMsgBuilder = StringBuilder()
     let vahterUsername = defaultArg vahter.Username null
-    let untilDate = (DateTime.UtcNow.AddHours duration).ToString "u"
+    let untilDate = (Time.utcNow().AddHours duration).ToString "u"
     %logMsgBuilder.Append $"Vahter {prependUsername vahterUsername}({vahter.Id}) "
     %logMsgBuilder.Append $"softbanned {prependUsername msg.SenderUsername}({msg.SenderId}) "
     %logMsgBuilder.Append $"in {prependUsername msg.ChatUsername}({msg.ChatId}) "
@@ -342,7 +341,7 @@ let totalBan
     // Cross-stream writes are not atomic (standard ES tradeoff). If the process crashes between
     // writing moderation and user events, one stream may be ahead. This is acceptable because
     // recordUserBanned is idempotent (skips if already banned) and can be retried.
-    do! DB.recordUserBanned msg.SenderId actor msg.ChatId msg.MessageId (Option.ofObj msg.Text)
+    do! DB.recordUserBanned actor msg botConfig.BanExpiryDays
 
     // log both to logger and to All Logs channel
     do! botClient.SendMessage(
@@ -506,11 +505,12 @@ let checkAndAutoBan
             return false
 }
 
-let private formatReasonStr (reason: AutoDeleteReason) =
+let private formatReasonStr (reason: AutoDeleteReason) (actor: Actor option) =
+    let prefix = actor |> Option.map (fun a -> $"{a.DisplayName}, ") |> Option.defaultValue ""
     match reason with
-    | MlSpam r -> $"score: {r.score}"
-    | ReactionSpam r -> $"reactions: {r.reactionCount}"
-    | InvisibleMention -> "invisible mention"
+    | MlSpam r -> $"{prefix}score: {r.score}"
+    | ReactionSpam r -> $"{prefix}reactions: {r.reactionCount}"
+    | InvisibleMention -> $"{prefix}invisible mention"
 
 /// Deletes spam message, posts to detected spam channel with override button,
 /// and checks karma for auto-ban.
@@ -534,7 +534,7 @@ let deleteSpam
     do! DB.recordBotAutoDeleted msg.ChatId msg.MessageId msg.SenderId reason
 
     // 2. Post to detected spam channel with "NOT a spam" override button
-    let logMsg = $"Deleted spam ({formatReasonStr reason}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
+    let logMsg = $"Deleted spam ({formatReasonStr reason (Some actor)}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
     let callbackId = Guid.NewGuid()
     do! DB.recordCallbackCreated callbackId (CallbackMessage.NotASpam { message = msg.RawMessage }) msg.SenderId botConfig.DetectedSpamChannelId
     let markup = InlineKeyboardMarkup [
@@ -572,7 +572,7 @@ let reportPotentialSpam
         .SetTag("spammerId", msg.SenderId)
         .SetTag("spammerUsername", msg.SenderUsername)
 
-    let logMsg = $"Detected spam ({formatReasonStr reason}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
+    let logMsg = $"Detected spam ({formatReasonStr reason None}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
 
     // Create three callbacks for human triage
     let killId = Guid.NewGuid()
@@ -669,7 +669,7 @@ let totalBanByReaction
     do! DB.recordBotAutoDeleted reaction.Chat.Id reaction.MessageId targetUser.Id (ReactionSpam {| reactionCount = targetUser.ReactionCount |})
     // No messageText for reaction spam — the ban reason is in the BotAutoDeleted event
     let actor = botConfig.BotActor
-    do! DB.recordUserBanned targetUser.Id actor reaction.Chat.Id reaction.MessageId None
+    do! DB.recordUserBannedNoMessage targetUser.Id actor reaction.Chat.Id reaction.MessageId botConfig.BanExpiryDays
     
     // metrics
     bannedUsersCounter.Add(1L, tagsForVahter actor)
@@ -846,7 +846,7 @@ let justMessage
     // that could happen due to the race condition between spammers mass messages
     // and the bot's processing queue
     let! user = DB.getUserById msg.SenderId
-    if user |> Option.exists _.IsBanned then
+    if user |> Option.exists (fun u -> u.IsBanned(botConfig.BanExpiryDays)) then
         // just delete message and move on
         let logMsg = $"Bot deleted message {msg.MessageId} from {prependUsername msg.SenderUsername}({msg.SenderId}) in {prependUsername msg.ChatUsername}({msg.ChatId}) because user was already banned"
         logger.LogInformation logMsg

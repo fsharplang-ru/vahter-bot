@@ -2,6 +2,7 @@ module VahterBanBot.Tests.TgMessageUtils
 
 open System
 open System.Threading
+open VahterBanBot.Utils
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
 open Telegram.Bot.Types.ReplyMarkups
@@ -90,7 +91,7 @@ type Tg() =
                     Text = (text |> Option.defaultValue (Guid.NewGuid().ToString())),
                     Chat = (chat |> Option.defaultValue (Tg.chat())),
                     From = (from |> Option.defaultValue (Tg.user())),
-                    Date = (date |> Option.defaultValue DateTime.UtcNow),
+                    Date = (date |> Option.defaultValue (Time.utcNow())),
                     Caption = (caption |> Option.defaultValue null),
                     ReplyToMessage = null,
                     Entities = (entities |> Option.defaultValue null),
@@ -108,7 +109,7 @@ type Tg() =
                         Text = editedText.Value,
                         Chat = (chat |> Option.defaultValue (Tg.chat())),
                         From = (from |> Option.defaultValue (Tg.user())),
-                        Date = (date |> Option.defaultValue DateTime.UtcNow),
+                        Date = (date |> Option.defaultValue (Time.utcNow())),
                         Caption = (caption |> Option.defaultValue null),
                         ReplyToMessage = null
                     )
@@ -125,7 +126,7 @@ type Tg() =
                     Text = (text |> Option.defaultValue msg.Text),
                     Chat = msg.Chat,
                     From = msg.From,
-                    Date = DateTime.UtcNow
+                    Date = Time.utcNow()
                 )
         )
 
@@ -138,7 +139,7 @@ type Tg() =
                     Text = (text |> Option.defaultValue (Guid.NewGuid().ToString())),
                     Chat = msg.Chat,
                     From = (from |> Option.defaultValue (Tg.user())),
-                    Date = (date |> Option.defaultValue DateTime.UtcNow),
+                    Date = (date |> Option.defaultValue (Time.utcNow())),
                     ReplyToMessage = msg
                 )
             )
@@ -151,7 +152,7 @@ type Tg() =
                 Chat = chat,
                 MessageId = messageId,
                 User = from,
-                Date = DateTime.UtcNow,
+                Date = Time.utcNow(),
                 OldReaction = [||],
                 NewReaction = [| ReactionTypeEmoji(Emoji = reactionEmoji) |]
             )

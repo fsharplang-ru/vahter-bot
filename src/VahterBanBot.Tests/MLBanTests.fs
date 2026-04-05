@@ -3,6 +3,7 @@ module VahterBanBot.Tests.MLBanTests
 open VahterBanBot.Tests.ContainerTestBase
 open VahterBanBot.Tests.TgMessageUtils
 open VahterBanBot.Types
+open VahterBanBot.Utils
 open Xunit
 
 type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
@@ -648,6 +649,38 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // With the bug, isAutoBanned short-circuits → no ML scoring.
         let! mlScore = fixture.GetMlScore newMsg.Message
         Assert.True(mlScore.IsSome, "Message from unbanned user should be ML-scored, not short-circuited by stale ban check")
+    }
+
+    [<Fact>]
+    let ``Expired ban does not suppress messages`` () = task {
+        let user = Tg.user()
+        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+
+        // Trigger auto-ban: 4 consecutive spam messages hit karma threshold
+        for _ in 1..4 do
+            let! _ = fixture.SendMessage spam
+            ()
+
+        let! userBanned = fixture.UserBannedByBot user.Id
+        Assert.True(userBanned, "User should be auto-banned after 4 spam messages")
+
+        // Advance time past BAN_EXPIRY_DAYS (default 7)
+        let futureDate = Time.utcNow().AddDays(8.0).ToString("o")
+        do! fixture.SetBotSetting("BOT_FIXED_UTC_NOW", futureDate)
+        do! fixture.ReloadSettings()
+
+        // Send an innocuous message after ban expired
+        let newMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello after expiry", from = user)
+        let! _ = fixture.SendMessage newMsg
+
+        // With ban expiry, processMessage runs → ML scores the message.
+        // Without ban expiry, the "already banned" check short-circuits → no ML scoring.
+        let! mlScore = fixture.GetMlScore newMsg.Message
+        Assert.True(mlScore.IsSome, "Message from user with expired ban should be ML-scored, not suppressed")
+
+        // Revert time to system clock
+        do! fixture.SetBotSetting("BOT_FIXED_UTC_NOW", "")
+        do! fixture.ReloadSettings()
     }
 
     interface IClassFixture<MlAwaitFixture>

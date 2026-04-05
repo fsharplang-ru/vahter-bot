@@ -83,12 +83,12 @@ type MachineLearning(
 
         let mlContext = MLContext(botConf.MlSeed)
         
-        let trainDate = DateTime.UtcNow - botConf.MlTrainInterval
+        let trainDate = Time.utcNow() - botConf.MlTrainInterval
         let! rawData = DB.mlData botConf.MlTrainCriticalMsgCount trainDate
         
         logger.LogInformation $"Training data count: {rawData.Length}"
         
-        let now = DateTime.UtcNow
+        let now = Time.utcNow()
         let k = botConf.MlWeightDecayK
         let data =
             rawData
@@ -156,7 +156,7 @@ type MachineLearning(
             logger.LogInformation("Serialized model ({Size} bytes)", ms.Length)
             ms.Position <- 0L
             do! DB.saveTrainedModel ms
-            modelCreatedAt <- Some DateTime.UtcNow
+            modelCreatedAt <- Some(Time.utcNow())
             logger.LogInformation "Saved trained model to DB"
         finally
             ms.Dispose()
@@ -194,7 +194,7 @@ type MachineLearning(
                       lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
                       moreThanNEmojisF = if emojiCount > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
                       weight = 1.0f
-                      createdAt = DateTime.UtcNow }
+                      createdAt = Time.utcNow() }
                 |> Some
             | None ->
                 logger.LogInformation "Model not trained yet"
