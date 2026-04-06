@@ -1,4 +1,4 @@
--- Debug views to restore table-like ergonomics after event sourcing migration.
+-- Debug views to restore table-like ergonomics after event-sourcing migration.
 -- All objects here are read-only (VIEWs) — no changes to event data.
 -- Indexes used by these views are in V30__debug_indexes.sql.
 
