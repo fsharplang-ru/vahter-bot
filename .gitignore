@@ -7,3 +7,4 @@ flyway.conf
 TestResults
 *.trx
 test-artifacts/
+.claude/settings.local.json

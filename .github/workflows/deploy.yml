@@ -45,7 +45,17 @@ jobs:
         path: test-artifacts/
       if: ${{ always() }}
 
+    - name: Check for new migrations
+      id: check-migrations
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -q '^src/migrations/'; then
+          echo "has_migrations=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_migrations=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Setup WireGuard VPN
+      if: steps.check-migrations.outputs.has_migrations == 'true'
       run: |
         sudo apt-get update && sudo apt-get install -y wireguard resolvconf
         echo "${{ secrets.WIREGUARD_CONFIG }}" | sudo tee /etc/wireguard/wg0.conf > /dev/null
@@ -56,6 +66,7 @@ jobs:
 
     # if tests are ok, deploy to production
     - name: Apply migrations to production DB
+      if: steps.check-migrations.outputs.has_migrations == 'true'
       run: >-
         docker run --rm
         --network host
@@ -64,14 +75,15 @@ jobs:
         "${{ env.DOCKER_IMAGE }}"
         -url="${{ secrets.DB_PROD_URL }}"
         -user="${{ secrets.DB_PROD_USERNAME }}"
-        -password="${{ secrets.DB_PROD_PASSWORD }}" 
+        -password="${{ secrets.DB_PROD_PASSWORD }}"
         migrate -schemas="${{ env.SCHEMAS }}"
 
     - name: Disconnect VPN
-      if: always()
+      if: steps.check-migrations.outputs.has_migrations == 'true'
       run: sudo wg-quick down wg0 || true
 
     - name: Upload Flyway report
+      if: steps.check-migrations.outputs.has_migrations == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: Database Report
