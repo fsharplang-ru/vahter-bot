@@ -623,7 +623,7 @@ let countUniqueUserMsg (userId: int64): Task<int> =
         //language=postgresql
         let sql =
             """
-SELECT COUNT(DISTINCT md5(data->>'text'))::INT
+SELECT COUNT(DISTINCT msg_text_md5)::INT
 FROM event
 WHERE event_type = 'MessageReceived'
   AND (data->>'userId')::BIGINT = @userId
