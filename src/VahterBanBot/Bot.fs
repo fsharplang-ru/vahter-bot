@@ -1,3 +1,4 @@
+// VahterBanBot — Telegram moderation bot
 module VahterBanBot.Bot
 
 open System
@@ -14,10 +15,12 @@ open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
+open BotInfra.TelegramExtensions
 
 // Telegram.Bot.Types.User is shadowed by VahterBanBot.Types.User
 type TgUser = Telegram.Bot.Types.User
 open VahterBanBot.Utils
+open BotInfra
 open VahterBanBot.UpdateChatAdmins
 open VahterBanBot.Metrics
 
@@ -1008,7 +1011,8 @@ let private ocrPhotos
             logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
             return None
         else
-            let fileUrl = $"https://api.telegram.org/file/bot{botConfig.BotToken}/{file.FilePath}"
+            let apiBase = if isNull botConfig.TelegramApiBaseUrl then "https://api.telegram.org" else botConfig.TelegramApiBaseUrl
+            let fileUrl = $"{apiBase}/file/bot{botConfig.BotToken}/{file.FilePath}"
             let! ocrText = computerVision.TextFromImageUrl fileUrl
             if String.IsNullOrWhiteSpace ocrText then
                 return None
