@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+
+<ItemGroup>
+    <Compile Include="Types.fs" />
+    <Compile Include="Store.fs" />
+    <Compile Include="Handlers.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+</Project>

@@ -8,6 +8,7 @@ open System.Text.Json.Serialization
 open Dapper
 open Telegram.Bot.Types
 open Utils
+open BotInfra
 
 // ---------------------------------------------------------------------------
 // Event sourcing — raw DB row and typed event DUs
@@ -227,8 +228,8 @@ type BotConfiguration =
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
       IgnoreSideEffects: bool
-      UseFakeApi: bool
       UsePolling: bool
+      TelegramApiBaseUrl: string
       CleanupInterval: TimeSpan
       CleanupCheckInterval: TimeSpan
       CleanupScheduledHour: int

@@ -10,6 +10,7 @@ open NpgsqlTypes
 open VahterBanBot.Types
 open Dapper
 open VahterBanBot.Utils
+open BotInfra
 
 let private connString = getEnv "DATABASE_URL"
 
