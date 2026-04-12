@@ -16,6 +16,7 @@ open Telegram.Bot.Types.Enums
 open VahterBanBot.DB
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 
 [<CLIMutable>]
 type SpamOrHam =

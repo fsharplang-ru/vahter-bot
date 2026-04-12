@@ -12,6 +12,7 @@ open Microsoft.Extensions.Logging
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 
 // ── Response parsing ──────────────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@ open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 open Microsoft.Extensions.Hosting
 
 type StartupMessage(
