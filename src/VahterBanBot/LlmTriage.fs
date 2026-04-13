@@ -12,6 +12,7 @@ open Microsoft.Extensions.Logging
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 
 // ── Response parsing ──────────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ type ILlmTriage =
     abstract member PromptHash: string
     abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmVerdict>
 
-type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: ILogger<AzureLlmTriage>) =
+type AzureLlmTriage(httpClient: HttpClient, botConf: BotConfiguration, logger: ILogger<AzureLlmTriage>, db: DbService) =
 
     // Static part of the system prompt — used to compute the prompt hash once at startup.
     // Per-chat descriptions are configuration, not the prompt itself.
@@ -143,10 +144,10 @@ Message:
                             .SetTag("total_tokens", promptTokens + completionTokens)
                             .SetTag("chat_id",      msg.ChatId)
                             .SetTag("user_id",      msg.SenderId)
-                    do! DB.recordLlmClassified
-                            msg.ChatId msg.MessageId verdictStr
-                            promptTokens completionTokens (int sw.ElapsedMilliseconds)
-                            (Some modelName) (Some promptHash)
+                    do! db.RecordLlmClassified(
+                            msg.ChatId, msg.MessageId, verdictStr,
+                            promptTokens, completionTokens, int sw.ElapsedMilliseconds,
+                            Some modelName, Some promptHash)
                     return LlmVerdict.FromString verdictStr
                 | None ->
                     // warning already logged in parseResponse

@@ -13,9 +13,8 @@ open Microsoft.ML.Trainers
 open Telegram.Bot
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
-open VahterBanBot.DB
 open VahterBanBot.Types
-open VahterBanBot.Utils
+open BotInfra
 
 [<CLIMutable>]
 type SpamOrHam =
@@ -35,7 +34,9 @@ type Prediction =
 type MachineLearning(
     logger: ILogger<MachineLearning>,
     telegramClient: ITelegramBotClient,
-    botConf: BotConfiguration
+    botConf: BotConfiguration,
+    db: DbService,
+    timeProvider: TimeProvider
 ) =
     let metricsToString(metrics: CalibratedBinaryClassificationMetrics) (duration: TimeSpan) =
         let sb = StringBuilder()
@@ -59,7 +60,7 @@ type MachineLearning(
 
     /// Loads a serialized model from DB via streaming and creates a PredictionEngine.
     let loadModelFromDb () = task {
-        let! result = DB.withTrainedModel (fun (stream, createdAt) -> task {
+        let! result = db.WithTrainedModel(fun (stream, createdAt) -> task {
             let mlContext = MLContext(botConf.MlSeed)
             let model, _schema = mlContext.Model.Load(stream)
             predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(model))
@@ -83,12 +84,12 @@ type MachineLearning(
 
         let mlContext = MLContext(botConf.MlSeed)
         
-        let trainDate = Time.utcNow() - botConf.MlTrainInterval
-        let! rawData = DB.mlData botConf.MlTrainCriticalMsgCount trainDate
-        
+        let now = timeProvider.GetUtcNow().UtcDateTime
+        let trainDate = now - botConf.MlTrainInterval
+        let! rawData = db.MlData(botConf.MlTrainCriticalMsgCount, trainDate)
+
         logger.LogInformation $"Training data count: {rawData.Length}"
-        
-        let now = Time.utcNow()
+
         let k = botConf.MlWeightDecayK
         let data =
             rawData
@@ -155,8 +156,8 @@ type MachineLearning(
             mlContext.Model.Save(trainedModel, dataView.Schema, ms)
             logger.LogInformation("Serialized model ({Size} bytes)", ms.Length)
             ms.Position <- 0L
-            do! DB.saveTrainedModel ms
-            modelCreatedAt <- Some(Time.utcNow())
+            do! db.SaveTrainedModel(ms)
+            modelCreatedAt <- Some(timeProvider.GetUtcNow().UtcDateTime)
             logger.LogInformation "Saved trained model to DB"
         finally
             ms.Dispose()
@@ -194,7 +195,7 @@ type MachineLearning(
                       lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
                       moreThanNEmojisF = if emojiCount > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
                       weight = 1.0f
-                      createdAt = Time.utcNow() }
+                      createdAt = timeProvider.GetUtcNow().UtcDateTime }
                 |> Some
             | None ->
                 logger.LogInformation "Model not trained yet"
@@ -217,7 +218,7 @@ type MachineLearning(
     member _.TryReloadIfNewer() = task {
         try
             if botConf.MlEnabled then
-                let! dbCreatedAt = DB.getModelCreatedAt()
+                let! dbCreatedAt = db.GetModelCreatedAt()
                 match dbCreatedAt, modelCreatedAt with
                 | Some dbTime, Some localTime when dbTime > localTime ->
                     logger.LogInformation("Newer model found in DB (DB: {DbTime}, local: {LocalTime}), reloading...", dbTime, localTime)
@@ -241,7 +242,7 @@ type MachineLearning(
                 if not loaded then
                     // No model in DB. Use advisory lock so only one pod trains.
                     // Lock key 1337 is an arbitrary constant for ML training coordination.
-                    let! trained = DB.withAdvisoryLock 1337 (fun () -> task {
+                    let! trained = db.WithAdvisoryLock(1337, fun () -> task {
                         // Double-check: another pod may have saved while we waited for the lock
                         let! alreadyLoaded = loadModelFromDb()
                         if not alreadyLoaded then
