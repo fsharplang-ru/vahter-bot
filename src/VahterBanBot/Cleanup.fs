@@ -8,6 +8,7 @@ open Telegram.Bot.Types
 open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 open System
 open System.Threading
 open Microsoft.Extensions.Hosting
