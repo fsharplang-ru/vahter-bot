@@ -10,6 +10,7 @@ open NpgsqlTypes
 open VahterBanBot.Types
 open Dapper
 open VahterBanBot.Utils
+open BotInfra
 
 let private connString = getEnv "DATABASE_URL"
 
@@ -847,14 +848,6 @@ WHERE job_name = @jobName;
         return ()
     }
 
-
-let loadBotSettings () =
-    task {
-        use conn = new NpgsqlConnection(connString)
-        let! rows = conn.QueryAsync<{| key: string; value: string |}>(
-            "SELECT key, value FROM bot_setting WHERE value IS NOT NULL")
-        return rows |> Seq.map (fun r -> r.key, r.value) |> readOnlyDict
-    }
 
 /// Executes an action while holding a PostgreSQL session-level advisory lock.
 /// Returns true if the lock was acquired and the action completed.
