@@ -1,56 +1,39 @@
 open System
-open System.Collections.Generic
 open System.Diagnostics
 open System.Text.Json
-open System.Text.Json.Serialization
 open System.Threading
 open System.Threading.Tasks
-open Dapper
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
-open Microsoft.FSharp.Core
-open Serilog.Enrichers.Span
 open Telegram.Bot
 open Telegram.Bot.Polling
 open Telegram.Bot.Types
-open Giraffe
-open Microsoft.Extensions.DependencyInjection
 open Telegram.Bot.Types.Enums
+open Microsoft.Extensions.DependencyInjection
+open Microsoft.Extensions.Options
 open VahterBanBot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
 open VahterBanBot.Telemetry
-open VahterBanBot.Utils
-open VahterBanBot.Bot
 open VahterBanBot.Types
 open VahterBanBot.StartupMessage
 open VahterBanBot.UpdateChatAdmins
-open VahterBanBot.FakeTgApi
-open OpenTelemetry.Trace
-open OpenTelemetry.Metrics
-open OpenTelemetry.Resources
-open OpenTelemetry.Exporter
-open Npgsql
-open Serilog
-open Serilog.Formatting.Compact
+open BotInfra
+open BotInfra.TelegramHelpers
+open BotInfra.JsonSetup
 
 type Root = class end
 
 Dapper.FSharp.PostgreSQL.OptionTypes.register()
 
-let botConfJsonOptions =
-    let opts = JsonSerializerOptions(JsonSerializerDefaults.Web)
-    opts.NumberHandling <- JsonNumberHandling.AllowReadingFromString
-    opts
-let fromJson<'a> (json: string) =
-    JsonSerializer.Deserialize<'a>(json, botConfJsonOptions)
+let connString = getEnv "DATABASE_URL"
 
 let loadDbSettings () =
     try
-        DB.loadBotSettings().GetAwaiter().GetResult()
+        DbSettings.loadBotSettings(connString).GetAwaiter().GetResult()
     with e ->
         eprintfn "[FATAL] Failed to load bot settings from database: %O" e
         reraise()
@@ -58,19 +41,16 @@ let loadDbSettings () =
 let mutable dbSettings = loadDbSettings()
 
 let getSetting key =
-    match dbSettings.TryGetValue key with
-    | true, v -> v
-    | _ -> null
+    let accessor = DbSettings.BotSettingsAccessor(dbSettings)
+    accessor.GetSetting key
 
 let getSettingOr key def =
-    match getSetting key with
-    | null -> def
-    | v -> v
+    let accessor = DbSettings.BotSettingsAccessor(dbSettings)
+    accessor.GetSettingOr(key, def)
 
 let getRequiredSetting key =
-    match getSetting key with
-    | null -> failwithf "Required setting '%s' not found in bot_setting table" key
-    | v -> v
+    let accessor = DbSettings.BotSettingsAccessor(dbSettings)
+    accessor.GetRequiredSetting key
 
 let buildBotConf () =
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
@@ -87,10 +67,10 @@ let buildBotConf () =
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse
-      UseFakeApi =
-          getEnvOr "USE_FAKE_TG_API" "false" // use old name for backward compatibility
-          |> getEnvOr "USE_FAKE_API"
-          |> bool.Parse
+      TelegramApiBaseUrl =
+          match getEnvOr "TELEGRAM_API_URL" "" with
+          | "" -> null
+          | v -> v
       CleanupInterval = getSettingOr "CLEANUP_INTERVAL_SEC" "86400" |> int64 |> TimeSpan.FromSeconds
       CleanupCheckInterval = getSettingOr "CLEANUP_CHECK_INTERVAL_SEC" "600" |> int64 |> TimeSpan.FromSeconds
       CleanupScheduledHour = getSettingOr "CLEANUP_SCHEDULED_HOUR_UTC" "22" |> int
@@ -144,41 +124,40 @@ let buildBotConf () =
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
       BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int }
 
-// TODO: Replace mutable global with DI-registered BotConfiguration when codebase moves to class-based services.
-let mutable botConf = buildBotConf()
+let ocrConfigOf (c: BotConfiguration) =
+    { OcrEnabled          = c.OcrEnabled
+      OcrMaxFileSizeBytes = c.OcrMaxFileSizeBytes
+      AzureOcrEndpoint    = c.AzureOcrEndpoint
+      AzureOcrKey         = c.AzureOcrKey }
+
+let botConfOptions = LiveOptions(buildBotConf())
+let botOcrOptions  = LiveOptions(ocrConfigOf botConfOptions.Value)
 
 let reloadSettings () =
     dbSettings <- loadDbSettings()
-    botConf <- buildBotConf()
-    Time.provider <- Time.fromString (getSettingOr "BOT_FIXED_UTC_NOW" "")
+    let fresh = buildBotConf()
+    botConfOptions.Set(fresh)
+    botOcrOptions.Set(ocrConfigOf fresh)
 
-let validateApiKey (ctx : HttpContext) =
-    match ctx.TryGetRequestHeader "X-Telegram-Bot-Api-Secret-Token" with
-    | Some key when key = botConf.SecretToken -> true
-    | _ -> false
-
-let accessDenied = setStatusCode 401 >=> text "Access Denied"
-let requiresApiKey = authorizeRequest validateApiKey accessDenied
+let webhookCfg: WebhookConfig =
+    let c = botConfOptions.Value
+    { BotToken = c.BotToken
+      SecretToken = c.SecretToken
+      TelegramApiBaseUrl = c.TelegramApiBaseUrl
+      OtelServiceName = "vahter-bot"
+      ActivitySourceName = botActivity.Name
+      MeterName = "VahterBanBot.Metrics"
+      WebhookRoute = c.Route }
 
 let builder = WebApplication.CreateBuilder()
 
-// Configure Serilog for structured logging with trace correlation
-%builder.Host.UseSerilog(fun context services configuration ->
-    %configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
-        .MinimumLevel.Override("System.Net.Http.HttpClient", Serilog.Events.LogEventLevel.Warning)
-        .Enrich.FromLogContext()
-        .Enrich.WithSpan()
-        .WriteTo.Console(RenderedCompactJsonFormatter())
-)
+WebhookHost.configureSharedServices webhookCfg builder
 
 %builder.Services
-    .AddSingleton(botConf)
-    .AddGiraffe()
-    // we need to customize Giraffe STJ settings to conform to the Telegram.Bot API
-    .AddSingleton<Json.ISerializer>(Json.Serializer(jsonOptions))
-    .ConfigureTelegramBot<Microsoft.AspNetCore.Http.Json.JsonOptions>(fun x -> x.SerializerOptions)
+    .AddSingleton<IOptions<BotConfiguration>>(botConfOptions)
+    .AddSingleton<DbService>(fun sp ->
+        DbService(connString, sp.GetRequiredService<TimeProvider>()))
+    .AddSingleton<BotService>()
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
@@ -186,101 +165,52 @@ let builder = WebApplication.CreateBuilder()
     .AddHostedService<StartupMessage>()
     .AddHostedService<UpdateChatAdmins>()
 
-builder.Services
-    .AddHttpClient<IComputerVision, AzureComputerVision>()
-    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeApi then
-            handlers.Add(fakeApi botConf)
-    )
-    |> ignore
+// OCR: register shared IBotOcr, then the VahterBanBot adapter that keeps the IComputerVision interface
+%builder.Services.AddSingleton<IOptions<BotOcrConfig>>(botOcrOptions)
+%builder.Services.AddHttpClient<IBotOcr, AzureBotOcr>()
+%builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
+%builder.Services.AddHttpClient<ILlmTriage, AzureLlmTriage>()
 
-%builder.Services
-    .AddHttpClient<ILlmTriage, AzureLlmTriage>()
-    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeApi then
-            handlers.Add(fakeApi botConf)
-    )
+let app = builder.Build()
 
-%builder.Services
-    .AddHttpClient("telegram_bot_client")
-    .AddTypedClient(fun httpClient sp ->
-        let options = TelegramBotClientOptions(botConf.BotToken)
-        TelegramBotClient(options, httpClient) :> ITelegramBotClient
-    )
-    .ConfigureAdditionalHttpMessageHandlers(fun handlers sp ->
-        if botConf.UseFakeApi then
-            handlers.Add(fakeApi botConf)
-    )
+// Ensure bot user record exists in DB (result not needed -- identity comes from BotConfiguration.BotActor)
+let startupBotConf = botConfOptions.Value
+(app.Services.GetRequiredService<DbService>().UpsertUser(startupBotConf.BotUserId, Some startupBotConf.BotUserName)).Result |> ignore
 
-let otelBuilder =
-    builder.Services
-        .AddOpenTelemetry()
-        .WithTracing(fun builder ->
-            %builder
-                .AddHttpClientInstrumentation()
-                .AddAspNetCoreInstrumentation()
-                .AddNpgsql()
-                .ConfigureResource(fun res ->
-                    %res.AddAttributes [
-                        KeyValuePair("service.name", getEnvOr "OTEL_SERVICE_NAME" "vahter-bot")
-                    ]
-                )
-                .AddSource(botActivity.Name)
-            getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
-                %builder.AddOtlpExporter(fun options ->
-                    options.Endpoint <- Uri(endpoint)
-                    options.Protocol <- OtlpExportProtocol.Grpc
-                )
-            )
-            getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
-                if otelConsole then %builder.AddConsoleExporter()
-            )
-        )
-        .WithMetrics(fun builder ->
-            %builder
-                .AddHttpClientInstrumentation()
-                .AddAspNetCoreInstrumentation()
-                .AddMeter("VahterBanBot.Metrics")
-            getEnvWith "OTEL_EXPORTER_CONSOLE"  (bool.Parse >> fun otelConsole ->
-                if otelConsole then %builder.AddConsoleExporter()
-            )
-            getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
-                %builder.AddOtlpExporter(fun options ->
-                    options.Endpoint <- Uri(endpoint)
-                    options.Protocol <- OtlpExportProtocol.Grpc
-                )
-            )
-        )
+// Readiness check for ML model (used by startupProbe)
+%app.MapGet("/ready", Func<HttpContext, IResult>(fun ctx ->
+    let ml = ctx.RequestServices.GetRequiredService<MachineLearning>()
+    if ml.IsReady then
+        Results.Text "READY"
+    else
+        Results.Text("ML model not ready yet", statusCode = 503)
+))
 
-// Ensure bot user record exists in DB (result not needed — identity comes from BotConfiguration.BotActor)
-(DB.upsertUser botConf.BotUserId (Some botConf.BotUserName)).Result |> ignore
+// Fallback for any GET (Azure health checks on any route)
+%app.MapFallback(Func<string>(fun () -> "OK"))
 
-let webApp = choose [
-    // Readiness check for ML model (used by startupProbe)
-    GET >=> route "/ready" >=> fun next ctx -> task {
-        let ml = ctx.GetService<MachineLearning>()
-        if ml.IsReady then
-            return! text "READY" next ctx
-        else
-            ctx.SetStatusCode 503
-            return! text "ML model not ready yet" next ctx
-    }
-    
-    // Health check (Azure compatibility - always returns OK if process is alive)
-    GET >=> route "/health" >=> text "OK"
-    
-    // Fallback for any GET (Azure health checks on any route)
-    GET >=> text "OK"
-
-    POST >=> route "/reload-settings" >=> requiresApiKey >=> fun next ctx -> task {
+// Reload settings endpoint
+%app.MapPost("/reload-settings", Func<HttpContext, IResult>(fun ctx ->
+    if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
+        Results.Text("Access Denied", statusCode = 401)
+    else
         reloadSettings()
-        ctx.GetLogger<Root>().LogInformation "Settings reloaded"
-        return! Successful.OK "Settings reloaded" next ctx
-    }
+        // Update the runtime TimeProvider so BOT_FIXED_UTC_NOW changes take effect immediately.
+        // This is a no-op in production (setting is empty → System clock), but lets integration
+        // tests advance time without restarting the container.
+        let mtp = ctx.RequestServices.GetRequiredService<Time.MutableTimeProvider>()
+        mtp.SetInner(Time.fromString (getSettingOr "BOT_FIXED_UTC_NOW" ""))
+        ctx.RequestServices.GetRequiredService<ILogger<Root>>().LogInformation "Settings reloaded"
+        Results.Ok "Settings reloaded"
+))
 
-    POST >=> route botConf.Route >=> requiresApiKey >=> bindJson<Update> (fun update next ctx -> task {
+// Main webhook endpoint with bot-specific update handling
+WebhookHost.mapWebhookEndpoints webhookCfg (fun ctx update ->
+    task {
+        let logger = ctx.RequestServices.GetRequiredService<ILogger<Root>>()
+
         let updateBodyJson =
-            try JsonSerializer.Serialize(update, options = jsonOptions)
+            try JsonSerializer.Serialize(update, options = telegramJsonOptions)
             with e -> e.Message
         use topActivity =
             botActivity
@@ -288,45 +218,29 @@ let webApp = choose [
               .SetTag("updateBodyObject", update)
               .SetTag("updateBodyJson", updateBodyJson)
 
-        use scope = ctx.RequestServices.CreateScope()
-        let telegramClient = scope.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-        let ml = scope.ServiceProvider.GetRequiredService<MachineLearning>()
-        let computerVision = scope.ServiceProvider.GetRequiredService<IComputerVision>()
-        let llmTriage = scope.ServiceProvider.GetRequiredService<ILlmTriage>()
-        let logger = ctx.GetLogger<Root>()
+        let bot = ctx.RequestServices.GetRequiredService<BotService>()
         try
-            do! onUpdate telegramClient botConf (ctx.GetLogger "VahterBanBot.Bot") ml computerVision llmTriage update
+            do! bot.OnUpdate(update)
             %topActivity.SetTag("update-error", false)
             %topActivity.SetStatus(ActivityStatusCode.Ok)
         with e ->
             logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
             %topActivity.SetStatus(ActivityStatusCode.Error)
             %topActivity.SetTag("update-error", true)
+    }) app
 
-        return! Successful.OK() next ctx
-    })
-]
-
-let app = builder.Build()
-
-app.UseGiraffe(webApp)
 let server = app.RunAsync()
 
 // Dev mode only
-if botConf.UsePolling then
+if botConfOptions.Value.UsePolling then
     let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
     let pollingHandler = {
         new IUpdateHandler with
           member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
             task {
                 if update.Message <> null && update.Message.Type = MessageType.Text then
-                    let ctx = app.Services.CreateScope()
-                    let logger = ctx.ServiceProvider.GetRequiredService<ILogger<IUpdateHandler>>()
-                    let client = ctx.ServiceProvider.GetRequiredService<ITelegramBotClient>()
-                    let ml = ctx.ServiceProvider.GetRequiredService<MachineLearning>()
-                    let ocr = ctx.ServiceProvider.GetRequiredService<IComputerVision>()
-                    let llmTriage = ctx.ServiceProvider.GetRequiredService<ILlmTriage>()
-                    do! onUpdate client botConf logger ml ocr llmTriage update
+                    let bot = app.Services.GetRequiredService<BotService>()
+                    do! bot.OnUpdate(update)
             }
           member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
               Task.CompletedTask

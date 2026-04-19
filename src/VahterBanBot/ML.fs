@@ -7,15 +7,15 @@ open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
+open Microsoft.Extensions.Options
 open Microsoft.ML
 open Microsoft.ML.Data
 open Microsoft.ML.Trainers
 open Telegram.Bot
 open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
-open VahterBanBot.DB
 open VahterBanBot.Types
-open VahterBanBot.Utils
+open BotInfra
 
 [<CLIMutable>]
 type SpamOrHam =
@@ -35,7 +35,9 @@ type Prediction =
 type MachineLearning(
     logger: ILogger<MachineLearning>,
     telegramClient: ITelegramBotClient,
-    botConf: BotConfiguration
+    botConf: IOptions<BotConfiguration>,
+    db: DbService,
+    timeProvider: TimeProvider
 ) =
     let metricsToString(metrics: CalibratedBinaryClassificationMetrics) (duration: TimeSpan) =
         let sb = StringBuilder()
@@ -59,8 +61,8 @@ type MachineLearning(
 
     /// Loads a serialized model from DB via streaming and creates a PredictionEngine.
     let loadModelFromDb () = task {
-        let! result = DB.withTrainedModel (fun (stream, createdAt) -> task {
-            let mlContext = MLContext(botConf.MlSeed)
+        let! result = db.WithTrainedModel(fun (stream, createdAt) -> task {
+            let mlContext = MLContext(botConf.Value.MlSeed)
             let model, _schema = mlContext.Model.Load(stream)
             predictionEngine <- Some(mlContext.Model.CreatePredictionEngine<SpamOrHam, Prediction>(model))
             modelCreatedAt <- Some createdAt
@@ -81,15 +83,15 @@ type MachineLearning(
         
         let sw = Stopwatch.StartNew()
 
-        let mlContext = MLContext(botConf.MlSeed)
+        let mlContext = MLContext(botConf.Value.MlSeed)
         
-        let trainDate = Time.utcNow() - botConf.MlTrainInterval
-        let! rawData = DB.mlData botConf.MlTrainCriticalMsgCount trainDate
-        
+        let now = timeProvider.GetUtcNow().UtcDateTime
+        let trainDate = now - botConf.Value.MlTrainInterval
+        let! rawData = db.MlData(botConf.Value.MlTrainCriticalMsgCount, trainDate)
+
         logger.LogInformation $"Training data count: {rawData.Length}"
-        
-        let now = Time.utcNow()
-        let k = botConf.MlWeightDecayK
+
+        let k = botConf.Value.MlWeightDecayK
         let data =
             rawData
             |> Array.map (fun x ->
@@ -102,16 +104,16 @@ type MachineLearning(
                   spam = x.spam
                   createdAt = x.created_at
                   weight = w
-                  moreThanNEmojisF = if x.custom_emoji_count > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
+                  moreThanNEmojisF = if x.custom_emoji_count > botConf.Value.MlCustomEmojiThreshold then 1.0f else 0.0f
                   lessThanNMessagesF = if x.less_than_n_messages then 1.0f else 0.0f }
             )
             |> fun x ->
-                if botConf.MlTrainRandomSortData then
+                if botConf.Value.MlTrainRandomSortData then
                     Array.sortInPlaceBy (fun _ -> Guid.NewGuid()) x
                 x
 
         let dataView = mlContext.Data.LoadFromEnumerable data
-        let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.MlTrainingSetFraction, seed = botConf.MlSeed)
+        let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.Value.MlTrainingSetFraction, seed = botConf.Value.MlSeed)
         let trainingData = trainTestSplit.TrainSet
         let testData = trainTestSplit.TestSet
         
@@ -124,13 +126,13 @@ type MachineLearning(
             let options = SdcaLogisticRegressionBinaryTrainer.Options(
                 LabelColumnName = "spam",
                 FeatureColumnName = "Features",
-                MaximumNumberOfIterations = botConf.MlMaxNumberOfIterations
+                MaximumNumberOfIterations = botConf.Value.MlMaxNumberOfIterations
             )
             if k > 0.0 then
                 options.ExampleWeightColumnName <- "weight"
             // When ML_SEED is set, use single thread for deterministic training.
             // SDCA's parallel coordinate updates cause non-deterministic weight convergence.
-            if botConf.MlSeed.HasValue then
+            if botConf.Value.MlSeed.HasValue then
                 options.NumberOfThreads <- Nullable 1
             featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(options))
                 
@@ -155,8 +157,8 @@ type MachineLearning(
             mlContext.Model.Save(trainedModel, dataView.Schema, ms)
             logger.LogInformation("Serialized model ({Size} bytes)", ms.Length)
             ms.Position <- 0L
-            do! DB.saveTrainedModel ms
-            modelCreatedAt <- Some(Time.utcNow())
+            do! db.SaveTrainedModel(ms)
+            modelCreatedAt <- Some(timeProvider.GetUtcNow().UtcDateTime)
             logger.LogInformation "Saved trained model to DB"
         finally
             ms.Dispose()
@@ -167,7 +169,7 @@ type MachineLearning(
         logger.LogInformation metricsStr
         if sendMetrics then
             do! telegramClient.SendMessage(
-                    chatId = ChatId(botConf.AllLogsChannelId),
+                    chatId = ChatId(botConf.Value.AllLogsChannelId),
                     text = metricsStr,
                     parseMode = ParseMode.Markdown
                 ) |> taskIgnore
@@ -175,7 +177,7 @@ type MachineLearning(
     }
 
     // if ML is ready (either disabled or model is trained)
-    member _.IsReady = not botConf.MlEnabled || predictionEngine.IsSome
+    member _.IsReady = not botConf.Value.MlEnabled || predictionEngine.IsSome
 
     member _.Predict(text: string, userMsgCount: int, entities: MessageEntity array) =
         try
@@ -191,10 +193,10 @@ type MachineLearning(
                 predictionEngine.Predict
                     { text = text
                       spam = false
-                      lessThanNMessagesF = if userMsgCount < botConf.MlTrainCriticalMsgCount then 1.0f else 0.0f
-                      moreThanNEmojisF = if emojiCount > botConf.MlCustomEmojiThreshold then 1.0f else 0.0f
+                      lessThanNMessagesF = if userMsgCount < botConf.Value.MlTrainCriticalMsgCount then 1.0f else 0.0f
+                      moreThanNEmojisF = if emojiCount > botConf.Value.MlCustomEmojiThreshold then 1.0f else 0.0f
                       weight = 1.0f
-                      createdAt = Time.utcNow() }
+                      createdAt = timeProvider.GetUtcNow().UtcDateTime }
                 |> Some
             | None ->
                 logger.LogInformation "Model not trained yet"
@@ -216,8 +218,8 @@ type MachineLearning(
     /// Called periodically by the scheduler on all pods.
     member _.TryReloadIfNewer() = task {
         try
-            if botConf.MlEnabled then
-                let! dbCreatedAt = DB.getModelCreatedAt()
+            if botConf.Value.MlEnabled then
+                let! dbCreatedAt = db.GetModelCreatedAt()
                 match dbCreatedAt, modelCreatedAt with
                 | Some dbTime, Some localTime when dbTime > localTime ->
                     logger.LogInformation("Newer model found in DB (DB: {DbTime}, local: {LocalTime}), reloading...", dbTime, localTime)
@@ -235,13 +237,13 @@ type MachineLearning(
 
     interface IHostedService with
         member this.StartAsync _ = task {
-            if botConf.MlEnabled then
+            if botConf.Value.MlEnabled then
                 // Try to load pre-trained model from DB (fast path)
                 let! loaded = loadModelFromDb()
                 if not loaded then
                     // No model in DB. Use advisory lock so only one pod trains.
                     // Lock key 1337 is an arbitrary constant for ML training coordination.
-                    let! trained = DB.withAdvisoryLock 1337 (fun () -> task {
+                    let! trained = db.WithAdvisoryLock(1337, fun () -> task {
                         // Double-check: another pod may have saved while we waited for the lock
                         let! alreadyLoaded = loadModelFromDb()
                         if not alreadyLoaded then
