@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0.103-noble AS build
+
+### workaround for testcontainers resource reaper issue
+ARG RESOURCE_REAPER_SESSION_ID="00000000-0000-0000-0000-000000000000"
+LABEL "org.testcontainers.resource-reaper-session"=$RESOURCE_REAPER_SESSION_ID
+### end of workaround
+
+ARG BOT_PROJECT
+ARG FORCE_REBUILD
+
+WORKDIR /repo
+COPY Directory.Build.props Directory.Packages.props global.json ./
+COPY src/BotInfra/BotInfra.fsproj src/BotInfra/
+COPY src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj src/${BOT_PROJECT}/
+RUN dotnet restore src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj
+
+COPY src/BotInfra/ src/BotInfra/
+COPY src/${BOT_PROJECT}/ src/${BOT_PROJECT}/
+RUN dotnet publish src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj -c Release -o /publish
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.3-noble AS runtime
+ARG BOT_PROJECT
+ENV BOT_DLL=${BOT_PROJECT}.dll
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /publish .
+ENTRYPOINT ["sh", "-c", "dotnet $BOT_DLL"]
