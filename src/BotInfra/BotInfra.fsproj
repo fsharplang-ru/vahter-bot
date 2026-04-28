@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Utils.fs" />
+    <Compile Include="Time.fs" />
+    <Compile Include="TelegramHelpers.fs" />
+    <Compile Include="JsonSetup.fs" />
+    <Compile Include="AzureOcr.fs" />
+    <Compile Include="LiveOptions.fs" />
+    <Compile Include="OcrService.fs" />
+    <Compile Include="DbSettings.fs" />
+    <Compile Include="DapperSetup.fs" />
+    <Compile Include="Observability.fs" />
+    <Compile Include="WebhookHost.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Npgsql.OpenTelemetry" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Enrichers.Span" />
+    <PackageReference Include="Serilog.Formatting.Compact" />
+    <PackageReference Include="Telegram.Bot" />
+  </ItemGroup>
+
+</Project>
