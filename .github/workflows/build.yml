@@ -3,36 +3,15 @@ name: Build
 on:
   pull_request:
     branches: [ "main" ]
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-arm
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - uses: actions/setup-dotnet@v4
-      with:
-        global-json-file: global.json
-    - name: Tests
-      run: dotnet test -c Release --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=detailed"
-      
-    # upload test results
-    - name: Upload dotnet test results
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results
-        path: "**/*.trx"
-      # Use always() to always run this step to publish test results when there are test failures
-      if: ${{ always() }}
-
-    - name: Upload container logs
-      uses: actions/upload-artifact@v4
-      with:
-        name: container-logs
-        path: test-artifacts/
-      if: ${{ always() }}
+    uses: ./.github/workflows/_bot-build.yml
+    with:
+      test-command: >-
+dotnet test tests/VahterBanBot.Tests/VahterBanBot.Tests.fsproj
+-c Release --logger "trx;LogFileName=test-results.trx"
+--logger "console;verbosity=detailed"
