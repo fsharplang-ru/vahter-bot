@@ -1,0 +1,22 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0.103 AS build
+WORKDIR /src
+
+ARG FORCE_REBUILD=0
+ARG FAKE_PROJECT
+ARG FAKE_PORT=8080
+
+COPY Directory.Build.props Directory.Packages.props global.json ./
+COPY tests/${FAKE_PROJECT}/${FAKE_PROJECT}.fsproj tests/${FAKE_PROJECT}/
+RUN dotnet restore tests/${FAKE_PROJECT}/${FAKE_PROJECT}.fsproj
+COPY tests/${FAKE_PROJECT}/ tests/${FAKE_PROJECT}/
+RUN dotnet publish tests/${FAKE_PROJECT}/${FAKE_PROJECT}.fsproj -c Release -o /publish
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.3 AS runtime
+ARG FAKE_PROJECT
+ARG FAKE_PORT=8080
+ENV FAKE_DLL=${FAKE_PROJECT}.dll
+ENV ASPNETCORE_URLS=http://0.0.0.0:${FAKE_PORT}
+WORKDIR /app
+COPY --from=build /publish .
+EXPOSE ${FAKE_PORT}
+ENTRYPOINT ["sh", "-c", "dotnet $FAKE_DLL"]

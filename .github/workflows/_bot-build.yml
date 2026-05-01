@@ -1,0 +1,37 @@
+name: "Bot: Build"
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        required: true
+        type: string
+        description: "dotnet test command(s) to run"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-dotnet@v4
+      with:
+        global-json-file: global.json
+
+    - name: Tests
+      run: ${{ inputs.test-command }}
+
+    - name: Upload dotnet test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results
+        path: "**/*.trx"
+      if: ${{ always() }}
+
+    - name: Upload container logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: container-logs
+        path: test-artifacts/
+      if: ${{ always() }}
