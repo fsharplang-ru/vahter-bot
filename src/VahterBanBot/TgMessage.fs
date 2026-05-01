@@ -6,6 +6,7 @@ open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
 open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.Utils
+open BotInfra.TelegramHelpers
 
 /// Wrapper around Telegram.Bot.Types.Message.
 /// All sender resolution (channel sender → SenderChat) is baked in.
@@ -117,7 +118,7 @@ type TgMessage private (raw: Message, isEdit: bool) =
 
     /// Serialized JSON of the original un-enriched raw message (for DB raw_message column).
     member _.RawJson =
-        JsonSerializer.Serialize(raw, options = jsonOptions)
+        JsonSerializer.Serialize(raw, options = telegramJsonOptions)
 
     // ── Factory ────────────────────────────────────────────────────
 

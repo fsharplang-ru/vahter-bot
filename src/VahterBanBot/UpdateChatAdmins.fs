@@ -4,10 +4,12 @@ open System.Collections.Generic
 open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
+open Microsoft.Extensions.Options
 open Telegram.Bot
 open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open BotInfra
 open System
 open System.Threading
 open Microsoft.Extensions.Hosting
@@ -15,7 +17,7 @@ open Microsoft.Extensions.Hosting
 type UpdateChatAdmins(
     logger: ILogger<UpdateChatAdmins>,
     telegramClient: ITelegramBotClient,
-    botConf: BotConfiguration
+    botConf: IOptions<BotConfiguration>
 ) =
     let mutable timer: Timer = null
     static let mutable localAdmins: ISet<int64> = HashSet<int64>()
@@ -25,7 +27,7 @@ type UpdateChatAdmins(
             let sb = StringBuilder()
             %sb.AppendLine("New chat admins:")
             let result = HashSet<int64>()
-            for chatId in botConf.ChatsToMonitor.Values do
+            for chatId in botConf.Value.ChatsToMonitor.Values do
                 let! admins = telegramClient.GetChatAdministrators(ChatId chatId)
 
                 // wait a bit so we don't get rate limited
@@ -47,10 +49,10 @@ type UpdateChatAdmins(
 
     interface IHostedService with
         member this.StartAsync _ =
-            if not botConf.IgnoreSideEffects && botConf.UpdateChatAdmins then
-                if botConf.UpdateChatAdminsInterval.IsSome then
+            if not botConf.Value.IgnoreSideEffects && botConf.Value.UpdateChatAdmins then
+                if botConf.Value.UpdateChatAdminsInterval.IsSome then
                     // recurring
-                    timer <- new Timer(TimerCallback(updateChatAdmins >> ignore), null, TimeSpan.Zero, botConf.UpdateChatAdminsInterval.Value)
+                    timer <- new Timer(TimerCallback(updateChatAdmins >> ignore), null, TimeSpan.Zero, botConf.Value.UpdateChatAdminsInterval.Value)
                     Task.CompletedTask
                 else
                     // once
