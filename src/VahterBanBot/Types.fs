@@ -8,20 +8,14 @@ open System.Text.Json.Serialization
 open Dapper
 open Telegram.Bot.Types
 open Utils
+open BotInfra
 
 // ---------------------------------------------------------------------------
-// Event sourcing — raw DB row and typed event DUs
+// Event sourcing — typed event DUs
+//
+// `RawEvent` and `ConcurrencyConflict` live in `BotInfra.EventStore` and are
+// pulled in via `open BotInfra` above.
 // ---------------------------------------------------------------------------
-
-[<CLIMutable>]
-type RawEvent =
-    { stream_id:      string
-      stream_version: int
-      event_type:     string
-      data:           string   // JSONB stored as text by Dapper
-      created_at:     DateTime }
-
-type ConcurrencyConflict = ConcurrencyConflict
 
 // ---------------------------------------------------------------------------
 // Shared value types
@@ -78,11 +72,11 @@ type User =
       Banned:        (Actor * DateTime) option  // (bannedBy, bannedAt)
       Username:      string option
       ReactionCount: int }
-    member this.IsBanned(banExpiryDays: int) =
+    member this.IsBanned(banExpiryDays: int, now: DateTime) =
         match this.Banned with
         | None -> false
         | Some (_, bannedAt) ->
-            Time.utcNow() - bannedAt < TimeSpan.FromDays(float banExpiryDays)
+            now - bannedAt < TimeSpan.FromDays(float banExpiryDays)
     static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
@@ -227,8 +221,8 @@ type BotConfiguration =
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
       IgnoreSideEffects: bool
-      UseFakeApi: bool
       UsePolling: bool
+      TelegramApiBaseUrl: string
       CleanupInterval: TimeSpan
       CleanupCheckInterval: TimeSpan
       CleanupScheduledHour: int
