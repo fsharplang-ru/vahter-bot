@@ -1,0 +1,9 @@
+<Project>
+  <Target Name="CleanTestArtifacts" BeforeTargets="VSTest">
+    <PropertyGroup>
+      <TestArtifactsDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\test-artifacts\$(MSBuildProjectName)'))</TestArtifactsDir>
+    </PropertyGroup>
+    <RemoveDir Directories="$(TestArtifactsDir)" Condition="Exists('$(TestArtifactsDir)')" />
+    <MakeDir Directories="$(TestArtifactsDir)" />
+  </Target>
+</Project>

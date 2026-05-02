@@ -6,6 +6,7 @@ open Telegram.Bot.Types
 open Telegram.Bot.Types.Enums
 open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.Utils
+open BotInfra.TelegramHelpers
 
 /// Wrapper around Telegram.Bot.Types.Message.
 /// All sender resolution (channel sender → SenderChat) is baked in.
@@ -13,9 +14,23 @@ open VahterBanBot.Utils
 type TgMessage private (raw: Message, isEdit: bool) =
     let mutable prefixText: string = null
     let mutable suffixText: string = null
+    let mutable ownPhotoOcrApplied: bool = false
+    let mutable externalReplyPhotoOcrApplied: bool = false
 
     /// Whether this message is an edit of a previously sent message.
     member _.IsEdit = isEdit
+
+    /// True once OCR for the message's own photos is resolved — cache hit
+    /// (text or empty), Azure attempt (success or failure), or initial state
+    /// where there are no photos. Tells the deferred Azure step to skip.
+    member _.OwnPhotoOcrApplied
+        with get () = ownPhotoOcrApplied
+        and  set v  = ownPhotoOcrApplied <- v
+
+    /// Same for the external-reply quote photos.
+    member _.ExternalReplyPhotoOcrApplied
+        with get () = externalReplyPhotoOcrApplied
+        and  set v  = externalReplyPhotoOcrApplied <- v
 
     // ── Sender resolution ──────────────────────────────────────────
 
@@ -117,7 +132,7 @@ type TgMessage private (raw: Message, isEdit: bool) =
 
     /// Serialized JSON of the original un-enriched raw message (for DB raw_message column).
     member _.RawJson =
-        JsonSerializer.Serialize(raw, options = jsonOptions)
+        JsonSerializer.Serialize(raw, options = telegramJsonOptions)
 
     // ── Factory ────────────────────────────────────────────────────
 
