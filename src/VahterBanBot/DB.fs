@@ -209,19 +209,25 @@ WHERE event_type = 'MessageReceived'
             return ()
         }
 
-    member _.CountUniqueUserMsg(userId: int64) : Task<int> =
+    /// Returns the number of distinct text-md5s recorded for the user, capped at `cap`.
+    /// Callers compare the result against a small threshold, so anything beyond that
+    /// threshold is indistinguishable — `LIMIT cap` keeps the cost constant regardless
+    /// of how active the user is.
+    member _.CountUniqueUserMsgsUpTo(userId: int64, cap: int) : Task<int> =
         task {
             use conn = new NpgsqlConnection(connString)
 
             //language=postgresql
             let sql =
                 """
-SELECT COUNT(*)::INT
-FROM user_msg_text_index
-WHERE user_id = @userId
+SELECT COUNT(*)::INT FROM (
+    SELECT 1 FROM user_msg_text_index
+    WHERE user_id = @userId
+    LIMIT @cap
+) t
                 """
 
-            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId; cap = cap |})
             return result
         }
 

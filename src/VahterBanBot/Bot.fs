@@ -828,7 +828,12 @@ type BotService(
             %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
 
             if not shouldBeSkipped then
-                let! usrMsgCount = db.CountUniqueUserMsg(msg.SenderId)
+                // ml.Predict only branches on usrMsgCount via two thresholds:
+                // `>= MlOldUserMsgCount` and `< MlTrainCriticalMsgCount`. Anything
+                // beyond the larger one is indistinguishable, so cap the read.
+                let mlCountCap =
+                    (max botConfig.Value.MlOldUserMsgCount botConfig.Value.MlTrainCriticalMsgCount) + 1
+                let! usrMsgCount = db.CountUniqueUserMsgsUpTo(msg.SenderId, mlCountCap)
 
                 %mlActivity.SetTag("preOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
                 %mlActivity.SetTag("ownPhotoOcrAppliedBeforeCheck", msg.OwnPhotoOcrApplied)
@@ -1426,8 +1431,11 @@ type BotService(
 
                 %activity.SetTag("totalReactionCount", updatedUser.ReactionCount)
 
-                // Check heuristics: if user has few messages but many reactions -> ban
-                let! msgCount = db.CountUniqueUserMsg(updatedUser.Id)
+                // Check heuristics: if user has few messages but many reactions -> ban.
+                // Only the `< ReactionSpamMinMessages` threshold matters here, so cap
+                // the count at that value + 1.
+                let! msgCount =
+                    db.CountUniqueUserMsgsUpTo(updatedUser.Id, botConfig.Value.ReactionSpamMinMessages + 1)
                 %activity.SetTag("messageCount", msgCount)
 
                 if msgCount < botConfig.Value.ReactionSpamMinMessages &&
