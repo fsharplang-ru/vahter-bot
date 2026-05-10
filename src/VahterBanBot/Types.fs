@@ -57,31 +57,66 @@ type LlmVerdict =
         | "SKIP"     -> LlmVerdict.Skip
         | _          -> LlmVerdict.Error
 
+/// Verdict for the reaction-spam triage pipeline (separate from LlmVerdict because the
+/// reaction flow has 4 verdicts vs 3 — UNSURE explicitly routes to vahters with the
+/// reason annotation, while message triage only has SPAM/SKIP/NOT_SPAM).
+[<RequireQualifiedAccess>]
+type LlmReactionVerdict =
+    | Ban       // Strong spammer signals — total ban + delete user's messages
+    | Spam      // Likely spammer in this chat — restrict reactions + delete in this chat only
+    | NotSpam   // Legit lurker — set cooldown, no action
+    | Unsure    // LLM is uncertain — fall through to vahter with reason annotation
+    | Error     // HTTP / parse failure — same fallback as Unsure
+    static member FromString(verdictStr: string) =
+        match verdictStr with
+        | "BAN"      -> LlmReactionVerdict.Ban
+        | "SPAM"     -> LlmReactionVerdict.Spam
+        | "NOT_SPAM" -> LlmReactionVerdict.NotSpam
+        | "UNSURE"   -> LlmReactionVerdict.Unsure
+        | _          -> LlmReactionVerdict.Error
+    member this.ToWireString() =
+        match this with
+        | LlmReactionVerdict.Ban     -> "BAN"
+        | LlmReactionVerdict.Spam    -> "SPAM"
+        | LlmReactionVerdict.NotSpam -> "NOT_SPAM"
+        | LlmReactionVerdict.Unsure  -> "UNSURE"
+        | LlmReactionVerdict.Error   -> "ERROR"
+
 // ---------------------------------------------------------------------------
 // Per-stream event DUs
 // ---------------------------------------------------------------------------
 
 type UserEvent =
-    | UsernameChanged      of {| userId: int64; username: string option |}
-    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option; bannedAt: DateTime |}
-    | UserUnbanned         of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
-    | UserReactionRecorded of {| userId: int64; delta: int |}
+    | UsernameChanged              of {| userId: int64; username: string option |}
+    | UserBanned                   of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option; bannedAt: DateTime |}
+    | UserUnbanned                 of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
+    /// Records a user adding/removing reactions on a specific message. `chatId` and `messageId`
+    /// are option to stay backward compatible with pre-2026-05 events that didn't carry them.
+    | UserReactionRecorded         of {| userId: int64; chatId: int64 option; messageId: int option; delta: int |}
+    /// Reaction-spam triage verdict NOT_SPAM — sets a cooldown so a legit lurker doesn't
+    /// keep re-triggering the pipeline. Set by LLM (autonomous mode) or by a vahter button.
+    | ReactionTriageNotSpamSet     of {| userId: int64; until: DateTime; actor: Actor |}
 
 type User =
-    { Id:            int64
-      Banned:        (Actor * DateTime) option  // (bannedBy, bannedAt)
-      Username:      string option
-      ReactionCount: int }
+    { Id:             int64
+      Banned:         (Actor * DateTime) option  // (bannedBy, bannedAt)
+      Username:       string option
+      ReactionCount:  int
+      NotSpamUntil:   DateTime option }          // reaction-spam triage cooldown
     member this.IsBanned(banExpiryDays: int, now: DateTime) =
         match this.Banned with
         | None -> false
         | Some (_, bannedAt) ->
             now - bannedAt < TimeSpan.FromDays(float banExpiryDays)
-    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0 }
+    member this.IsInReactionTriageCooldown(now: DateTime) =
+        match this.NotSpamUntil with
+        | Some until -> until > now
+        | None -> false
+    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0; NotSpamUntil = None }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
-        | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
-        | UserBanned e           ->
+        | UsernameChanged e          -> { state with Id = e.userId; Username = e.username }
+        | UserBanned e               ->
             let actor =
                 match e.actor with
                 | Some a -> a
@@ -93,8 +128,9 @@ type User =
                     | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
                     | None -> Actor.Bot None
             { state with Id = e.userId; Banned = Some (actor, e.bannedAt) }
-        | UserUnbanned e         -> { state with Id = e.userId; Banned = None }
-        | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
+        | UserUnbanned e             -> { state with Id = e.userId; Banned = None }
+        | UserReactionRecorded e     -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
+        | ReactionTriageNotSpamSet e -> { state with Id = e.userId; NotSpamUntil = Some e.until }
 
     static member fromTgUser (user: Telegram.Bot.Types.User) =
         { User.Zero with Id = user.Id; Username = Option.ofObj user.Username }
@@ -138,6 +174,12 @@ type VahterAction =
     | PotentialSoftSpam
     | PotentialNotSpam
     | DetectedNotSpam
+    /// Reaction-spam triage button: BAN — total ban + remove user's reactions in all chats
+    | ReactionTriageBan
+    /// Reaction-spam triage button: SPAM — restrict reactions + remove existing in originating chat
+    | ReactionTriageSpam
+    /// Reaction-spam triage button: NOT SPAM — set cooldown, no destructive action
+    | ReactionTriageNotSpam
 
 type AutoDeleteReason =
     | MlSpam of {| score: float |}
@@ -192,19 +234,25 @@ type Callback =
 // ---------------------------------------------------------------------------
 
 type DetectionEvent =
-    | MlScoredMessage          of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
-    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
-    | InvisibleMentionDetected of {| chatId: int64; messageId: int; userId: int64 |}
+    | MlScoredMessage              of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
+    | LlmClassified                of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
+    | InvisibleMentionDetected     of {| chatId: int64; messageId: int; userId: int64 |}
+    /// Verdict from the reaction-spam triage classifier (vision LLM evaluating profile photo + bio + history).
+    /// Recorded in BOTH shadow mode (ignored for action) AND autonomous mode (load-bearing). The presence
+    /// of this event for a given (userId, chatId) means a reaction-spam threshold tripped.
+    | LlmReactionTriageClassified  of {| chatId: int64; userId: int64; verdict: string; reason: string option; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option; shadowMode: bool |}
 
 type Detection =
-    { MlScore:      float option
-      LlmVerdict:   string option }
-    static member Zero = { MlScore = None; LlmVerdict = None }
+    { MlScore:                  float option
+      LlmVerdict:               string option
+      LlmReactionTriageVerdict: string option }
+    static member Zero = { MlScore = None; LlmVerdict = None; LlmReactionTriageVerdict = None }
     static member Fold (state: Detection, event: DetectionEvent) : Detection =
         match event with
-        | MlScoredMessage e          -> { state with MlScore = Some e.score }
-        | LlmClassified e            -> { state with LlmVerdict = Some e.verdict }
-        | InvisibleMentionDetected _ -> state
+        | MlScoredMessage e             -> { state with MlScore = Some e.score }
+        | LlmClassified e               -> { state with LlmVerdict = Some e.verdict }
+        | InvisibleMentionDetected _    -> state
+        | LlmReactionTriageClassified e -> { state with LlmReactionTriageVerdict = Some e.verdict }
 
 [<CLIMutable>]
 type BotConfiguration =
@@ -268,6 +316,14 @@ type BotConfiguration =
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
       LlmChatDescriptions: Dictionary<int64, string>
+      // Reaction-spam triage (vision LLM)
+      /// When true, LLM verdict acts autonomously (UNSURE falls through to vahter).
+      /// When false (default — shadow mode), LLM runs but verdict is recorded only; vahter always decides.
+      LlmReactionTriageAutoAct: bool
+      /// Escape hatch: if true, skip the LLM call entirely (do not even shadow). Normally false.
+      LlmReactionTriageShadowDisable: bool
+      /// Days after vahter/LLM verdict NOT_SPAM before re-triaging the same user.
+      ReactionNotSpamCooldownDays: int
       /// Bans older than this many days are considered expired. Default: 7.
       BanExpiryDays: int }
     member this.BotActor =
@@ -307,8 +363,17 @@ type VahterStats =
                 %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountTotal}")
         sb.ToString()
 
-// used as aux type to possibly extend in future without breaking changes 
+// used as aux type to possibly extend in future without breaking changes
 type MessageWrapper= { message: Telegram.Bot.Types.Message }
+
+/// Carries everything a reaction-spam callback handler needs. There is no "message
+/// authored by the suspect" in this flow (the suspect *reacted* to someone else's
+/// message), so we cannot piggy-back on MessageWrapper.
+type ReactionContext =
+    { userId:        int64
+      chatId:        int64
+      llmVerdict:    string option   // e.g. "SPAM"/"BAN"/etc — what the LLM said in shadow mode
+      llmReason:     string option }
 
 // This type must be backwards compatible with the previous version
 // as it is used to (de)serialize the button callback data
@@ -316,6 +381,9 @@ type CallbackMessage =
     | NotASpam of MessageWrapper
     | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
     | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
+    | ReactionBan of ReactionContext      // total ban + remove user's reactions in all chats + delete user's messages
+    | ReactionSpam of ReactionContext     // restrict reactions + remove existing in originating chat
+    | ReactionNotSpam of ReactionContext  // set cooldown, no destructive action
 
 /// JSON serializer options for event store (de)serialization.
 /// Uses internal tag, unwrapped record cases, named fields, and unwrapped options.
