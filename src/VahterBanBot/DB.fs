@@ -18,6 +18,23 @@ type UserMessage =
     { chat_id: int64
       message_id: int }
 
+/// Lightweight DTO for the reaction-spam triage dossier (recent activity from one user).
+[<CLIMutable>]
+type DossierEvent =
+    { chat_id: int64
+      message_id: int
+      kind: string          // "message" or "reaction"
+      text: string          // message text (NULL for reaction)
+      emoji: string         // joined emoji string for reaction events (NULL for message)
+      created_at: DateTime }
+
+/// Lightweight DTO for cached user profile (photo + bio).
+[<CLIMutable>]
+type CachedUserProfile =
+    { photo_bytes: byte[]
+      bio: string
+      fetched_at: DateTime }
+
 [<CLIMutable>]
 type SpamOrHamDb =
     { text: string
@@ -42,14 +59,21 @@ type DbService(connString: string, timeProvider: TimeProvider) =
             return ()
         }
 
-    let recordUserReaction (userId: int64) (username: string option) (reactionIncrement: int) : Task<User> =
+    let recordUserReaction (userId: int64) (username: string option) (chatId: int64) (messageId: int) (emoji: string option) (reactionIncrement: int) : Task<User> =
         task {
             let! (_, state) = EventStore.appendEvent store $"user:{userId}" (fun state ->
                 let usernameEvt =
                     if state.Username = username then []
                     else [ UsernameChanged {| userId = userId; username = username |} ]
-                usernameEvt @ [ UserReactionRecorded {| userId = userId; delta = reactionIncrement |} ])
+                usernameEvt @ [ UserReactionRecorded {| userId = userId; chatId = Some chatId; messageId = Some messageId; emoji = emoji; delta = reactionIncrement |} ])
             return state
+        }
+
+    let recordReactionTriageNotSpamSet (userId: int64) (until: DateTime) (actor: Actor) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"user:{userId}" (fun (_: User) ->
+                [ ReactionTriageNotSpamSet {| userId = userId; until = until; actor = actor |} ])
+            return ()
         }
 
     let recordUserBannedImpl (userId: int64) (actor: Actor) (chatId: int64 option) (messageId: int option) (messageText: string option) (banExpiryDays: int) : Task<unit> =
@@ -120,9 +144,9 @@ ON CONFLICT DO NOTHING
             return { state with Id = userId }
         }
 
-    member _.UpsertUserAndIncrementReactions(userId: int64, username: string option, reactionIncrement: int) : Task<User> =
+    member _.UpsertUserAndIncrementReactions(userId: int64, username: string option, chatId: int64, messageId: int, emoji: string option, reactionIncrement: int) : Task<User> =
         task {
-            let! state = recordUserReaction userId username reactionIncrement
+            let! state = recordUserReaction userId username chatId messageId emoji reactionIncrement
             return { state with Id = userId }
         }
 
@@ -209,19 +233,25 @@ WHERE event_type = 'MessageReceived'
             return ()
         }
 
-    member _.CountUniqueUserMsg(userId: int64) : Task<int> =
+    /// Returns the number of distinct text-md5s recorded for the user, capped at `cap`.
+    /// Callers compare the result against a small threshold, so anything beyond that
+    /// threshold is indistinguishable — `LIMIT cap` keeps the cost constant regardless
+    /// of how active the user is.
+    member _.CountUniqueUserMsgsUpTo(userId: int64, cap: int) : Task<int> =
         task {
             use conn = new NpgsqlConnection(connString)
 
             //language=postgresql
             let sql =
                 """
-SELECT COUNT(*)::INT
-FROM user_msg_text_index
-WHERE user_id = @userId
+SELECT COUNT(*)::INT FROM (
+    SELECT 1 FROM user_msg_text_index
+    WHERE user_id = @userId
+    LIMIT @cap
+) t
                 """
 
-            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId; cap = cap |})
             return result
         }
 
@@ -320,6 +350,160 @@ FROM expanded;
                                    promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
                                    modelName = modelName; promptHash = promptHash |} ])
             return ()
+        }
+
+    /// Records an LlmReactionTriageClassified event on a user-scoped detection stream.
+    /// Stream key: detection:reaction:{userId} — multiple events accumulate (one per threshold trip).
+    member _.RecordLlmReactionTriageClassified
+        (chatId: int64, userId: int64, verdict: string, reason: string option,
+         promptTokens: int, completionTokens: int, latencyMs: int,
+         modelName: string option, promptHash: string option, shadowMode: bool) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"detection:reaction:{userId}" (fun (_: Detection) ->
+                [ LlmReactionTriageClassified {| chatId = chatId; userId = userId; verdict = verdict; reason = reason
+                                                 promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
+                                                 modelName = modelName; promptHash = promptHash; shadowMode = shadowMode |} ])
+            return ()
+        }
+
+    /// Sets the reaction-triage NOT_SPAM cooldown for a user (event-sourced, folded into User aggregate).
+    member _.RecordReactionTriageNotSpam(userId: int64, until: DateTime, actor: Actor) : Task<unit> =
+        recordReactionTriageNotSpamSet userId until actor
+
+    // -----------------------------------------------------------------------
+    // Public members — Profile cache (reaction-spam triage)
+    // -----------------------------------------------------------------------
+
+    /// Returns the cached profile for this user if fetched within `maxAge` (else None).
+    member _.GetCachedUserProfile(userId: int64, maxAge: TimeSpan) : Task<CachedUserProfile option> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT photo_bytes, bio, fetched_at
+FROM user_profile_cache
+WHERE user_id = @userId
+  AND fetched_at > @cutoff
+            """
+            let! rows = conn.QueryAsync<CachedUserProfile>(sql, {| userId = userId; cutoff = utcNow().Subtract maxAge |})
+            return rows |> Seq.tryHead
+        }
+
+    /// Upserts the profile cache row for this user.
+    member _.UpsertUserProfile(userId: int64, photoBytes: byte[] option, bio: string) : Task<unit> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+INSERT INTO user_profile_cache (user_id, photo_bytes, bio, fetched_at)
+VALUES (@userId, @photo, @bio, @now)
+ON CONFLICT (user_id) DO UPDATE
+    SET photo_bytes = EXCLUDED.photo_bytes,
+        bio         = EXCLUDED.bio,
+        fetched_at  = EXCLUDED.fetched_at
+            """
+            let! _ = conn.ExecuteAsync(sql, {| userId = userId
+                                               photo = (photoBytes |> Option.toObj)
+                                               bio = bio
+                                               now = utcNow() |})
+            return ()
+        }
+
+    // -----------------------------------------------------------------------
+    // Public members — Reaction-spam triage dossier
+    // -----------------------------------------------------------------------
+
+    /// Counts MessageReceived events for this user across all chats.
+    member _.GetTotalMessagesByUser(userId: int64) : Task<int> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT COUNT(*)::INT FROM event
+WHERE event_type = 'MessageReceived'
+  AND (data->>'userId')::BIGINT = @userId
+            """
+            let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+            return count
+        }
+
+    /// Earliest event seen for this user — None if user has no events.
+    member _.GetUserFirstSeenAt(userId: int64) : Task<DateTime option> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT MIN(created_at) FROM event
+WHERE stream_id = 'user:' || @userId
+   OR (event_type = 'MessageReceived' AND (data->>'userId')::BIGINT = @userId)
+            """
+            let! result = conn.QueryAsync<Nullable<DateTime>>(sql, {| userId = userId |})
+            return
+                result
+                |> Seq.tryHead
+                |> Option.bind (fun n -> if n.HasValue then Some n.Value else None)
+        }
+
+    /// Returns (chatId, messageId) pairs for every reaction this user has placed where we
+    /// recorded the message coordinates. If `chatFilter` is Some, only returns reactions in that chat.
+    /// Pre-2026-05 events lacked chatId/messageId — those are silently skipped (we can't act on them anyway).
+    member _.GetReactionTargetsForUser(userId: int64, chatFilter: int64 option) : Task<UserMessage array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT DISTINCT
+    (data->>'chatId')::BIGINT     AS chat_id,
+    (data->>'messageId')::INT     AS message_id
+FROM event
+WHERE event_type = 'UserReactionRecorded'
+  AND stream_id  = 'user:' || @userId
+  AND data ? 'chatId'
+  AND data ? 'messageId'
+  AND (@chatFilter::BIGINT IS NULL OR (data->>'chatId')::BIGINT = @chatFilter)
+            """
+            let! rows = conn.QueryAsync<UserMessage>(sql, {| userId = userId; chatFilter = (chatFilter |> Option.toNullable) |})
+            return Array.ofSeq rows
+        }
+
+    /// Returns the user's last `n` events (mix of MessageReceived and UserReactionRecorded), newest first.
+    /// Old reaction events (pre-PR) without chatId surface with chat_id = 0; renderer treats that as
+    /// "(unknown chat)" rather than inventing a fake one.
+    member _.GetRecentDossierEvents(userId: int64, n: int) : Task<DossierEvent array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+(
+    SELECT
+        (data->>'chatId')::BIGINT  AS chat_id,
+        (data->>'messageId')::INT  AS message_id,
+        'message'                  AS kind,
+        data->>'text'              AS text,
+        NULL                       AS emoji,
+        created_at
+    FROM event
+    WHERE event_type = 'MessageReceived'
+      AND (data->>'userId')::BIGINT = @userId
+)
+UNION ALL
+(
+    SELECT
+        COALESCE((data->>'chatId')::BIGINT, 0::BIGINT) AS chat_id,
+        COALESCE((data->>'messageId')::INT, 0::INT)   AS message_id,
+        'reaction'                                    AS kind,
+        NULL                                          AS text,
+        data->>'emoji'                                AS emoji,
+        created_at
+    FROM event
+    WHERE event_type = 'UserReactionRecorded'
+      AND stream_id = 'user:' || @userId
+)
+ORDER BY created_at DESC
+LIMIT @n
+            """
+            let! rows = conn.QueryAsync<DossierEvent>(sql, {| userId = userId; n = n |})
+            return Array.ofSeq rows
         }
 
     // -----------------------------------------------------------------------
