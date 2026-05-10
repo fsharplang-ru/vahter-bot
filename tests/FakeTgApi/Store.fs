@@ -2,12 +2,20 @@ namespace FakeTgApi
 
 open System
 open System.Collections.Concurrent
+open System.Threading
 
 module Store =
     let calls = ConcurrentQueue<ApiCallLog>()
     let chatMemberStatus = ConcurrentDictionary<int64, string>()
     let files = ConcurrentDictionary<string, byte[]>()
     let methodErrors = ConcurrentDictionary<string, bool>()
+
+    /// Monotonic counter for synthesizing message_ids on send-* responses. Real Telegram
+    /// returns a distinct message_id for every send; using a constant breaks any test that
+    /// relies on per-message cleanup (e.g. ExpireCallbacksByMessageId).
+    let private nextMessageId = ref 1000
+    let allocMessageId () =
+        Interlocked.Increment(nextMessageId)
 
     let logCall (methodName: string) (url: string) (body: string) =
         calls.Enqueue(
