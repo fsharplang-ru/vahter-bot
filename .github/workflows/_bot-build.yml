@@ -7,6 +7,17 @@ on:
         required: true
         type: string
         description: "dotnet test command(s) to run"
+      paths-filter:
+        required: false
+        type: string
+        default: ""
+        description: |
+          Optional dorny/paths-filter YAML defining which files are relevant to
+          this bot. If provided and the PR touches none of them, the build
+          steps are skipped — but the job still completes successfully so the
+          required `build / build` status check reports for every PR (avoids
+          the GitHub auto-merge deadlock when path filters skip the workflow).
+          Has no effect on workflow_dispatch — manual triggers always run.
 
 jobs:
   build:
@@ -15,23 +26,49 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Detect relevant changes
+      id: filter
+      if: github.event_name == 'pull_request' && inputs.paths-filter != ''
+      uses: dorny/paths-filter@v3
+      with:
+        filters: ${{ inputs.paths-filter }}
+
+    - name: Decide whether to run build
+      id: should-run
+      run: |
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          echo "Non-PR trigger (${{ github.event_name }}) — running build"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+        elif [ -z "${{ inputs.paths-filter }}" ]; then
+          echo "No paths-filter provided — running build"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+        elif [ "${{ steps.filter.outputs.relevant }}" = "true" ]; then
+          echo "Relevant changes detected — running build"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "No relevant changes — skipping build steps (job still reports success)"
+          echo "yes=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - uses: actions/setup-dotnet@v4
+      if: steps.should-run.outputs.yes == 'true'
       with:
         global-json-file: global.json
 
     - name: Tests
+      if: steps.should-run.outputs.yes == 'true'
       run: ${{ inputs.test-command }}
 
     - name: Upload dotnet test results
       uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.should-run.outputs.yes == 'true' }}
       with:
         name: test-results
         path: "**/*.trx"
-      if: ${{ always() }}
 
     - name: Upload container logs
       uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.should-run.outputs.yes == 'true' }}
       with:
         name: container-logs
         path: test-artifacts/
-      if: ${{ always() }}

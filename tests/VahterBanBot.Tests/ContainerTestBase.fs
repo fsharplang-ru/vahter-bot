@@ -353,6 +353,124 @@ WHERE stream_id  = 'user:' || @userId
         return count > 0
     }
 
+    /// Returns the latest reaction-triage LLM verdict recorded for this user (None if absent).
+    member this.TryGetReactionTriageVerdict(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'verdict' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the LLM verdict's `reason` field for the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageReason(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'reason' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the `shadowMode` flag of the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageShadowMode(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT (data->>'shadowMode')::BOOLEAN FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<Nullable<bool>>(sql, {| userId = userId |})
+        return results |> Seq.tryHead |> Option.bind (fun v -> if v.HasValue then Some v.Value else None)
+    }
+
+    /// Finds the callback ID for a reaction-triage button (case = "ReactionBan" / "ReactionSpam" / "ReactionNotSpam").
+    /// Retries briefly to handle DB visibility races.
+    member this.GetReactionCallbackId(userId: int64, caseName: string) = task {
+        //language=postgresql
+        let sql = """
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND (data->>'targetUserId')::BIGINT = @userId
+  AND (data->>'data')::JSONB ->> 'Case' = @caseName
+ORDER BY id DESC
+LIMIT 1
+        """
+        let mutable result = None
+        let mutable attempt = 0
+        while result.IsNone && attempt < 5 do
+            use conn = new NpgsqlConnection(this.DbConnectionString)
+            let! rows = conn.QueryAsync<Guid>(sql, {| userId = userId; caseName = caseName |})
+            match rows |> Seq.tryHead with
+            | Some id -> result <- Some id
+            | None ->
+                attempt <- attempt + 1
+                do! Task.Delay 200
+        match result with
+        | Some id -> return id
+        | None -> return failwith $"Reaction-triage callback ({caseName}) not found for user {userId}"
+    }
+
+    /// Clicks an inline-keyboard callback as the given vahter (sends a CallbackQuery webhook).
+    member this.ClickCallback(callbackId: Guid, vahter: Telegram.Bot.Types.User) = task {
+        let update =
+            Update(
+                Id = (Guid.NewGuid().GetHashCode()),
+                CallbackQuery = CallbackQuery(
+                    Id = (string callbackId),
+                    Data = (string callbackId),
+                    From = vahter,
+                    ChatInstance = "test"
+                )
+            )
+        let json = JsonSerializer.Serialize(update, options = telegramJsonOptions)
+        let content = new StringContent(json, Encoding.UTF8, "application/json")
+        return! this.BotHttp.PostAsync("/bot", content)
+    }
+
+    /// True if a ReactionTriageNotSpamSet event exists for this user (cooldown has been set at some point).
+    member this.HasReactionCooldown(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+        """
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+
+    /// Returns the Actor.Case ("User" | "Bot" | "ML" | "LLM") on the latest cooldown event for this user.
+    member this.TryGetReactionCooldownActorCase(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->'actor'->>'Case' FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! values = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return values |> Seq.tryHead
+    }
+
     member this.GetUserReactionCount(userId: int64) = task {
         use conn = new NpgsqlConnection(this.DbConnectionString)
         //language=postgresql

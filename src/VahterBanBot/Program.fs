@@ -18,6 +18,7 @@ open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.OcrCache
 open VahterBanBot.LlmTriage
+open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.StartupMessage
@@ -123,6 +124,10 @@ let buildBotConf () =
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
+      // Reaction-spam triage (vision LLM)
+      LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
+      LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse
+      ReactionNotSpamCooldownDays    = getSettingOr "REACTION_NOT_SPAM_COOLDOWN_DAYS" "30" |> int
       BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int }
 
 let ocrConfigOf (c: BotConfiguration) =
@@ -172,6 +177,8 @@ WebhookHost.configureSharedServices webhookCfg builder
 %builder.Services.AddHttpClient<IBotOcr, AzureBotOcr>()
 %builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
 %builder.Services.AddHttpClient<ILlmTriage, AzureLlmTriage>()
+%builder.Services.AddHttpClient<IReactionTriageClassifier, AzureReactionTriage>()
+%builder.Services.AddSingleton<IUserProfileFetcher, UserProfileFetcher>()
 
 let app = builder.Build()
 
