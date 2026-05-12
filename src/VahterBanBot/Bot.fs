@@ -3,6 +3,7 @@ namespace VahterBanBot
 
 open System
 open System.Diagnostics
+open System.IO
 open System.Text
 open System.Threading
 open System.Threading.Tasks
@@ -15,6 +16,7 @@ open Telegram.Bot.Types.ReplyMarkups
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
+open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open BotInfra.TelegramExtensions
@@ -187,9 +189,9 @@ module private BotHelpers =
     let formatReasonStr (reason: AutoDeleteReason) (actor: Actor option) =
         let prefix = actor |> Option.map (fun a -> $"{a.DisplayName}, ") |> Option.defaultValue ""
         match reason with
-        | MlSpam r -> $"{prefix}score: {r.score}"
-        | ReactionSpam r -> $"{prefix}reactions: {r.reactionCount}"
-        | InvisibleMention -> $"{prefix}invisible mention"
+        | AutoDeleteReason.MlSpam r           -> $"{prefix}score: {r.score}"
+        | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
+        | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
 
     let selectLargestPhoto (photos: PhotoSize array) =
         let withSize = photos |> Array.filter (fun p -> p.FileSize.HasValue)
@@ -207,6 +209,8 @@ type BotService(
     computerVision: IComputerVision,
     ocrCache: VahterBanBot.OcrCache.IOcrCache,
     llmTriage: ILlmTriage,
+    reactionTriage: IReactionTriageClassifier,
+    profileFetcher: IUserProfileFetcher,
     logger: ILogger<BotService>,
     timeProvider: TimeProvider
 ) =
@@ -609,60 +613,84 @@ type BotService(
         logger.LogInformation logMsg
     }
 
-    member private this.TotalBanByReaction(reaction: MessageReactionUpdated, targetUser: User) = task {
-        use activity = botActivity.StartActivity("totalBanByReaction")
-        %activity
-            .SetTag("targetId", targetUser.Id)
-            .SetTag("targetUsername", (defaultArg targetUser.Username null))
-            .SetTag("reactionCount", targetUser.ReactionCount)
+    // ── Reaction-spam triage pipeline ──────────────────────────────────────
 
-        let deletedUserMessagesTask = task {
-            let! allUserMessages = db.GetUserMessages(targetUser.Id)
-            logger.LogInformation($"Deleting {allUserMessages.Length} messages from reaction spammer {targetUser.Id}")
+    /// Iterates every reaction this user has placed (optionally limited to one chat) and
+    /// removes each via DeleteMessageReaction. Old events (pre-2026-05) without chatId/messageId
+    /// are silently skipped — the schema enrichment ensures everything recorded after this PR
+    /// can be cleaned up. Tolerant of "already removed" errors (Telegram returns OK or 400).
+    member private _.RemoveRecordedReactions(userId: int64, chatFilter: int64 option) = task {
+        let! targets = db.GetReactionTargetsForUser(userId, chatFilter)
+        do!
+            targets
+            |> Seq.map (fun t -> task {
+                try
+                    do! botClient.DeleteMessageReaction(ChatId t.chat_id, t.message_id, userId)
+                with e ->
+                    logger.LogInformation(e, "DeleteMessageReaction failed for user {U} msg {C}/{M} (likely already gone)", userId, t.chat_id, t.message_id)
+            })
+            |> Task.WhenAll
+            |> taskIgnore
+        return targets.Length
+    }
 
-            // delete all recorded messages from user in all chats
-            do!
-                allUserMessages
-                |> Seq.map (fun msg -> task {
-                    try
-                        use _ =
-                            botActivity
-                                .StartActivity("deleteMsg")
-                                .SetTag("msgId", msg.message_id)
-                                .SetTag("chatId", msg.chat_id)
-                        recordDeletedMessage msg.chat_id null "totalBanByReaction_history"
-                        do! botClient.DeleteMessage(ChatId(msg.chat_id), msg.message_id)
-                    with e ->
-                        logger.LogWarning ($"Failed to delete message {msg.message_id} from chat {msg.chat_id}", e)
-                })
-                |> Task.WhenAll
-                |> taskIgnore
+    /// SPAM verdict action: restrict future reactions in this chat + remove existing ones.
+    /// Restriction comes first so the spammer can't immediately re-react during the deletion loop.
+    /// `actor` flows into the AllLogs audit message so vahters can see who decided.
+    member private this.ReactionAct_Spam(chatId: int64, targetUser: User, actor: Actor) = task {
+        try
+            let perms = ChatPermissions(CanReactToMessages = false)
+            do! botClient.RestrictChatMember(ChatId chatId, targetUser.Id, perms)
+        with e ->
+            logger.LogWarning(e, "RestrictChatMember(can_react=false) failed for user {U} in chat {C}", targetUser.Id, chatId)
+        let! removed = this.RemoveRecordedReactions(targetUser.Id, Some chatId)
 
-            return allUserMessages.Length
-        }
+        let chatLabel =
+            botConfig.Value.ChatsToMonitor
+            |> Seq.tryFind (fun kv -> kv.Value = chatId)
+            |> Option.map (fun kv -> sprintf "%s (%d)" (prependUsername kv.Key) chatId)
+            |> Option.defaultValue (sprintf "(unknown chat %d)" chatId)
+        let sanitizedUsername = defaultArg targetUser.Username null |> prependUsername
+        let logMsg =
+            $"⚠️ Reaction-triage SPAM on {sanitizedUsername} ({targetUser.Id}) in {chatLabel} by {prependUsername actor.DisplayName} — restricted reactions, removed {removed} existing"
+        do! botClient.SendMessage(ChatId botConfig.Value.AllLogsChannelId, logMsg) |> taskIgnore
+        logger.LogInformation logMsg
+        return removed
+    }
 
-        // Reaction-spam ban is always automatic (Actor.Bot) — leave existing Detected Spam cards
-        // as audit trail; they age out via DetectedSpamCleanupAge in Cleanup.runCleanup.
+    /// BAN verdict action: clean up reactions everywhere, delete user's messages, ban in all chats.
+    /// `actor` is whoever triggered the ban — Actor.LLM in autonomous mode, Actor.User when a
+    /// vahter clicked the button. The actor flows into the UserBanned event so analytics /
+    /// stats queries can attribute the kill correctly.
+    member private this.ReactionAct_Ban(triggeringChatId: int64, triggeringMessageId: int, targetUser: User, actor: Actor) = task {
+        let! removedReactions = this.RemoveRecordedReactions(targetUser.Id, None)
 
-        // ban user in all monitored chats
+        // delete all recorded messages from user in all chats
+        let! allUserMessages = db.GetUserMessages(targetUser.Id)
+        do!
+            allUserMessages
+            |> Seq.map (fun msg -> task {
+                try
+                    recordDeletedMessage msg.chat_id null "reactionTriage_ban_history"
+                    do! botClient.DeleteMessage(ChatId msg.chat_id, msg.message_id)
+                with e ->
+                    logger.LogWarning(e, "Failed to delete message {M} from chat {C}", msg.message_id, msg.chat_id)
+            })
+            |> Task.WhenAll
+            |> taskIgnore
+
         let! banResults = this.BanInAllChats(targetUser.Id)
-        let! deletedUserMessages = deletedUserMessagesTask
 
-        // Record the auto-deletion and ban events (cross-stream, not atomic — see totalBan comment)
-        do! db.RecordBotAutoDeleted(reaction.Chat.Id, reaction.MessageId, targetUser.Id, ReactionSpam {| reactionCount = targetUser.ReactionCount |})
-        // No messageText for reaction spam — the ban reason is in the BotAutoDeleted event
-        let actor = botConfig.Value.BotActor
-        do! db.RecordUserBannedNoMessage(targetUser.Id, actor, reaction.Chat.Id, reaction.MessageId, botConfig.Value.BanExpiryDays)
-
-        // metrics
+        // Record auto-deletion and ban events (cross-stream, not atomic — see totalBan comment)
+        do! db.RecordBotAutoDeleted(triggeringChatId, triggeringMessageId, targetUser.Id, AutoDeleteReason.ReactionSpam {| reactionCount = targetUser.ReactionCount |})
+        do! db.RecordUserBannedNoMessage(targetUser.Id, actor, triggeringChatId, triggeringMessageId, botConfig.Value.BanExpiryDays)
         bannedUsersCounter.Add(1L, tagsForVahter actor)
 
-        // produce log message
         let sanitizedUsername = defaultArg targetUser.Username null |> prependUsername
         let allChatsOk = banResults |> Array.forall Result.isOk
         let logMsgBuilder = StringBuilder()
-        %logMsgBuilder.Append $"🤖 Auto-banned reaction spammer {sanitizedUsername} ({targetUser.Id})"
-        %logMsgBuilder.AppendLine $" with {targetUser.ReactionCount} reactions and {deletedUserMessages} messages"
+        %logMsgBuilder.Append $"🤖 Reaction-triage BAN of {sanitizedUsername} ({targetUser.Id}) by {prependUsername actor.DisplayName}"
+        %logMsgBuilder.AppendLine $" — removed {removedReactions} reactions, deleted {allUserMessages.Length} messages, banned in all chats"
         if not allChatsOk then
             %logMsgBuilder.AppendLine "Ban results:"
             for result in banResults do
@@ -670,13 +698,271 @@ type BotService(
                 | Ok(chatName, _) -> %logMsgBuilder.AppendLine $"  ✅ {prependUsername chatName}"
                 | Error(chatName, _, e) -> %logMsgBuilder.AppendLine $"  ❌ {prependUsername chatName}: {e.Message}"
         let logMsg = string logMsgBuilder
-
-        // log both to logger and to All Logs channel
-        do! botClient.SendMessage(
-                chatId = ChatId(botConfig.Value.AllLogsChannelId),
-                text = logMsg
-            ) |> taskIgnore
+        do! botClient.SendMessage(ChatId botConfig.Value.AllLogsChannelId, logMsg) |> taskIgnore
         logger.LogInformation logMsg
+    }
+
+    /// NOT_SPAM verdict action: just set the cooldown — no destructive operation.
+    /// `actor` flows into the AllLogs audit message so vahters can see who decided.
+    member private _.ReactionAct_NotSpam(targetUser: User, actor: Actor) = task {
+        let cooldownDays = botConfig.Value.ReactionNotSpamCooldownDays
+        let until = utcNow().AddDays(float cooldownDays)
+        do! db.RecordReactionTriageNotSpam(targetUser.Id, until, actor)
+
+        let sanitizedUsername = defaultArg targetUser.Username null |> prependUsername
+        let logMsg =
+            $"✅ Reaction-triage NOT SPAM on {sanitizedUsername} ({targetUser.Id}) by {prependUsername actor.DisplayName} — cooldown for {cooldownDays}d, no destructive action"
+        do! botClient.SendMessage(ChatId botConfig.Value.AllLogsChannelId, logMsg) |> taskIgnore
+        logger.LogInformation logMsg
+    }
+
+    /// First-click-wins for reaction triage: when one vahter resolves a suspect, sweep ALL
+    /// other reaction-triage alerts for the same user (deduped by alert message_id) so a
+    /// second vahter can't disagree on a leftover button. Mirrors the cleanupCallbacksTask
+    /// pattern in TotalBan, scoped to reaction-triage callbacks only (Detected-Spam cards
+    /// from ML auto-bans aren't ours to delete).
+    member private _.CleanupReactionTriageCallbacksForUser(userId: int64) = task {
+        let! callbacks = db.GetActiveReactionTriageCallbacksByUserId(userId)
+        if callbacks.Length > 0 then
+            logger.LogInformation($"Reaction triage: cleaning up {callbacks.Length} sibling callbacks for user {userId}")
+
+            // Delete each unique alert message from the action channel exactly once.
+            // (Each alert posts 3 callbacks sharing one message_id; we only want one
+            // delete call per alert.)
+            let uniqueMessages =
+                callbacks
+                |> Array.choose (fun c ->
+                    match c.action_message_id with
+                    | Some msgId -> Some (c.action_channel_id, msgId)
+                    | None       -> None)
+                |> Array.distinct
+
+            do!
+                uniqueMessages
+                |> Seq.map (fun (chId, msgId) -> task {
+                    do! botClient.DeleteMessage(ChatId chId, msgId)
+                        |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to delete reaction-triage alert {msgId} in chat {chId}", e))
+                })
+                |> Task.WhenAll
+                |> taskIgnore
+
+            // Expire every callback (channel-delete is best-effort; DB state is authoritative
+            // for "first click wins" — subsequent clicks will resolve to "already processed").
+            for callback in callbacks do
+                do! db.ExpireCallback(callback.id)
+    }
+
+    /// Builds the dossier shown to both the LLM and (in shadow / UNSURE) the vahter.
+    /// Privacy-strict users return None photo and empty bio — both downstream consumers handle that.
+    member private _.BuildReactionTriageDossier(reaction: MessageReactionUpdated, targetUser: User) = task {
+        let! profile = profileFetcher.Fetch(reaction.User.Id)
+        let! totalMessages = db.GetTotalMessagesByUser(reaction.User.Id)
+        let! firstSeen = db.GetUserFirstSeenAt(reaction.User.Id)
+        let! events = db.GetRecentDossierEvents(reaction.User.Id, 10)
+        let displayName =
+            let parts = [
+                Option.ofObj reaction.User.FirstName |> Option.defaultValue ""
+                Option.ofObj reaction.User.LastName  |> Option.defaultValue ""
+            ]
+            parts |> String.concat " " |> fun s -> s.Trim()
+        return
+            { UserId                   = reaction.User.Id
+              Username                 = targetUser.Username
+              DisplayName              = displayName
+              Bio                      = profile.Bio
+              PhotoBytes               = profile.PhotoBytes
+              TotalMessagesAcrossChats = totalMessages
+              FirstSeenAt              = firstSeen
+              Last10Events             = events
+              OriginatingChatId        = reaction.Chat.Id }
+    }
+
+    /// Posts the admin alert with full dossier + photo + 3 callback buttons (BAN / SPAM / NOT SPAM).
+    /// Uses HTML parse mode. When the suspect has a username, write @username — Telegram
+    /// auto-renders that as a clickable profile mention with no `<a>` tag needed. For users
+    /// without a username we fall back to an explicit `tg://user?id=…` link.
+    member private _.PostReactionTriageAlert(dossier: ReactionTriageDossier, llmVerdict: string option, llmReason: string option, annotationLine: string) = task {
+        let htmlEscape (s: string) =
+            if isNull s then ""
+            else s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+
+        // Short, human-readable chat label using ChatsToMonitor config. Prepends "@" so
+        // Telegram auto-links public chats; appends the numeric id in parens so vahters
+        // can copy-paste it for SQL/event-stream lookups. Falls back to "(unknown)" when
+        // the chat isn't in our config (e.g. legacy events without chatId).
+        let chatLabel (chatId: int64) =
+            botConfig.Value.ChatsToMonitor
+            |> Seq.tryFind (fun kv -> kv.Value = chatId)
+            |> Option.map (fun kv -> sprintf "%s (%d)" (prependUsername kv.Key) chatId)
+            |> Option.defaultValue (sprintf "(unknown chat %d)" chatId)
+
+        // Suspect rendering — always include the numeric user id in parens so vahters
+        // can grep logs / event streams / DB by it:
+        //  - username present → "@handle (id)"  (Telegram auto-links the @handle)
+        //  - username missing → "<a href='tg://user?id=…'>Display Name</a> (id)"  (only path that
+        //    links to a profile when there's no public handle)
+        let suspectLink =
+            match dossier.Username with
+            | Some u -> sprintf "@%s (%d)" (htmlEscape u) dossier.UserId
+            | None ->
+                let name = htmlEscape dossier.DisplayName
+                let displayed = if String.IsNullOrWhiteSpace name then "(no name)" else name
+                sprintf "<a href=\"tg://user?id=%d\">%s</a> (%d)" dossier.UserId displayed dossier.UserId
+        let firstSeen =
+            match dossier.FirstSeenAt with
+            | Some t ->
+                let days = (utcNow() - t).TotalDays |> int
+                sprintf "%s (%dd ago)" (t.ToString("yyyy-MM-dd")) days
+            | None -> "(never)"
+        let bioLine =
+            if String.IsNullOrWhiteSpace dossier.Bio then "<i>(empty / privacy-strict)</i>"
+            else htmlEscape dossier.Bio
+
+        let eventLines =
+            if dossier.Last10Events.Length = 0 then "  <i>(no recent events on record)</i>"
+            else
+                dossier.Last10Events
+                |> Array.map (fun e ->
+                    let ts = e.created_at.ToString("MM-dd HH:mm")
+                    // Old reaction events (pre-PR) lack chatId and surface here as chat_id = 0.
+                    // Don't fake a real chat — say "(unknown)" so the dossier doesn't lie.
+                    let chat =
+                        if e.chat_id = 0L then "<i>(unknown)</i>"
+                        else chatLabel e.chat_id
+                    match e.kind with
+                    | "reaction" ->
+                        let emojiPart =
+                            if isNull e.emoji || e.emoji = "" then ""
+                            else " " + htmlEscape e.emoji
+                        sprintf "  • %s  %s  reacted%s" ts chat emojiPart
+                    | _ ->
+                        let txt =
+                            if isNull e.text then "(no text)"
+                            elif e.text.Length > 60 then e.text.Substring(0, 60) + "…"
+                            else e.text
+                        sprintf "  • %s  %s  \"%s\"" ts chat (htmlEscape txt))
+                |> String.concat "\n"
+
+        let header =
+            sprintf
+                "🚨 <b>Reaction-spam triage</b>\n%s\n\n<b>Suspect:</b> %s\n<b>First seen:</b> %s · <b>Msgs across chats:</b> %d\n\n<b>Bio:</b> %s\n\n<b>Recent activity:</b>\n%s\n\n<b>Originating chat:</b> %s"
+                (htmlEscape annotationLine)
+                suspectLink
+                firstSeen dossier.TotalMessagesAcrossChats
+                bioLine
+                eventLines
+                (chatLabel dossier.OriginatingChatId)
+
+        let banId      = Guid.NewGuid()
+        let spamId     = Guid.NewGuid()
+        let notSpamId  = Guid.NewGuid()
+        let ctx =
+            { userId     = dossier.UserId
+              chatId     = dossier.OriginatingChatId
+              llmVerdict = llmVerdict
+              llmReason  = llmReason }
+        // Callbacks route to PotentialSpamChannel — the "zero-inbox" actionable channel.
+        // AllLogsChannel gets a non-interactive mirror further down for audit trail.
+        let actionChannelId = botConfig.Value.PotentialSpamChannelId
+        do! db.RecordCallbackCreated(banId,     CallbackMessage.ReactionBan ctx,     dossier.UserId, actionChannelId)
+        do! db.RecordCallbackCreated(spamId,    CallbackMessage.ReactionSpam ctx,    dossier.UserId, actionChannelId)
+        do! db.RecordCallbackCreated(notSpamId, CallbackMessage.ReactionNotSpam ctx, dossier.UserId, actionChannelId)
+
+        let markup = InlineKeyboardMarkup [|
+            InlineKeyboardButton.WithCallbackData("🚫 BAN",      string banId)
+            InlineKeyboardButton.WithCallbackData("⚠️ SPAM",     string spamId)
+            InlineKeyboardButton.WithCallbackData("✅ NOT SPAM", string notSpamId)
+        |]
+
+        // Telegram caption limit is 1024 chars; sendMessage limit is 4096. With the trimmed
+        // layout (no "spam signals" footer, compact chat names) a 10-event dossier is ~700–900
+        // chars, comfortably under the photo-caption cap. If a freakishly long bio pushes us
+        // over, fall back to text-only (sendMessage with link preview disabled) so vahter still
+        // sees everything.
+        let actionChatId = ChatId actionChannelId
+        let captionFits = header.Length <= 1000
+        let! sent =
+            match dossier.PhotoBytes with
+            | Some bytes when captionFits ->
+                use ms = new MemoryStream(bytes)
+                let inputFile = InputFileStream(ms, "profile.jpg")
+                botClient.SendPhoto(actionChatId, inputFile, caption = header, parseMode = ParseMode.Html, replyMarkup = markup)
+            | _ ->
+                botClient.SendMessage(actionChatId, header, parseMode = ParseMode.Html, replyMarkup = markup)
+
+        for callbackId in [banId; spamId; notSpamId] do
+            do! db.RecordCallbackMessagePosted(callbackId, sent.MessageId)
+
+        // Mirror the full alert text (no buttons, no photo) to AllLogsChannel for audit.
+        do! botClient.SendMessage(ChatId botConfig.Value.AllLogsChannelId, header, parseMode = ParseMode.Html) |> taskIgnore
+
+        logger.LogInformation("Reaction triage alert posted for user {U} chat {C} (LLM verdict: {V})", dossier.UserId, dossier.OriginatingChatId, defaultArg llmVerdict "(none)")
+    }
+
+    /// Top-level orchestrator: builds dossier, calls LLM (if enabled), records the verdict event,
+    /// then either acts autonomously or posts the vahter alert.
+    member private this.RunReactionTriagePipeline(reaction: MessageReactionUpdated, targetUser: User) = task {
+        use activity = botActivity.StartActivity("reactionTriagePipeline")
+        %activity
+            .SetTag("user_id", targetUser.Id)
+            .SetTag("chat_id", reaction.Chat.Id)
+
+        let! dossier = this.BuildReactionTriageDossier(reaction, targetUser)
+
+        let shadowDisabled = botConfig.Value.LlmReactionTriageShadowDisable
+        let autoAct        = botConfig.Value.LlmReactionTriageAutoAct
+        let shadowMode     = not autoAct
+
+        // Run LLM unless shadow is disabled. In shadow mode the verdict is recorded and surfaced to
+        // vahters as an annotation but does NOT change the action — vahter button decides.
+        let! llmResult =
+            if shadowDisabled then
+                task { return None }
+            else
+                task {
+                    use cts = new CancellationTokenSource(TimeSpan.FromSeconds 60.)
+                    let! r = reactionTriage.ClassifyReactionSpammer(dossier, shadowMode, cts.Token)
+                    return Some r
+                }
+
+        let llmVerdictStr =
+            llmResult |> Option.map (fun r -> r.Verdict.ToWireString())
+        let llmReason =
+            llmResult |> Option.bind (fun r -> r.Reason)
+
+        // Decide path based on autoAct flag and verdict
+        let goAutonomous =
+            match autoAct, llmResult with
+            | true, Some r ->
+                match r.Verdict with
+                | LlmReactionVerdict.Ban
+                | LlmReactionVerdict.Spam
+                | LlmReactionVerdict.NotSpam -> true
+                | LlmReactionVerdict.Unsure
+                | LlmReactionVerdict.Error   -> false
+            | _ -> false
+
+        if goAutonomous then
+            let actor = Actor.LLM {| modelName = (Option.get llmResult).ModelName; promptHash = (Option.get llmResult).PromptHash |}
+            match (Option.get llmResult).Verdict with
+            | LlmReactionVerdict.Ban     -> do! this.ReactionAct_Ban(reaction.Chat.Id, reaction.MessageId, targetUser, actor)
+            | LlmReactionVerdict.Spam    -> let! _ = this.ReactionAct_Spam(reaction.Chat.Id, targetUser, actor) in ()
+            | LlmReactionVerdict.NotSpam -> do! this.ReactionAct_NotSpam(targetUser, actor)
+            | LlmReactionVerdict.Unsure
+            | LlmReactionVerdict.Error   -> ()  // unreachable per goAutonomous guard
+        else
+            let annotationLine =
+                match shadowDisabled, llmResult with
+                | true, _ -> "LLM disabled — vahter decides"
+                | false, Some r ->
+                    match r.Verdict with
+                    | LlmReactionVerdict.Error  -> sprintf "LLM annotation unavailable (%s)" (defaultArg r.Reason "error")
+                    | LlmReactionVerdict.Unsure -> sprintf "LLM was UNSURE — \"%s\"" (defaultArg r.Reason "")
+                    | _ ->
+                        let modeLabel = if shadowMode then "shadow" else "autoAct"
+                        sprintf "LLM (%s) said: %s — \"%s\"" modeLabel (r.Verdict.ToWireString()) (defaultArg r.Reason "")
+                | false, None -> "LLM not called"
+            do! this.PostReactionTriageAlert(dossier, llmVerdictStr, llmReason, annotationLine)
     }
 
     // -----------------------------------------------------------------------
@@ -828,7 +1114,12 @@ type BotService(
             %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
 
             if not shouldBeSkipped then
-                let! usrMsgCount = db.CountUniqueUserMsg(msg.SenderId)
+                // ml.Predict only branches on usrMsgCount via two thresholds:
+                // `>= MlOldUserMsgCount` and `< MlTrainCriticalMsgCount`. Anything
+                // beyond the larger one is indistinguishable, so cap the read.
+                let mlCountCap =
+                    (max botConfig.Value.MlOldUserMsgCount botConfig.Value.MlTrainCriticalMsgCount) + 1
+                let! usrMsgCount = db.CountUniqueUserMsgsUpTo(msg.SenderId, mlCountCap)
 
                 %mlActivity.SetTag("preOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
                 %mlActivity.SetTag("ownPhotoOcrAppliedBeforeCheck", msg.OwnPhotoOcrApplied)
@@ -1297,59 +1588,111 @@ type BotService(
 
     // just an aux function to reduce indentation in onCallback and prevent FS3511
     member private this.OnCallbackAux(onCallbackActivity: Activity, vahter: User, callbackState: Callback, callbackData: CallbackMessage, callbackQuery: CallbackQuery) = task {
-        let wrapper = match callbackData with NotASpam m | Spam m | MarkAsSpam m -> m
-        let tgMsg = TgMessage.Create(wrapper.message)
+        // Route message-context callbacks (existing) vs reaction-context callbacks (new) separately —
+        // they have different action keys for dedup (TryRecordVahterAction wants chatId+messageId for
+        // a real message, but reaction-spam triage has no spam-message authored by the suspect).
+        let answer (text: string) =
+            botClient.AnswerCallbackQuery(callbackQuery.Id, text)
+            |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
 
-        // Determine action type based on callback data and channel
-        let actionType =
-            match callbackData with
-            | Spam _ -> PotentialKill
-            | MarkAsSpam _ -> PotentialSoftSpam
-            | NotASpam _ ->
-                if callbackState.ActionChannelId = botConfig.Value.DetectedSpamChannelId
-                then DetectedNotSpam
-                else PotentialNotSpam
+        let cleanupActionMessage () = task {
+            match callbackState.ActionMessageId with
+            | Some msgId ->
+                do! db.ExpireCallbacksByMessageId(msgId)
+                do! botClient.DeleteMessage(ChatId callbackState.ActionChannelId, msgId)
+                    |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msgId} from action channel", e))
+            | None -> ()
+        }
 
-        // Level 2: Try to record action (protection between /ban and button click)
-        let! actionRecorded = db.TryRecordVahterAction(
-                                vahter.Id, actionType, tgMsg.SenderId,
-                                tgMsg.ChatId, tgMsg.MessageId)
+        match callbackData with
+        | NotASpam _ | Spam _ | MarkAsSpam _ ->
+            let wrapper = match callbackData with NotASpam m | Spam m | MarkAsSpam m -> m | _ -> failwith "unreachable"
+            let tgMsg = TgMessage.Create(wrapper.message)
 
-        if actionRecorded then
-            // We are first - execute the action
-            %onCallbackActivity.SetTag("actionRecorded", true)
-            match callbackData with
-            | NotASpam _ ->
-                %onCallbackActivity.SetTag("type", "NotASpam")
-                do! this.VahterMarkedAsNotSpam(vahter, tgMsg)
-            | Spam _ ->
-                %onCallbackActivity.SetTag("type", "Spam")
-                do! this.VahterMarkedAsSpam(vahter, tgMsg)
-            | MarkAsSpam _ ->
-                %onCallbackActivity.SetTag("type", "MarkAsSpam")
-                do! this.VahterSoftSpam(vahter, tgMsg)
+            let actionType =
+                match callbackData with
+                | Spam _ -> PotentialKill
+                | MarkAsSpam _ -> PotentialSoftSpam
+                | NotASpam _ ->
+                    if callbackState.ActionChannelId = botConfig.Value.DetectedSpamChannelId
+                    then DetectedNotSpam
+                    else PotentialNotSpam
+                | ReactionBan _ | ReactionSpam _ | ReactionNotSpam _ -> failwith "unreachable"
 
-            do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Done! +1 🎯")
-                |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
-        else
-            // Someone already handled via /ban
-            %onCallbackActivity.SetTag("actionRecorded", false)
-            logger.LogInformation $"Action already recorded for message {tgMsg.MessageId} in chat {tgMsg.ChatId}"
-            do! botClient.AnswerCallbackQuery(callbackQuery.Id, "Already handled by another vahter")
-                |> safeTaskAwait (fun e -> logger.LogWarning($"Failed to answer callback query {callbackQuery.Id}", e))
+            let! actionRecorded = db.TryRecordVahterAction(
+                                    vahter.Id, actionType, tgMsg.SenderId,
+                                    tgMsg.ChatId, tgMsg.MessageId)
 
-        // Always delete message from action channel (empty inbox)
-        // and cleanup related callbacks (for potential spam with two buttons)
-        match callbackState.ActionMessageId with
-        | Some msgId ->
-            // Expire sibling callbacks with same message_id
-            do! db.ExpireCallbacksByMessageId(msgId)
-            // Delete message from channel
-            do! botClient.DeleteMessage(
-                    ChatId(callbackState.ActionChannelId),
-                    msgId
-                ) |> safeTaskAwait (fun e -> logger.LogWarning ($"Failed to delete message {msgId} from action channel", e))
-        | None -> ()
+            if actionRecorded then
+                %onCallbackActivity.SetTag("actionRecorded", true)
+                match callbackData with
+                | NotASpam _ ->
+                    %onCallbackActivity.SetTag("type", "NotASpam")
+                    do! this.VahterMarkedAsNotSpam(vahter, tgMsg)
+                | Spam _ ->
+                    %onCallbackActivity.SetTag("type", "Spam")
+                    do! this.VahterMarkedAsSpam(vahter, tgMsg)
+                | MarkAsSpam _ ->
+                    %onCallbackActivity.SetTag("type", "MarkAsSpam")
+                    do! this.VahterSoftSpam(vahter, tgMsg)
+                | ReactionBan _ | ReactionSpam _ | ReactionNotSpam _ -> ()
+
+                do! answer "Done! +1 🎯"
+            else
+                %onCallbackActivity.SetTag("actionRecorded", false)
+                logger.LogInformation $"Action already recorded for message {tgMsg.MessageId} in chat {tgMsg.ChatId}"
+                do! answer "Already handled by another vahter"
+
+        // Reaction-triage callbacks don't go through TryRecordVahterAction — that helper
+        // dedups via the moderation:{chatId}:{messageId} stream, but a reaction-spam trip
+        // has no specific spam message (messageId=0 collides across users in the same chat).
+        // Click serialization is already provided upstream by ResolveCallback, so dedup here
+        // is unnecessary.
+        // Reaction-triage branches use CleanupReactionTriageCallbacksForUser instead of the
+        // per-alert cleanupActionMessage(): the same suspect can trip the threshold in N chats
+        // and end up with N alerts × 3 buttons. First click wins — all leftover alerts for the
+        // same user get swept (including the current alert's two siblings).
+        | ReactionBan ctx ->
+            %onCallbackActivity.SetTag("type", "ReactionBan")
+            let actor = Actor.User {| userId = vahter.Id; username = vahter.Username |}
+            let! u = task {
+                match! db.GetUserById(ctx.userId) with
+                | Some u -> return u
+                | None   -> return { User.Zero with Id = ctx.userId }
+            }
+            do! this.ReactionAct_Ban(ctx.chatId, 0, u, actor)
+            do! answer "Banned 🚫"
+            do! this.CleanupReactionTriageCallbacksForUser(ctx.userId)
+
+        | ReactionSpam ctx ->
+            %onCallbackActivity.SetTag("type", "ReactionSpam")
+            let actor = Actor.User {| userId = vahter.Id; username = vahter.Username |}
+            let! target = task {
+                match! db.GetUserById(ctx.userId) with
+                | Some u -> return u
+                | None   -> return { User.Zero with Id = ctx.userId }
+            }
+            let! _ = this.ReactionAct_Spam(ctx.chatId, target, actor)
+            do! answer "Reactions removed ⚠️"
+            do! this.CleanupReactionTriageCallbacksForUser(ctx.userId)
+
+        | ReactionNotSpam ctx ->
+            %onCallbackActivity.SetTag("type", "ReactionNotSpam")
+            let actor = Actor.User {| userId = vahter.Id; username = vahter.Username |}
+            let! target = task {
+                match! db.GetUserById(ctx.userId) with
+                | Some u -> return u
+                | None   -> return { User.Zero with Id = ctx.userId }
+            }
+            do! this.ReactionAct_NotSpam(target, actor)
+            do! answer "Cooldown set ✅"
+            do! this.CleanupReactionTriageCallbacksForUser(ctx.userId)
+
+        // For non-reaction (message-context) callbacks, fall through to the same cleanup as before.
+        match callbackData with
+        | NotASpam _ | Spam _ | MarkAsSpam _ ->
+            do! cleanupActionMessage()
+        | ReactionBan _ | ReactionSpam _ | ReactionNotSpam _ -> ()
     }
 
     member private this.OnCallback(callbackQuery: CallbackQuery) = task {
@@ -1420,29 +1763,50 @@ type BotService(
 
             // Only process if reactions were added (not removed)
             if added > 0 then
-                // Upsert user and increment reaction count atomically
+                // Extract the joined emoji string from NewReaction for the dossier display.
+                // Premium custom emojis don't render as plain text — fall back to a tag.
+                let emojiStr =
+                    if isNull reaction.NewReaction then None
+                    else
+                        let parts =
+                            reaction.NewReaction
+                            |> Array.choose (fun r ->
+                                match r with
+                                | :? ReactionTypeEmoji as e       -> Option.ofObj e.Emoji
+                                | :? ReactionTypeCustomEmoji as _ -> Some "[custom]"
+                                | _                                -> None)
+                        if parts.Length = 0 then None else Some (String.Concat parts)
+
+                // Upsert user and increment reaction count atomically (records chatId/messageId
+                // and the emoji so the vahter alert dossier can show what they reacted with)
                 let! updatedUser =
-                    db.UpsertUserAndIncrementReactions(reaction.User.Id, Option.ofObj reaction.User.Username, added)
+                    db.UpsertUserAndIncrementReactions(reaction.User.Id, Option.ofObj reaction.User.Username, reaction.Chat.Id, reaction.MessageId, emojiStr, added)
 
                 %activity.SetTag("totalReactionCount", updatedUser.ReactionCount)
 
-                // Check heuristics: if user has few messages but many reactions -> ban
-                let! msgCount = db.CountUniqueUserMsg(updatedUser.Id)
-                %activity.SetTag("messageCount", msgCount)
-
-                if msgCount < botConfig.Value.ReactionSpamMinMessages &&
-                   updatedUser.ReactionCount >= botConfig.Value.ReactionSpamMaxReactions then
-                    logger.LogWarning(
-                        "Reaction spam detected: {Username} ({UserId}) has {MsgCount} messages but {ReactionCount} reactions",
-                        reaction.User.Username,
-                        reaction.User.Id,
-                        msgCount,
-                        updatedUser.ReactionCount
-                    )
-                    %activity.SetTag("action", "ban")
-                    do! this.TotalBanByReaction(reaction, updatedUser)
+                // Cooldown short-circuit: a previous LLM/vahter NOT_SPAM verdict means we trust this
+                // user is a legit lurker — don't re-trigger the pipeline (no LLM call, no admin alert).
+                if updatedUser.IsInReactionTriageCooldown(utcNow()) then
+                    %activity.SetTag("action", "cooldown")
                 else
-                    %activity.SetTag("action", "none")
+                    // Check heuristics: if user has few messages but many reactions -> trip the pipeline.
+                    let! msgCount =
+                        db.CountUniqueUserMsgsUpTo(updatedUser.Id, botConfig.Value.ReactionSpamMinMessages + 1)
+                    %activity.SetTag("messageCount", msgCount)
+
+                    if msgCount < botConfig.Value.ReactionSpamMinMessages &&
+                       updatedUser.ReactionCount >= botConfig.Value.ReactionSpamMaxReactions then
+                        logger.LogWarning(
+                            "Reaction spam threshold tripped: {Username} ({UserId}) has {MsgCount} messages but {ReactionCount} reactions",
+                            reaction.User.Username,
+                            reaction.User.Id,
+                            msgCount,
+                            updatedUser.ReactionCount
+                        )
+                        %activity.SetTag("action", "triage")
+                        do! this.RunReactionTriagePipeline(reaction, updatedUser)
+                    else
+                        %activity.SetTag("action", "none")
     }
 
     // -----------------------------------------------------------------------

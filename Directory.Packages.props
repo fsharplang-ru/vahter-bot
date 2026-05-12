@@ -10,7 +10,7 @@
     <PackageVersion Include="FSharp.Core" Version="10.1.201" />
 
     <!-- Telegram -->
-    <PackageVersion Include="Telegram.Bot" Version="22.9.6" />
+    <PackageVersion Include="Telegram.Bot" Version="22.10.0" />
 
     <!-- Database -->
     <PackageVersion Include="Dapper" Version="2.1.72" />

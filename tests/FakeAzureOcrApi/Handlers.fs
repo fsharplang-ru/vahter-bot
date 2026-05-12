@@ -35,8 +35,19 @@ module Handlers =
         }
 
     /// Fake Azure OpenAI Chat Completions handler.
-    /// Routes verdict based on keywords in the user message:
-    ///   "kill"  → SPAM,  "spam"  → SKIP,  otherwise → NOT_SPAM
+    ///
+    /// Two routing modes — picked by which json_schema.name the request asks for:
+    ///
+    /// 1. `spam_verdict` (existing message triage) — content is a plain string. Routes by keyword:
+    ///    "kill" → SPAM, "spam" → SKIP, otherwise → NOT_SPAM. Response: `{"verdict":"..."}`
+    ///
+    /// 2. `reaction_spam_verdict` (new reaction triage) — content is an array (multimodal).
+    ///    We grep the raw request body for keywords. Response: `{"verdict":"...", "reason":"..."}`.
+    ///    Keywords in display name / bio steer the verdict so tests can assert each branch:
+    ///       - "ban-me"        → BAN
+    ///       - "react-spam"    → SPAM
+    ///       - "real-lurker"   → NOT_SPAM
+    ///       - otherwise       → UNSURE
     let handleChatCompletions (ctx: HttpContext) =
         task {
             let url = ctx.Request.Path.ToString() + ctx.Request.QueryString.ToString()
@@ -44,29 +55,57 @@ module Handlers =
             Console.WriteLine($"FAKE OPENAI IN {ctx.Request.Method} {url} bodyLen={body.Length}")
             Store.logCall ctx.Request.Method url body
 
-            let verdict =
-                try
-                    use doc = JsonDocument.Parse(body)
-                    let msgs = doc.RootElement.GetProperty("messages")
-                    let userContent =
-                        msgs.EnumerateArray()
-                        |> Seq.tryFind (fun m ->
-                            match m.TryGetProperty("role") with
-                            | true, role -> role.GetString() = "user"
-                            | _ -> false)
-                        |> Option.bind (fun m ->
-                            match m.TryGetProperty("content") with
-                            | true, c -> Some (c.GetString())
-                            | _ -> None)
-                        |> Option.bind Option.ofObj
-                        |> Option.defaultValue ""
-                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
-                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
-                    else "NOT_SPAM"
-                with _ -> "NOT_SPAM"
+            let isReactionTriage =
+                body.Contains("reaction_spam_verdict", StringComparison.Ordinal)
 
             let responseJson =
-                $"""{{
+                if isReactionTriage then
+                    let verdict =
+                        if body.Contains("ban-me", StringComparison.OrdinalIgnoreCase) then "BAN"
+                        elif body.Contains("react-spam", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                        elif body.Contains("real-lurker", StringComparison.OrdinalIgnoreCase) then "NOT_SPAM"
+                        else "UNSURE"
+                    $"""{{
+  "choices": [{{
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {{
+      "content": "{{\"verdict\":\"{verdict}\",\"reason\":\"fake handler routed by keyword\"}}",
+      "role": "assistant"
+    }}
+  }}],
+  "created": 1774736361,
+  "id": "chatcmpl-fake-reaction",
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "usage": {{
+    "completion_tokens": 12,
+    "prompt_tokens": 480,
+    "total_tokens": 492
+  }}
+}}"""
+                else
+                    let verdict =
+                        try
+                            use doc = JsonDocument.Parse(body)
+                            let msgs = doc.RootElement.GetProperty("messages")
+                            let userContent =
+                                msgs.EnumerateArray()
+                                |> Seq.tryFind (fun m ->
+                                    match m.TryGetProperty("role") with
+                                    | true, role -> role.GetString() = "user"
+                                    | _ -> false)
+                                |> Option.bind (fun m ->
+                                    match m.TryGetProperty("content") with
+                                    | true, c -> Some (c.GetString())
+                                    | _ -> None)
+                                |> Option.bind Option.ofObj
+                                |> Option.defaultValue ""
+                            if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                            elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
+                            else "NOT_SPAM"
+                        with _ -> "NOT_SPAM"
+                    $"""{{
   "choices": [{{
     "finish_reason": "stop",
     "index": 0,
