@@ -7,6 +7,20 @@ on:
         required: true
         type: string
         description: "dotnet test command(s) to run"
+      bot-paths-regex:
+        required: false
+        type: string
+        default: ""
+        description: |
+          Optional ERE regex matching files relevant to this bot. When set and
+          the PR's non-doc changes don't match it, build steps are skipped —
+          the job still completes so the required `build / build` status check
+          reports for every PR (avoids the auto-merge deadlock when path
+          filtering would otherwise hide the workflow).
+
+          Doc-detection (markdown or any `docs/` directory) is hardcoded; the
+          regex narrows further to per-bot relevance. Manual triggers always
+          run the full build regardless.
 
 jobs:
   build:
@@ -15,23 +29,72 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Decide whether to run build
+      id: should-run
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BOT_PATHS_REGEX: ${{ inputs.bot-paths-regex }}
+      run: |
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          echo "Non-PR trigger (${{ github.event_name }}) — running full build"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -z "$BOT_PATHS_REGEX" ]; then
+          echo "No bot-paths-regex provided — running full build"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        CHANGED=$(gh pr view "${{ github.event.pull_request.number }}" \
+          --repo "$GITHUB_REPOSITORY" \
+          --json files --jq '.files[].path')
+
+        echo "Changed files in PR:"
+        printf '  %s\n' $CHANGED
+
+        # Strip doc-only files (markdown or anything under a docs/ dir)
+        NON_DOC=$(echo "$CHANGED" | grep -vE '(\.md$|/docs/)' || true)
+
+        if [ -z "$NON_DOC" ]; then
+          echo "All changes are doc-only — skipping build steps"
+          echo "yes=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "Non-doc files:"
+        printf '  %s\n' $NON_DOC
+
+        RELEVANT=$(echo "$NON_DOC" | grep -E "$BOT_PATHS_REGEX" || true)
+
+        if [ -n "$RELEVANT" ]; then
+          echo "Bot-relevant non-doc changes:"
+          printf '  %s\n' $RELEVANT
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "No bot-relevant non-doc changes — skipping build steps"
+          echo "yes=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - uses: actions/setup-dotnet@v4
+      if: steps.should-run.outputs.yes == 'true'
       with:
         global-json-file: global.json
 
     - name: Tests
+      if: steps.should-run.outputs.yes == 'true'
       run: ${{ inputs.test-command }}
 
     - name: Upload dotnet test results
       uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.should-run.outputs.yes == 'true' }}
       with:
         name: test-results
         path: "**/*.trx"
-      if: ${{ always() }}
 
     - name: Upload container logs
       uses: actions/upload-artifact@v4
+      if: ${{ always() && steps.should-run.outputs.yes == 'true' }}
       with:
         name: container-logs
         path: test-artifacts/
-      if: ${{ always() }}

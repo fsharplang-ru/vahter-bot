@@ -4,6 +4,7 @@ open System
 open System.Net
 open System.Text
 open System.Text.Json
+open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
 
 module Handlers =
@@ -66,15 +67,17 @@ module Handlers =
     let private handleSendMessage ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}},"text":"ok"}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}},"text":"ok"}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleSendPhoto ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}},"caption":"ok"}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}},"caption":"ok"}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleSendMediaGroup ctx body =
@@ -87,16 +90,18 @@ module Handlers =
             with _ -> 1
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         let msgs =
-            [| for i in 1 .. count do
-                   $"""{{"message_id":{i},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}""" |]
+            [| for _ in 1 .. count do
+                   let msgId = Store.allocMessageId()
+                   $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}""" |]
             |> String.concat ","
         respondJson ctx 200 (okResult $"[{msgs}]")
 
     let private handleForwardMessage ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleGetChatMember ctx (body: string) =
@@ -115,6 +120,18 @@ module Handlers =
             | _ -> "member"
         let resultJson =
             $"""{{"status":"{normalized}","user":{{"id":{userId},"is_bot":false,"first_name":"x"}}}}"""
+        respondJson ctx 200 (okResult resultJson)
+
+    let private handleGetUserProfilePhotos ctx =
+        // Tests don't depend on actual profile photos — the reaction-triage classifier
+        // tolerates None (privacy-strict users), and the fake LLM routes by request body keywords.
+        respondJson ctx 200 (okResult """{"total_count":0,"photos":[]}""")
+
+    let private handleGetChat ctx (body: string) =
+        // Minimal ChatFullInfo. No `bio` field — empty bio in dossier.
+        let chatId = parseChatId body
+        let resultJson =
+            $"""{{"id":{chatId},"type":"private","accent_color_id":0,"max_reaction_count":11}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleGetFile ctx (body: string) =
@@ -147,6 +164,14 @@ module Handlers =
         Console.WriteLine($"FAKE TG IN  {methodName} {url} bodyLen={len}")
         Store.logCall methodName url body
 
+        // Optional artificial delay (race-test control). Applied AFTER the call is
+        // logged so concurrent observers see the call has arrived even while
+        // we're sleeping. 0 (the default) skips Task.Delay entirely.
+        match Store.methodDelays.TryGetValue methodName with
+        | true, delayMs when delayMs > 0 ->
+            do! Task.Delay delayMs
+        | _ -> ()
+
         match methodName with
         | m when Store.methodErrors.TryGetValue(m) |> fst ->
             do! handleSimulatedError ctx
@@ -159,6 +184,10 @@ module Handlers =
             do! handleSimpleOk ctx
         | "getChatMember"    -> do! handleGetChatMember ctx body
         | "getFile"          -> do! handleGetFile ctx body
+        | "getUserProfilePhotos" -> do! handleGetUserProfilePhotos ctx
+        | "getChat"          -> do! handleGetChat ctx body
+        | "deleteMessageReaction" | "deleteAllMessageReactions" ->
+            do! handleSimpleOk ctx
         | "getChatAdministrators" -> do! handleGetChatAdministrators ctx
         | "editMessageReplyMarkup" | "editMessageText" ->
             do! handleMessageWithChatAndId ctx body
@@ -261,6 +290,23 @@ module Handlers =
                     do! respondJson ctx 200 (okResult "true")
                 else
                     Store.methodErrors.TryRemove(payload.methodName) |> ignore
+                    do! respondJson ctx 200 (okResult "true")
+            with _ ->
+                do! respondJson ctx 400 (okResult "false")
+        }
+
+    let setMethodDelay (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload = JsonSerializer.Deserialize<MethodDelayMock>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                if Object.ReferenceEquals(payload, null) || String.IsNullOrWhiteSpace payload.methodName then
+                    do! respondJson ctx 400 (okResult "false")
+                elif payload.delayMs > 0 then
+                    Store.methodDelays[payload.methodName] <- payload.delayMs
+                    do! respondJson ctx 200 (okResult "true")
+                else
+                    Store.methodDelays.TryRemove(payload.methodName) |> ignore
                     do! respondJson ctx 200 (okResult "true")
             with _ ->
                 do! respondJson ctx 400 (okResult "false")

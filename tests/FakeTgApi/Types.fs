@@ -24,3 +24,8 @@ type MethodErrorMock =
     { methodName: string
       enabled: bool }
 
+[<CLIMutable>]
+type MethodDelayMock =
+    { methodName: string
+      delayMs: int }
+
