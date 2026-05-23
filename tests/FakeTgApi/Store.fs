@@ -2,12 +2,26 @@ namespace FakeTgApi
 
 open System
 open System.Collections.Concurrent
+open System.Threading
 
 module Store =
     let calls = ConcurrentQueue<ApiCallLog>()
     let chatMemberStatus = ConcurrentDictionary<int64, string>()
     let files = ConcurrentDictionary<string, byte[]>()
     let methodErrors = ConcurrentDictionary<string, bool>()
+
+    /// Per-method artificial delay (ms) applied at the START of handleAuxMethod
+    /// so concurrency-race tests can force webhook A to be slow at e.g.
+    /// sendMessage, letting webhook C win the lock-acquisition race window
+    /// deterministically. Default 0 (no delay), per-method opt-in.
+    let methodDelays = ConcurrentDictionary<string, int>()
+
+    /// Monotonic counter for synthesizing message_ids on send-* responses. Real Telegram
+    /// returns a distinct message_id for every send; using a constant breaks any test that
+    /// relies on per-message cleanup (e.g. ExpireCallbacksByMessageId).
+    let private nextMessageId = ref 1000
+    let allocMessageId () =
+        Interlocked.Increment(nextMessageId)
 
     let logCall (methodName: string) (url: string) (body: string) =
         calls.Enqueue(
@@ -23,4 +37,5 @@ module Store =
         while calls.TryDequeue(&item) do
             ()
         methodErrors.Clear()
+        methodDelays.Clear()
 

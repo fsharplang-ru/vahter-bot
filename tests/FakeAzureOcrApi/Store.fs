@@ -9,6 +9,13 @@ module Store =
     let calls = ConcurrentQueue<ApiCallLog>()
     let mutable responseStatus = 200
     let mutable responseBody = defaultOcrResponse
+    let mutable responseDelayMs = 0
+    let mutable responseErrorMode = ""
+
+    /// Scripted responses. If non-empty, dequeue one per OCR call. After empty,
+    /// fall back to the static responseStatus/responseBody. Used to test
+    /// "first call fails, second call succeeds" retry semantics.
+    let responseScript = ConcurrentQueue<ScriptedResponse>()
 
     let logCall (methodName: string) (url: string) (body: string) =
         calls.Enqueue(
@@ -21,5 +28,10 @@ module Store =
     let clearCalls () =
         let mutable item = Unchecked.defaultof<ApiCallLog>
         while calls.TryDequeue(&item) do
+            ()
+
+    let clearScript () =
+        let mutable item = Unchecked.defaultof<ScriptedResponse>
+        while responseScript.TryDequeue(&item) do
             ()
 

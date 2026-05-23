@@ -249,6 +249,19 @@ type BotContainerBase(config: BotContainerConfig) =
             resp.EnsureSuccessStatusCode() |> ignore
         }
 
+    /// Forces FakeTgApi to artificially delay every call to `methodName` by
+    /// `delayMs` milliseconds. Used by concurrency-race tests to deterministically
+    /// reproduce timing-dependent bugs: by widening the window between a
+    /// transaction commit and the next network call, a second concurrent
+    /// webhook can be made to win the lock-acquisition race every single run.
+    /// Pass `delayMs = 0` to clear.
+    member _.SetFakeTgMethodDelay(methodName: string, delayMs: int) =
+        task {
+            let payload: MethodDelayMock = { methodName = methodName; delayMs = delayMs }
+            let! resp = fakeTgHttp.PostAsJsonAsync("/test/mock/methodDelay", payload)
+            resp.EnsureSuccessStatusCode() |> ignore
+        }
+
     member _.CheckMethodErrorActive(methodName: string) =
         task {
             use content = new StringContent("{}", Encoding.UTF8, "application/json")
@@ -263,4 +276,72 @@ type BotContainerBase(config: BotContainerConfig) =
             let payload: AzureResponseMock = { status = status; body = body }
             let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/response", payload)
             return ()
+        }
+
+    member _.SetAzureOcrDelay(delayMs: int) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureDelayMock = { delayMs = delayMs }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/delay", payload)
+            return ()
+        }
+
+    member _.SetAzureOcrErrorMode(mode: string) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureErrorModeMock = { mode = mode }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/errorMode", payload)
+            return ()
+        }
+
+    member _.SetAzureOcrScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/script", payload)
+            return ()
+        }
+
+    member _.ClearAzureOcrCalls() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let! _ = fakeAzureHttp.DeleteAsync("/test/calls")
+            return ()
+        }
+
+    member _.GetAzureOcrCalls() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let! resp = fakeAzureHttp.GetFromJsonAsync<FakeCall array>("/test/calls")
+            return resp
+        }
+
+    /// Advances the bot's FakeTimeProvider by `ms` milliseconds, deterministically
+    /// firing any pending TimeProvider-driven timers (notably BatchDebounce.Schedule).
+    /// Requires TEST_MODE=true on the bot. Returns once the bot has accepted the
+    /// advance — the timer callback work itself is async, so call should be followed
+    /// by polling the DB / GetFakeCalls for the expected post-finalize state.
+    member _.AdvanceBotClock(ms: int) =
+        task {
+            use content = new StringContent("", Encoding.UTF8, "application/json")
+            let! resp = botHttp.PostAsync($"/test/clock/advance?ms={ms}", content)
+            resp.EnsureSuccessStatusCode() |> ignore
+            return ()
+        }
+
+    /// Stops and re-starts the bot app container, preserving postgres + fakes so
+    /// DB state survives. Used for restart-recovery tests.
+    member this.RestartBotApp() =
+        task {
+            do! botContainer.StopAsync()
+            do! botContainer.StartAsync()
+            botHttp.Dispose()
+            botHttp <- new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{botContainer.GetMappedPublicPort(80)}"))
+            botHttp.Timeout <- TimeSpan.FromSeconds(15.0)
+            botHttp.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
         }
