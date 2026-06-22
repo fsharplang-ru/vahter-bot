@@ -26,6 +26,7 @@
         <Compile Include="OcrCacheTests.fs" />
         <Compile Include="OcrShortCircuitTests.fs" />
         <Compile Include="CleanupTests.fs" />
+        <Compile Include="AdminCommandTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 

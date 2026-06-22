@@ -96,6 +96,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 "POTENTIAL_SPAM_CHANNEL_ID", "-101",                                    "FREE_FORM",    "CHANNELS"
                 "DETECTED_SPAM_CHANNEL_ID",  "-102",                                    "FREE_FORM",    "CHANNELS"
                 "ALL_LOGS_CHANNEL_ID",       "-103",                                    "FREE_FORM",    "CHANNELS"
+                "ADMIN_CHANNEL_ID",          "-200",                                    "FREE_FORM",    "CHANNELS"
                 "DETECTED_SPAM_CLEANUP_AGE_HOURS", "24",                                "FREE_FORM",    "CHANNELS"
                 "CHATS_TO_MONITOR",          """{"pro.hell":"-666","dotnetru":-42}""",  "JSON_BLOB",    "CHANNELS"
                 "ALLOWED_USERS",             """{"vahter_1":"34","vahter_2":69}""",     "JSON_BLOB",    "CHANNELS"
@@ -130,8 +131,11 @@ type VahterTestContainers(mlEnabled: bool) =
                     "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED","false", "FEATURE_FLAG", "INLINE_KEYBOARD_SPAM"
                 ]
             for (key, value, typ, group) in commonSettings @ mlSettings do
+                // Upsert so test seeds win over any rows pre-seeded by Flyway migrations
+                // (e.g. V36 seeds ADMIN_CHANNEL_ID with a NULL value).
                 do! conn.ExecuteAsync(
-                        "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g)",
+                        "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g) \
+                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, feature_group = EXCLUDED.feature_group",
                         {| k = key; v = value; t = typ; g = group |})
                     :> Task
         }
@@ -185,6 +189,7 @@ type VahterTestContainers(mlEnabled: bool) =
     member _.PotentialSpamChannel = Tg.chat(id = -101, username = "potential_spam_channel")
     member _.DetectedSpamChannel = Tg.chat(id = -102, username = "detected_spam_channel")
     member _.AllLogsChannel = Tg.chat(id = -103, username = "all_logs_channel")
+    member _.AdminChannel = Tg.chat(id = -200, username = "vahter_admin_channel")
     member _.ChatsToMonitor = [
         Tg.chat(id = -666, username = "pro.hell")
         Tg.chat(id = -42, username = "dotnetru")
@@ -351,6 +356,124 @@ WHERE stream_id  = 'user:' || @userId
             """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
+    }
+
+    /// Returns the latest reaction-triage LLM verdict recorded for this user (None if absent).
+    member this.TryGetReactionTriageVerdict(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'verdict' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the LLM verdict's `reason` field for the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageReason(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'reason' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the `shadowMode` flag of the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageShadowMode(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT (data->>'shadowMode')::BOOLEAN FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<Nullable<bool>>(sql, {| userId = userId |})
+        return results |> Seq.tryHead |> Option.bind (fun v -> if v.HasValue then Some v.Value else None)
+    }
+
+    /// Finds the callback ID for a reaction-triage button (case = "ReactionBan" / "ReactionSpam" / "ReactionNotSpam").
+    /// Retries briefly to handle DB visibility races.
+    member this.GetReactionCallbackId(userId: int64, caseName: string) = task {
+        //language=postgresql
+        let sql = """
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND (data->>'targetUserId')::BIGINT = @userId
+  AND (data->>'data')::JSONB ->> 'Case' = @caseName
+ORDER BY id DESC
+LIMIT 1
+        """
+        let mutable result = None
+        let mutable attempt = 0
+        while result.IsNone && attempt < 5 do
+            use conn = new NpgsqlConnection(this.DbConnectionString)
+            let! rows = conn.QueryAsync<Guid>(sql, {| userId = userId; caseName = caseName |})
+            match rows |> Seq.tryHead with
+            | Some id -> result <- Some id
+            | None ->
+                attempt <- attempt + 1
+                do! Task.Delay 200
+        match result with
+        | Some id -> return id
+        | None -> return failwith $"Reaction-triage callback ({caseName}) not found for user {userId}"
+    }
+
+    /// Clicks an inline-keyboard callback as the given vahter (sends a CallbackQuery webhook).
+    member this.ClickCallback(callbackId: Guid, vahter: Telegram.Bot.Types.User) = task {
+        let update =
+            Update(
+                Id = (Guid.NewGuid().GetHashCode()),
+                CallbackQuery = CallbackQuery(
+                    Id = (string callbackId),
+                    Data = (string callbackId),
+                    From = vahter,
+                    ChatInstance = "test"
+                )
+            )
+        let json = JsonSerializer.Serialize(update, options = telegramJsonOptions)
+        let content = new StringContent(json, Encoding.UTF8, "application/json")
+        return! this.BotHttp.PostAsync("/bot", content)
+    }
+
+    /// True if a ReactionTriageNotSpamSet event exists for this user (cooldown has been set at some point).
+    member this.HasReactionCooldown(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+        """
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+
+    /// Returns the Actor.Case ("User" | "Bot" | "ML" | "LLM") on the latest cooldown event for this user.
+    member this.TryGetReactionCooldownActorCase(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->'actor'->>'Case' FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! values = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return values |> Seq.tryHead
     }
 
     member this.GetUserReactionCount(userId: int64) = task {
@@ -533,6 +656,28 @@ ON CONFLICT (key) DO UPDATE SET value = @value
     member this.ReloadSettings() = task {
         let! resp = this.BotHttp.PostAsync("/reload-settings", null)
         resp.EnsureSuccessStatusCode() |> ignore
+    }
+
+    /// Reads a raw bot_setting value (None if absent or NULL).
+    member this.GetBotSetting(key: string) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        let! values = conn.QueryAsync<string>("SELECT value FROM bot_setting WHERE key = @key", {| key = key |})
+        return values |> Seq.tryHead |> Option.bind Option.ofObj
+    }
+
+    /// True if a MessageMarkedHam event exists for the given (chatId, messageId).
+    member this.MessageMarkedHam(chatId: int64, messageId: int) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'MessageMarkedHam'
+  AND (data->>'chatId')::BIGINT = @chatId
+  AND (data->>'messageId')::INT  = @messageId
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = chatId; messageId = messageId |})
+        return count > 0
     }
 
 /// Polls `/ready` until the bot reports its ML model is loaded or trained.

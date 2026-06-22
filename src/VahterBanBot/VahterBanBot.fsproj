@@ -14,6 +14,7 @@
     <Compile Include="OcrCache.fs" />
     <Compile Include="ML.fs" />
     <Compile Include="ComputerVision.fs" />
+    <Compile Include="ProfileFetcher.fs" />
     <Compile Include="LlmTriage.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />
