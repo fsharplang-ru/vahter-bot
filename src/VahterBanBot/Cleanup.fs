@@ -132,6 +132,9 @@ type CleanupService(
             with :? OperationCanceledException -> ()
     }
 
+    /// Runs the cleanup job immediately (used by the /vahter cleanup admin command).
+    member _.ForceCleanup() = runCleanup()
+
     interface IHostedService with
         member this.StartAsync _ =
             if not botConf.Value.IgnoreSideEffects then
