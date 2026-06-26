@@ -139,6 +139,61 @@ let ``New Actor.ML UserBanned folds correctly`` () =
     | other -> Assert.Fail $"Expected Actor.ML but got {other}"
 
 [<Fact>]
+let ``Old UserReactionRecorded without chatId/messageId/emoji deserializes with None`` () =
+    // Pre-PR events lack chatId/messageId/emoji. They must still parse so old streams remain readable.
+    let json =
+        """{"Case":"UserReactionRecorded","userId":42,"delta":1}"""
+    let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
+    match event with
+    | UserReactionRecorded e ->
+        Assert.Equal(42L, e.userId)
+        Assert.Equal(1, e.delta)
+        Assert.Equal(None, e.chatId)
+        Assert.Equal(None, e.messageId)
+        Assert.Equal(None, e.emoji)
+    | other -> Assert.Fail $"Expected UserReactionRecorded but got {other}"
+
+[<Fact>]
+let ``New UserReactionRecorded with chatId/messageId/emoji round-trips`` () =
+    let original =
+        UserReactionRecorded {| userId = 42L; chatId = Some 123L; messageId = Some 7; emoji = Some "🔥"; delta = 1 |}
+    let json = JsonSerializer.Serialize(original, eventJsonOpts)
+    let roundtripped = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
+    match roundtripped with
+    | UserReactionRecorded e ->
+        Assert.Equal(Some 123L, e.chatId)
+        Assert.Equal(Some 7, e.messageId)
+        Assert.Equal(Some "🔥", e.emoji)
+        Assert.Equal(1, e.delta)
+    | other -> Assert.Fail $"Expected UserReactionRecorded but got {other}"
+
+[<Fact>]
+let ``ReactionTriageNotSpamSet round-trips and folds into User.NotSpamUntil`` () =
+    let until = DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc)
+    let original =
+        ReactionTriageNotSpamSet {| userId = 100L; until = until; actor = Actor.User {| userId = 34L; username = Some "vahter_1" |} |}
+    let json = JsonSerializer.Serialize(original, eventJsonOpts)
+    let event = JsonSerializer.Deserialize<UserEvent>(json, eventJsonOpts)
+    let user = [event] |> List.fold (fun s e -> User.Fold(s, e)) User.Zero
+    Assert.Equal(Some until, user.NotSpamUntil)
+
+[<Fact>]
+let ``LlmReactionTriageClassified round-trips with reason and shadowMode`` () =
+    let original =
+        LlmReactionTriageClassified
+            {| chatId = -666L; userId = 42L; verdict = "UNSURE"; reason = Some "bio empty, photo unclear"
+               promptTokens = 200; completionTokens = 12; latencyMs = 450
+               modelName = Some "gpt-4o-mini"; promptHash = Some "abc"; shadowMode = true |}
+    let json = JsonSerializer.Serialize(original, eventJsonOpts)
+    let roundtripped = JsonSerializer.Deserialize<DetectionEvent>(json, eventJsonOpts)
+    match roundtripped with
+    | LlmReactionTriageClassified e ->
+        Assert.Equal("UNSURE", e.verdict)
+        Assert.Equal(Some "bio empty, photo unclear", e.reason)
+        Assert.True(e.shadowMode)
+    | other -> Assert.Fail $"Expected LlmReactionTriageClassified but got {other}"
+
+[<Fact>]
 let ``Old UserUnbanned without actor deserializes correctly`` () =
     let json =
         """{"Case":"UserUnbanned","userId":555,"unbannedBy":42}"""

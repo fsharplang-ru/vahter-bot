@@ -1,8 +1,11 @@
 open System
 open System.Diagnostics
+open System.Net.Http
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
+open Polly
+open Microsoft.Extensions.Http.Resilience
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
@@ -17,7 +20,9 @@ open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.OcrCache
+open VahterBanBot.LlmVerdictCache
 open VahterBanBot.LlmTriage
+open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.StartupMessage
@@ -34,6 +39,9 @@ let connString = getEnv "DATABASE_URL"
 
 let loadDbSettings () =
     try
+        // NOTE(project-agent): intentional blocking call. Runs once at module init before the
+        // ASP.NET Core host exists; there is no SynchronizationContext to deadlock against, and
+        // settings must be loaded synchronously to build the DI container. Do not flag.
         DbSettings.loadBotSettings(connString).GetAwaiter().GetResult()
     with e ->
         eprintfn "[FATAL] Failed to load bot settings from database: %O" e
@@ -63,6 +71,7 @@ let buildBotConf () =
       PotentialSpamChannelId = getRequiredSetting "POTENTIAL_SPAM_CHANNEL_ID" |> int64
       DetectedSpamChannelId = getRequiredSetting "DETECTED_SPAM_CHANNEL_ID" |> int64
       AllLogsChannelId = getRequiredSetting "ALL_LOGS_CHANNEL_ID" |> int64
+      AdminChannelId = getSettingOr "ADMIN_CHANNEL_ID" "0" |> int64
       DetectedSpamCleanupAge = getSettingOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getRequiredSetting "CHATS_TO_MONITOR" |> fromJson
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
@@ -90,6 +99,7 @@ let buildBotConf () =
       MlRetrainScheduledTime =
           let s = getSettingOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
           TimeOnly.Parse(s).ToTimeSpan()
+      MlRetrainScheduledEnabled = getSettingOr "ML_RETRAIN_SCHEDULED_ENABLED" "true" |> bool.Parse
       MlSeed =
           match getSetting "ML_SEED" with
           | null -> Nullable<int>()
@@ -123,6 +133,11 @@ let buildBotConf () =
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
+      LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
+      // Reaction-spam triage (vision LLM)
+      LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
+      LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse
+      ReactionNotSpamCooldownDays    = getSettingOr "REACTION_NOT_SPAM_COOLDOWN_DAYS" "30" |> int
       BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int }
 
 let ocrConfigOf (c: BotConfiguration) =
@@ -159,11 +174,21 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<DbService>(fun sp ->
         DbService(connString, sp.GetRequiredService<TimeProvider>()))
     .AddSingleton<IOcrCache>(fun _ -> OcrCacheRepository(connString) :> IOcrCache)
+    // Reload hook: lets admin commands publish bot_setting changes without a restart
+    .AddSingleton<ISettingsReloader>({ new ISettingsReloader with
+        member _.Reload() = task { reloadSettings() } :> Task })
+    .AddSingleton<ILlmVerdictCache>(fun _ -> LlmVerdictCacheRepository(connString) :> ILlmVerdictCache)
     .AddSingleton<BotService>()
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
-    .AddHostedService<CleanupService>()
+    // Single CleanupService instance, exposed both as the hosted scheduler and as
+    // the IForcedCleanup used by the /vahter cleanup admin command.
+    .AddSingleton<CleanupService>()
+    .AddHostedService<CleanupService>(fun sp -> sp.GetRequiredService<CleanupService>())
+    .AddSingleton<IForcedCleanup>(fun sp ->
+        let cs = sp.GetRequiredService<CleanupService>()
+        { new IForcedCleanup with member _.Run() = cs.ForceCleanup() :> Task })
     .AddHostedService<StartupMessage>()
     .AddHostedService<UpdateChatAdmins>()
 
@@ -171,12 +196,34 @@ WebhookHost.configureSharedServices webhookCfg builder
 %builder.Services.AddSingleton<IOptions<BotOcrConfig>>(botOcrOptions)
 %builder.Services.AddHttpClient<IBotOcr, AzureBotOcr>()
 %builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
-%builder.Services.AddHttpClient<ILlmTriage, AzureLlmTriage>()
+// Azure OpenAI calls get retry-with-backoff so a single 429 (rate limit) recovers instead of
+// leaking the message to the vahter action channel. Default ShouldHandle treats 429/5xx/timeouts
+// as transient and the HTTP retry honors the Retry-After header. Single-flight + the verdict
+// cache (see LlmTriage.fs) keep the call volume low so 429s are rare to begin with.
+let addAzureOpenAiRetry (b: IHttpClientBuilder) =
+    b.AddResilienceHandler("azure-openai-retry", fun (p: ResiliencePipelineBuilder<HttpResponseMessage>) ->
+        p.AddRetry(
+            // Bounded, fast retries: a webhook handler is holding this call, so total retry time
+            // must stay well under Telegram's webhook timeout. ~0.5s, 1s, 2s ≈ 3.5s worst case.
+            // When Azure sends Retry-After on the 429, the handler honors it instead of the backoff.
+            HttpRetryStrategyOptions(
+                MaxRetryAttempts = 3,
+                Delay = TimeSpan.FromMilliseconds 500.0,
+                BackoffType = DelayBackoffType.Exponential,
+                UseJitter = true))
+        |> ignore)
+    |> ignore
+
+addAzureOpenAiRetry (builder.Services.AddHttpClient<ILlmTriage, AzureLlmTriage>())
+addAzureOpenAiRetry (builder.Services.AddHttpClient<IReactionTriageClassifier, AzureReactionTriage>())
+%builder.Services.AddSingleton<IUserProfileFetcher, UserProfileFetcher>()
 
 let app = builder.Build()
 
 // Ensure bot user record exists in DB (result not needed -- identity comes from BotConfiguration.BotActor)
 let startupBotConf = botConfOptions.Value
+// NOTE(project-agent): intentional blocking call. One-time startup seeding after the host is
+// built but before it runs; ASP.NET Core has no SynchronizationContext so this cannot deadlock.
 (app.Services.GetRequiredService<DbService>().UpsertUser(startupBotConf.BotUserId, Some startupBotConf.BotUserName)).Result |> ignore
 
 // Readiness check for ML model (used by startupProbe)
