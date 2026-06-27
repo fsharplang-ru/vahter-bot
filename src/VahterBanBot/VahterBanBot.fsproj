@@ -12,8 +12,10 @@
     <Compile Include="Telemetry.fs" />
     <Compile Include="DB.fs" />
     <Compile Include="OcrCache.fs" />
+    <Compile Include="LlmVerdictCache.fs" />
     <Compile Include="ML.fs" />
     <Compile Include="ComputerVision.fs" />
+    <Compile Include="ProfileFetcher.fs" />
     <Compile Include="LlmTriage.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />
@@ -25,6 +27,7 @@
   <ItemGroup>
     <PackageReference Include="Dapper.FSharp" />
     <PackageReference Include="FSharp.SystemTextJson" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
     <PackageReference Include="Microsoft.ML" />
   </ItemGroup>
 

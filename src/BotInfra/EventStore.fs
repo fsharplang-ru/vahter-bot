@@ -11,7 +11,8 @@ open Npgsql
 /// `data` is JSONB read back as TEXT so Dapper can map it as a plain string.
 [<CLIMutable>]
 type RawEvent =
-    { stream_id:      string
+    { id:             int64
+      stream_id:      string
       stream_version: int
       event_type:     string
       data:           string
@@ -44,7 +45,7 @@ type EventStore(connString: string, tableName: string, jsonOptions: JsonSerializ
 
     let selectAllSql =
         $"""
-SELECT stream_id, stream_version, event_type, data::TEXT AS data, created_at
+SELECT id::BIGINT AS id, stream_id, stream_version, event_type, data::TEXT AS data, created_at
 FROM {tableName}
 WHERE stream_id = @streamId
 ORDER BY stream_version
@@ -103,6 +104,14 @@ RETURNING id
     /// `version = 0` means the stream does not exist yet.
     member _.GetRawEventsForStream(streamId: string) : Task<RawEvent list * int> =
         readStream streamId
+
+    /// Reads all RawEvents for a stream on a caller-supplied connection/transaction, so a
+    /// projection can see rows just inserted in the same TX. Ordered by stream_version.
+    member _.ReadRawEventsForStream(conn: NpgsqlConnection, tx: NpgsqlTransaction, streamId: string) : Task<RawEvent list> =
+        task {
+            let! rows = conn.QueryAsync<RawEvent>(selectAllSql, {| streamId = streamId |}, tx)
+            return List.ofSeq rows
+        }
 
     /// Reads all events for a stream in version order, deserialized into `'TEvent`.
     member _.GetEventsForStream<'TEvent>(streamId: string) : Task<'TEvent[]> =
