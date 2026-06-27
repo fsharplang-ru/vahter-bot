@@ -90,7 +90,15 @@ type AzureBotOcr(httpClient: HttpClient, options: IOptions<BotOcrConfig>, logger
                         else
                             logger.LogWarning("Azure OCR returned status {Status}. Response: {Body}", response.StatusCode, responseContent)
                             return (null: OcrAnalysis | null)
-                    with ex ->
+                    with
+                    | :? OperationCanceledException as ex ->
+                        // Transient: let the caller decide whether to retry.
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(ex)
+                        return Unchecked.defaultof<_>
+                    | :? HttpRequestException as ex ->
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(ex)
+                        return Unchecked.defaultof<_>
+                    | ex ->
                         logger.LogError(ex, "Failed to extract text via Azure OCR")
                         return (null: OcrAnalysis | null)
             }
