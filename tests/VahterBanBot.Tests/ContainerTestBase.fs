@@ -30,6 +30,31 @@ type TestMessage =
       raw_message: string
       created_at: DateTime }
 
+/// Snapshot read-model rows (generated columns), for snapshot_* assertions.
+[<CLIMutable>]
+type SnapshotUserRow =
+    { user_id: int64
+      stream_version: int
+      username: string
+      banned: Nullable<bool>
+      banned_at: Nullable<DateTime>
+      banned_by: Nullable<int64>
+      reaction_count: Nullable<int> }
+
+[<CLIMutable>]
+type SnapshotMessageRow =
+    { chat_id: int64
+      message_id: int
+      msg_version: Nullable<int>
+      mod_version: Nullable<int>
+      user_id: Nullable<int64>
+      text: string
+      spam_status: string
+      deleted: Nullable<bool>
+      bot_auto_deleted: Nullable<bool>
+      vahter_verdict: string
+      created_at: Nullable<DateTime> }
+
 module private VahterTestConfig =
     let secret = "OUR_SECRET"
     let fakeAzureAlias = "fake-azure-ocr"
@@ -96,6 +121,7 @@ type VahterTestContainers(mlEnabled: bool) =
                 "POTENTIAL_SPAM_CHANNEL_ID", "-101",                                    "FREE_FORM",    "CHANNELS"
                 "DETECTED_SPAM_CHANNEL_ID",  "-102",                                    "FREE_FORM",    "CHANNELS"
                 "ALL_LOGS_CHANNEL_ID",       "-103",                                    "FREE_FORM",    "CHANNELS"
+                "ADMIN_CHANNEL_ID",          "-200",                                    "FREE_FORM",    "CHANNELS"
                 "DETECTED_SPAM_CLEANUP_AGE_HOURS", "24",                                "FREE_FORM",    "CHANNELS"
                 "CHATS_TO_MONITOR",          """{"pro.hell":"-666","dotnetru":-42}""",  "JSON_BLOB",    "CHANNELS"
                 "ALLOWED_USERS",             """{"vahter_1":"34","vahter_2":69}""",     "JSON_BLOB",    "CHANNELS"
@@ -107,6 +133,10 @@ type VahterTestContainers(mlEnabled: bool) =
                     "ML_ENABLED",                          "true",  "FEATURE_FLAG", "ML"
                     "ML_SEED",                             "42",    "FREE_FORM",    "ML"
                     "ML_TRAIN_RANDOM_SORT_DATA",           "false", "FEATURE_FLAG", "ML"
+                    // Pin the loaded ml-model.bin for the whole suite: disable the wall-clock daily
+                    // retrain so spam created by triage tests can't rebuild the model mid-run and
+                    // shift the deterministic ML scores other tests assert on.
+                    "ML_RETRAIN_SCHEDULED_ENABLED",        "false", "FEATURE_FLAG", "ML"
                     "ML_SPAM_THRESHOLD",                   "1.0",   "FREE_FORM",    "ML"
                     "ML_STOP_WORDS_IN_CHATS",              """{"-42":["2"]}""", "JSON_BLOB", "ML"
                     "ML_SPAM_DELETION_ENABLED",            "true",  "FEATURE_FLAG", "ML_SPAM_DELETION"
@@ -130,8 +160,11 @@ type VahterTestContainers(mlEnabled: bool) =
                     "INLINE_KEYBOARD_SPAM_DETECTION_ENABLED","false", "FEATURE_FLAG", "INLINE_KEYBOARD_SPAM"
                 ]
             for (key, value, typ, group) in commonSettings @ mlSettings do
+                // Upsert so test seeds win over any rows pre-seeded by Flyway migrations
+                // (e.g. V36 seeds ADMIN_CHANNEL_ID with a NULL value).
                 do! conn.ExecuteAsync(
-                        "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g)",
+                        "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g) \
+                         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, feature_group = EXCLUDED.feature_group",
                         {| k = key; v = value; t = typ; g = group |})
                     :> Task
         }
@@ -185,6 +218,7 @@ type VahterTestContainers(mlEnabled: bool) =
     member _.PotentialSpamChannel = Tg.chat(id = -101, username = "potential_spam_channel")
     member _.DetectedSpamChannel = Tg.chat(id = -102, username = "detected_spam_channel")
     member _.AllLogsChannel = Tg.chat(id = -103, username = "all_logs_channel")
+    member _.AdminChannel = Tg.chat(id = -200, username = "vahter_admin_channel")
     member _.ChatsToMonitor = [
         Tg.chat(id = -666, username = "pro.hell")
         Tg.chat(id = -42, username = "dotnetru")
@@ -351,6 +385,124 @@ WHERE stream_id  = 'user:' || @userId
             """
         let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
         return count > 0
+    }
+
+    /// Returns the latest reaction-triage LLM verdict recorded for this user (None if absent).
+    member this.TryGetReactionTriageVerdict(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'verdict' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the LLM verdict's `reason` field for the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageReason(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->>'reason' FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return results |> Seq.tryHead
+    }
+
+    /// Returns the `shadowMode` flag of the latest reaction-triage event for this user.
+    member this.TryGetReactionTriageShadowMode(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT (data->>'shadowMode')::BOOLEAN FROM event
+WHERE event_type = 'LlmReactionTriageClassified'
+  AND (data->>'userId')::BIGINT = @userId
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! results = conn.QueryAsync<Nullable<bool>>(sql, {| userId = userId |})
+        return results |> Seq.tryHead |> Option.bind (fun v -> if v.HasValue then Some v.Value else None)
+    }
+
+    /// Finds the callback ID for a reaction-triage button (case = "ReactionBan" / "ReactionSpam" / "ReactionNotSpam").
+    /// Retries briefly to handle DB visibility races.
+    member this.GetReactionCallbackId(userId: int64, caseName: string) = task {
+        //language=postgresql
+        let sql = """
+SELECT REPLACE(stream_id, 'callback:', '')::UUID
+FROM event
+WHERE event_type = 'CallbackCreated'
+  AND (data->>'targetUserId')::BIGINT = @userId
+  AND (data->>'data')::JSONB ->> 'Case' = @caseName
+ORDER BY id DESC
+LIMIT 1
+        """
+        let mutable result = None
+        let mutable attempt = 0
+        while result.IsNone && attempt < 5 do
+            use conn = new NpgsqlConnection(this.DbConnectionString)
+            let! rows = conn.QueryAsync<Guid>(sql, {| userId = userId; caseName = caseName |})
+            match rows |> Seq.tryHead with
+            | Some id -> result <- Some id
+            | None ->
+                attempt <- attempt + 1
+                do! Task.Delay 200
+        match result with
+        | Some id -> return id
+        | None -> return failwith $"Reaction-triage callback ({caseName}) not found for user {userId}"
+    }
+
+    /// Clicks an inline-keyboard callback as the given vahter (sends a CallbackQuery webhook).
+    member this.ClickCallback(callbackId: Guid, vahter: Telegram.Bot.Types.User) = task {
+        let update =
+            Update(
+                Id = (Guid.NewGuid().GetHashCode()),
+                CallbackQuery = CallbackQuery(
+                    Id = (string callbackId),
+                    Data = (string callbackId),
+                    From = vahter,
+                    ChatInstance = "test"
+                )
+            )
+        let json = JsonSerializer.Serialize(update, options = telegramJsonOptions)
+        let content = new StringContent(json, Encoding.UTF8, "application/json")
+        return! this.BotHttp.PostAsync("/bot", content)
+    }
+
+    /// True if a ReactionTriageNotSpamSet event exists for this user (cooldown has been set at some point).
+    member this.HasReactionCooldown(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+        """
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+
+    /// Returns the Actor.Case ("User" | "Bot" | "ML" | "LLM") on the latest cooldown event for this user.
+    member this.TryGetReactionCooldownActorCase(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = """
+SELECT data->'actor'->>'Case' FROM event
+WHERE stream_id = 'user:' || @userId
+  AND event_type = 'ReactionTriageNotSpamSet'
+ORDER BY id DESC
+LIMIT 1
+        """
+        let! values = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return values |> Seq.tryHead
     }
 
     member this.GetUserReactionCount(userId: int64) = task {
@@ -533,6 +685,88 @@ ON CONFLICT (key) DO UPDATE SET value = @value
     member this.ReloadSettings() = task {
         let! resp = this.BotHttp.PostAsync("/reload-settings", null)
         resp.EnsureSuccessStatusCode() |> ignore
+    }
+
+    /// Reads a raw bot_setting value (None if absent or NULL).
+    member this.GetBotSetting(key: string) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        let! values = conn.QueryAsync<string>("SELECT value FROM bot_setting WHERE key = @key", {| key = key |})
+        return values |> Seq.tryHead |> Option.bind Option.ofObj
+    }
+
+    /// True if a MessageMarkedHam event exists for the given (chatId, messageId).
+    member this.MessageMarkedHam(chatId: int64, messageId: int) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE event_type = 'MessageMarkedHam'
+  AND (data->>'chatId')::BIGINT = @chatId
+  AND (data->>'messageId')::INT  = @messageId
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| chatId = chatId; messageId = messageId |})
+        return count > 0
+    }
+
+    /// Reads the snapshot_user row (None if absent).
+    member this.TryGetSnapshotUser(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT user_id, stream_version, username, banned, banned_at, banned_by, reaction_count
+FROM snapshot_user
+WHERE user_id = @userId
+            """
+        let! rows = conn.QueryAsync<SnapshotUserRow>(sql, {| userId = userId |})
+        return rows |> Seq.tryHead
+    }
+
+    /// Reads the snapshot_message row (None if absent).
+    member this.TryGetSnapshotMessage(chatId: int64, messageId: int) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT chat_id, message_id, msg_version, mod_version, user_id, text, spam_status,
+       deleted, bot_auto_deleted, vahter_verdict, created_at
+FROM snapshot_message
+WHERE chat_id = @chatId AND message_id = @messageId
+            """
+        let! rows = conn.QueryAsync<SnapshotMessageRow>(sql, {| chatId = chatId; messageId = messageId |})
+        return rows |> Seq.tryHead
+    }
+
+    /// Runs the snapshot rebuild over the whole event log (idempotent backfill).
+    member this.RebuildSnapshots() = task {
+        let db = VahterBanBot.DbService(this.DbConnectionString, TimeProvider.System)
+        return! db.RebuildSnapshots()
+    }
+
+    /// Empties the snapshot tables (used to prove RebuildSnapshots reconstructs from the log).
+    /// Uses the admin (owner) connection: the bot's `vahter_bot_ban_service` role is granted only
+    /// SELECT/INSERT/UPDATE (it never deletes snapshots), so it deliberately cannot TRUNCATE.
+    member this.ClearSnapshots() = task {
+        use conn = new NpgsqlConnection(this.AdminDbConnectionString)
+        let! _ = conn.ExecuteAsync("TRUNCATE snapshot_user, snapshot_message")
+        return ()
+    }
+
+    /// Inserts one event with a controlled created_at, serializing the typed event via eventJsonOpts
+    /// (so the 'Case' discriminator / shape match production). For snapshot status-timeline tests.
+    member this.InsertRawEvent<'e>(streamId: string, version: int, evt: 'e, createdAt: DateTime) = task {
+        let dataJson = JsonSerializer.Serialize(evt, eventJsonOpts)
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES (@streamId, @version, @data::jsonb, @createdAt)
+ON CONFLICT (stream_id, stream_version) DO NOTHING
+            """
+        let! _ = conn.ExecuteAsync(sql, {| streamId = streamId; version = version; data = dataJson; createdAt = createdAt |})
+        return ()
     }
 
 /// Polls `/ready` until the bot reports its ML model is loaded or trained.
