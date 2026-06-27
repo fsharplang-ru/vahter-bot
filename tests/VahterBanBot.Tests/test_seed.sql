@@ -912,7 +912,11 @@ SELECT
 FROM "user"
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
--- 2. MessageReceived — from message table
+-- 2. MessageReceived — from message table.
+-- NOTE (issue #166): this mirrors the legacy V23 backfill, which stored rawMessage as a JSON
+-- *object* (raw_message::jsonb). The live app instead writes a JSON *string*. Production has both
+-- shapes; keeping the object shape here exercises the legacy path. A string-shaped sample is added
+-- in step 2b below so fold/rebuild is covered on both.
 INSERT INTO event(stream_id, stream_version, data, created_at)
 SELECT
     'message:' || chat_id || ':' || message_id,
@@ -921,6 +925,17 @@ SELECT
                        'userId', user_id, 'text', text, 'rawMessage', raw_message::jsonb),
     created_at
 FROM message
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 2b. Dual-shape coverage for issue #166: one MessageReceived with rawMessage as a JSON STRING
+-- (the live-app shape), alongside the object-shaped rows above. Both must fold/deserialize cleanly.
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES
+    ('message:-666:20001', 1,
+     jsonb_build_object('Case', 'MessageReceived', 'chatId', -666, 'messageId', 20001, 'userId', 1001,
+                        'text', 'live string shape',
+                        'rawMessage', to_jsonb('{"text":"live string shape"}'::text)),
+     now() - '2 days'::INTERVAL)
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
 -- 3. UserBanned — union manual bans + (no bot bans in seed), offset by 1 for UsernameChanged
