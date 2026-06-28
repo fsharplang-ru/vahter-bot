@@ -18,6 +18,23 @@ type UserMessage =
     { chat_id: int64
       message_id: int }
 
+/// Lightweight DTO for the reaction-spam triage dossier (recent activity from one user).
+[<CLIMutable>]
+type DossierEvent =
+    { chat_id: int64
+      message_id: int
+      kind: string          // "message" or "reaction"
+      text: string          // message text (NULL for reaction)
+      emoji: string         // joined emoji string for reaction events (NULL for message)
+      created_at: DateTime }
+
+/// Lightweight DTO for cached user profile (photo + bio).
+[<CLIMutable>]
+type CachedUserProfile =
+    { photo_bytes: byte[]
+      bio: string
+      fetched_at: DateTime }
+
 [<CLIMutable>]
 type SpamOrHamDb =
     { text: string
@@ -31,30 +48,143 @@ type DbService(connString: string, timeProvider: TimeProvider) =
     let store = EventStore(connString, "event", eventJsonOpts)
 
     // -----------------------------------------------------------------------
+    // Snapshot read-model upserts (run in the SAME TX as the event append).
+    // stream_version / created_at are read back from the event table inside the TX —
+    // the just-inserted rows are visible — so callers never thread the version through.
+    // Each *_version guard keeps the upsert monotonic and (for snapshot_message) lets the
+    // message:* and moderation:* streams write their own column in any order.
+    // -----------------------------------------------------------------------
+
+    let upsertUserSnapshot (userId: int64) (stateJson: string) (conn: NpgsqlConnection) (tx: NpgsqlTransaction) : Task =
+        //language=postgresql
+        let sql =
+            """
+INSERT INTO snapshot_user (user_id, stream_version, state, created_at)
+SELECT @userId, COALESCE(MAX(stream_version), 0), @state::jsonb, MIN(created_at)
+FROM event WHERE stream_id = @sid
+ON CONFLICT (user_id) DO UPDATE
+   SET stream_version = EXCLUDED.stream_version, state = EXCLUDED.state, updated_at = now()
+ WHERE snapshot_user.stream_version <= EXCLUDED.stream_version
+            """
+        conn.ExecuteAsync(sql, {| userId = userId; state = stateJson; sid = $"user:{userId}" |}, tx) :> Task
+
+    // Recompute a message's snapshot row from BOTH of its streams (message:* + moderation:*) and
+    // write it in one TX. message_data.classification is the cross-stream spam/ham status produced by
+    // Message.FoldTimeline (last decisive event wins, ordered by (created_at, id)); moderation_data is
+    // the moderation-stream fold. The row is locked first, so concurrent message/moderation writers and
+    // the rebuild serialize and each recomputes from the fully-committed log — no version-guard races.
+    // All verdict logic lives in F#; the SQL here is static and parameterized.
+    let upsertMessageSnapshot (chatId: int64) (messageId: int) (conn: NpgsqlConnection) (tx: NpgsqlTransaction) : Task =
+        task {
+            let msgSid = $"message:{chatId}:{messageId}"
+            let modSid = $"moderation:{chatId}:{messageId}"
+
+            // 1. ensure the row exists and lock it for this TX (DO UPDATE takes a row lock).
+            //language=postgresql
+            let lockSql =
+                """
+INSERT INTO snapshot_message (chat_id, message_id) VALUES (@chatId, @messageId)
+ON CONFLICT (chat_id, message_id) DO UPDATE SET updated_at = snapshot_message.updated_at
+                """
+            let! _ = conn.ExecuteAsync(lockSql, {| chatId = chatId; messageId = messageId |}, tx)
+
+            // 2. read both streams on this TX — sees others' committed events plus our own just-appended ones.
+            let! msgRaws = store.ReadRawEventsForStream(conn, tx, msgSid)
+            let! modRaws = store.ReadRawEventsForStream(conn, tx, modSid)
+
+            // 3. fold: message status from the merged, time-ordered timeline; moderation from its stream.
+            let timeline =
+                [ for r in msgRaws -> r.created_at, r.id, FromMessage (store.Deserialize<MessageEvent> r)
+                  for r in modRaws -> r.created_at, r.id, FromModeration (store.Deserialize<ModerationEvent> r) ]
+                |> List.sortBy (fun (ts, id, _) -> ts, id)
+            let message = timeline |> List.fold (fun s (_, _, ev) -> Message.FoldTimeline(s, ev)) Message.Zero
+            let moderation = modRaws |> List.fold (fun s r -> Moderation.Fold(s, store.Deserialize<ModerationEvent> r)) Moderation.Zero
+
+            let messageData    = if List.isEmpty msgRaws then null else JsonSerializer.Serialize(messageSnapshot message, snapshotJsonOpts)
+            let moderationData = if List.isEmpty modRaws then null else JsonSerializer.Serialize(moderationSnapshot moderation, snapshotJsonOpts)
+            let msgVersion = msgRaws |> List.tryLast |> Option.map (fun r -> r.stream_version) |> Option.toNullable
+            let modVersion = modRaws |> List.tryLast |> Option.map (fun r -> r.stream_version) |> Option.toNullable
+            let createdAt  = msgRaws |> List.tryHead |> Option.map (fun r -> r.created_at) |> Option.toNullable   // receipt time
+
+            // 4. write the recomputed row (we hold the lock, so an unconditional update is correct).
+            //language=postgresql
+            let updateSql =
+                """
+UPDATE snapshot_message
+   SET message_data    = @messageData::jsonb,
+       moderation_data = @moderationData::jsonb,
+       msg_version     = @msgVersion,
+       mod_version     = @modVersion,
+       created_at      = @createdAt,
+       updated_at      = now()
+ WHERE chat_id = @chatId AND message_id = @messageId
+                """
+            let! _ =
+                conn.ExecuteAsync(updateSql,
+                    {| chatId = chatId; messageId = messageId
+                       messageData = messageData; moderationData = moderationData
+                       msgVersion = msgVersion; modVersion = modVersion; createdAt = createdAt |}, tx)
+            return ()
+        } :> Task
+
+    // Append wrappers: fold the new events to final state, serialize the snapshot DTO,
+    // and attach the matching upsert as the in-TX projection.
+    let appendUserEvents (userId: int64) (decide: User -> UserEvent list) : Task<UserEvent list * User> =
+        EventStore.appendEventWithProjection store $"user:{userId}" (fun (state: User) ->
+            match decide state with
+            | [] -> [], None
+            | evts ->
+                let final = evts |> List.fold (fun s e -> User.Fold(s, e)) state
+                let json = JsonSerializer.Serialize(userSnapshot final, snapshotJsonOpts)
+                evts, Some (upsertUserSnapshot userId json))
+
+    // The snapshot row is recomputed from BOTH streams by upsertMessageSnapshot, so both append
+    // paths attach the same projection. The decider's folded state is only used for its decision /
+    // the returned value; the snapshot itself is rebuilt from the log in the projection.
+    let appendMessageEvents (chatId: int64) (messageId: int) (decide: Message -> MessageEvent list) : Task<MessageEvent list * Message> =
+        EventStore.appendEventWithProjection store $"message:{chatId}:{messageId}" (fun (state: Message) ->
+            match decide state with
+            | [] -> [], None
+            | evts -> evts, Some (upsertMessageSnapshot chatId messageId))
+
+    let appendModerationEvents (chatId: int64) (messageId: int) (decide: Moderation -> ModerationEvent list) : Task<ModerationEvent list * Moderation> =
+        EventStore.appendEventWithProjection store $"moderation:{chatId}:{messageId}" (fun (state: Moderation) ->
+            match decide state with
+            | [] -> [], None
+            | evts -> evts, Some (upsertMessageSnapshot chatId messageId))
+
+    // -----------------------------------------------------------------------
     // Private helpers (called by multiple public members)
     // -----------------------------------------------------------------------
 
     let recordUsernameChanged (userId: int64) (username: string option) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"user:{userId}" (fun state ->
+            let! _ = appendUserEvents userId (fun state ->
                 if state.Username = username then []
                 else [ UsernameChanged {| userId = userId; username = username |} ])
             return ()
         }
 
-    let recordUserReaction (userId: int64) (username: string option) (reactionIncrement: int) : Task<User> =
+    let recordUserReaction (userId: int64) (username: string option) (chatId: int64) (messageId: int) (emoji: string option) (reactionIncrement: int) : Task<User> =
         task {
-            let! (_, state) = EventStore.appendEvent store $"user:{userId}" (fun state ->
+            let! (_, state) = appendUserEvents userId (fun state ->
                 let usernameEvt =
                     if state.Username = username then []
                     else [ UsernameChanged {| userId = userId; username = username |} ]
-                usernameEvt @ [ UserReactionRecorded {| userId = userId; delta = reactionIncrement |} ])
+                usernameEvt @ [ UserReactionRecorded {| userId = userId; chatId = Some chatId; messageId = Some messageId; emoji = emoji; delta = reactionIncrement |} ])
             return state
+        }
+
+    let recordReactionTriageNotSpamSet (userId: int64) (until: DateTime) (actor: Actor) : Task<unit> =
+        task {
+            let! _ = appendUserEvents userId (fun (_: User) ->
+                [ ReactionTriageNotSpamSet {| userId = userId; until = until; actor = actor |} ])
+            return ()
         }
 
     let recordUserBannedImpl (userId: int64) (actor: Actor) (chatId: int64 option) (messageId: int option) (messageText: string option) (banExpiryDays: int) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"user:{userId}" (fun (state: User) ->
+            let! _ = appendUserEvents userId (fun (state: User) ->
                 if state.IsBanned(banExpiryDays, utcNow()) then []   // idempotent — already banned
                 else [ UserBanned {| userId = userId; bannedBy = None; actor = Some actor
                                      chatId = chatId; messageId = messageId
@@ -67,27 +197,33 @@ type DbService(connString: string, timeProvider: TimeProvider) =
             let! _ = EventStore.appendEventWithProjection store $"message:{chatId}:{messageId}" (fun (state: Message) ->
                 if state.Received then [], None
                 else
-                    let evt = MessageReceived {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = rawMessage |}
-                    let projection =
-                        match text with
-                        | Some t when not (String.IsNullOrEmpty t) ->
-                            Some (fun (conn: NpgsqlConnection) (tx: NpgsqlTransaction) ->
+                    // Store rawMessage as a JSON string (the live wire shape); JsonElement just makes
+                    // *reading* tolerant of the legacy object shape too (issue #166).
+                    let evt = MessageReceived {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = JsonSerializer.SerializeToElement(rawMessage, eventJsonOpts) |}
+                    // One TX: optional text-index upsert, then the snapshot recompute.
+                    let projection (conn: NpgsqlConnection) (tx: NpgsqlTransaction) =
+                        task {
+                            match text with
+                            | Some t when not (String.IsNullOrEmpty t) ->
                                 let sql =
                                     """
 INSERT INTO user_msg_text_index (user_id, msg_text_md5)
 VALUES (@userId, md5(@text))
 ON CONFLICT DO NOTHING
                                     """
-                                conn.ExecuteAsync(sql, {| userId = userId; text = t |}, tx) :> Task)
-                        | _ -> None
-                    [ evt ], projection)
+                                let! _ = conn.ExecuteAsync(sql, {| userId = userId; text = t |}, tx)
+                                ()
+                            | _ -> ()
+                            do! upsertMessageSnapshot chatId messageId conn tx
+                        } :> Task
+                    [ evt ], Some projection)
             return ()
         }
 
     let recordMessageEdited (chatId: int64) (messageId: int) (userId: int64) (text: string option) (rawMessage: string) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"message:{chatId}:{messageId}" (fun (_: Message) ->
-                [ MessageEdited {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = rawMessage |} ])
+            let! _ = appendMessageEvents chatId messageId (fun (_: Message) ->
+                [ MessageEdited {| chatId = chatId; messageId = messageId; userId = userId; text = text; rawMessage = JsonSerializer.SerializeToElement(rawMessage, eventJsonOpts) |} ])
             return ()
         }
 
@@ -95,7 +231,7 @@ ON CONFLICT DO NOTHING
         (vahterId: int64) (actionType: VahterAction) (targetUserId: int64)
         (chatId: int64) (messageId: int) : Task<bool> =
         task {
-            let! (_, state) = EventStore.appendEvent store $"moderation:{chatId}:{messageId}" (fun (_: Moderation) ->
+            let! (_, state) = appendModerationEvents chatId messageId (fun (_: Moderation) ->
                 [ VahterActed {| vahterId = vahterId; actionType = actionType; targetUserId = targetUserId; chatId = chatId; messageId = messageId |} ])
             return state.VahterActedCount <= 1
         }
@@ -114,15 +250,15 @@ ON CONFLICT DO NOTHING
 
     member _.UpsertUser(userId: int64, username: string option) : Task<User> =
         task {
-            let! (_, state) = EventStore.appendEvent store $"user:{userId}" (fun (state: User) ->
+            let! (_, state) = appendUserEvents userId (fun (state: User) ->
                 if state.Username = username then []
                 else [ UsernameChanged {| userId = userId; username = username |} ])
             return { state with Id = userId }
         }
 
-    member _.UpsertUserAndIncrementReactions(userId: int64, username: string option, reactionIncrement: int) : Task<User> =
+    member _.UpsertUserAndIncrementReactions(userId: int64, username: string option, chatId: int64, messageId: int, emoji: string option, reactionIncrement: int) : Task<User> =
         task {
-            let! state = recordUserReaction userId username reactionIncrement
+            let! state = recordUserReaction userId username chatId messageId emoji reactionIncrement
             return { state with Id = userId }
         }
 
@@ -137,7 +273,7 @@ ON CONFLICT DO NOTHING
     /// Records a UserUnbanned event with the new Actor format.
     member _.RecordUserUnbanned(userId: int64, actor: Actor) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"user:{userId}" (fun (state: User) ->
+            let! _ = appendUserEvents userId (fun (state: User) ->
                 if state.Banned.IsNone then []
                 else [ UserUnbanned {| userId = userId; unbannedBy = None; actor = Some actor |} ])
             return ()
@@ -191,10 +327,14 @@ WHERE event_type = 'MessageReceived'
             return Array.ofSeq messages
         }
 
+    /// Inserts or updates a single bot_setting value (used by admin commands).
+    member _.UpsertBotSetting(key: string, value: string, typ: string, featureGroup: string) : Task<unit> =
+        DbSettings.upsertBotSetting connString key value typ featureGroup
+
     /// Records a MessageMarkedHam event. Latest Spam/Ham decision wins.
     member _.RecordMessageMarkedHam(chatId: int64, messageId: int, text: string, markedBy: int64 option) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"message:{chatId}:{messageId}" (fun state ->
+            let! _ = appendMessageEvents chatId messageId (fun state ->
                 if state.Classification = SpamClassification.Ham then []   // already ham
                 else [ MessageMarkedHam {| chatId = chatId; messageId = messageId; text = text; markedBy = markedBy |} ])
             return ()
@@ -203,25 +343,31 @@ WHERE event_type = 'MessageReceived'
     /// Records a MessageMarkedSpam event. Latest Spam/Ham decision wins.
     member _.RecordMessageMarkedSpam(chatId: int64, messageId: int, markedBy: int64 option) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"message:{chatId}:{messageId}" (fun state ->
+            let! _ = appendMessageEvents chatId messageId (fun state ->
                 if state.Classification = SpamClassification.Spam then []  // already spam
                 else [ MessageMarkedSpam {| chatId = chatId; messageId = messageId; markedBy = markedBy |} ])
             return ()
         }
 
-    member _.CountUniqueUserMsg(userId: int64) : Task<int> =
+    /// Returns the number of distinct text-md5s recorded for the user, capped at `cap`.
+    /// Callers compare the result against a small threshold, so anything beyond that
+    /// threshold is indistinguishable — `LIMIT cap` keeps the cost constant regardless
+    /// of how active the user is.
+    member _.CountUniqueUserMsgsUpTo(userId: int64, cap: int) : Task<int> =
         task {
             use conn = new NpgsqlConnection(connString)
 
             //language=postgresql
             let sql =
                 """
-SELECT COUNT(*)::INT
-FROM user_msg_text_index
-WHERE user_id = @userId
+SELECT COUNT(*)::INT FROM (
+    SELECT 1 FROM user_msg_text_index
+    WHERE user_id = @userId
+    LIMIT @cap
+) t
                 """
 
-            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+            let! result = conn.QuerySingleAsync<int>(sql, {| userId = userId; cap = cap |})
             return result
         }
 
@@ -296,7 +442,7 @@ FROM expanded;
     /// Records a BotAutoDeleted event. NOT idempotent — each call adds an event.
     member _.RecordBotAutoDeleted(chatId: int64, messageId: int, userId: int64, reason: AutoDeleteReason) : Task<unit> =
         task {
-            let! _ = EventStore.appendEvent store $"moderation:{chatId}:{messageId}" (fun (_: Moderation) ->
+            let! _ = appendModerationEvents chatId messageId (fun (_: Moderation) ->
                 [ BotAutoDeleted {| chatId = chatId; messageId = messageId; userId = userId; reason = reason |} ])
             return ()
         }
@@ -320,6 +466,160 @@ FROM expanded;
                                    promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
                                    modelName = modelName; promptHash = promptHash |} ])
             return ()
+        }
+
+    /// Records an LlmReactionTriageClassified event on a user-scoped detection stream.
+    /// Stream key: detection:reaction:{userId} — multiple events accumulate (one per threshold trip).
+    member _.RecordLlmReactionTriageClassified
+        (chatId: int64, userId: int64, verdict: string, reason: string option,
+         promptTokens: int, completionTokens: int, latencyMs: int,
+         modelName: string option, promptHash: string option, shadowMode: bool) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"detection:reaction:{userId}" (fun (_: Detection) ->
+                [ LlmReactionTriageClassified {| chatId = chatId; userId = userId; verdict = verdict; reason = reason
+                                                 promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
+                                                 modelName = modelName; promptHash = promptHash; shadowMode = shadowMode |} ])
+            return ()
+        }
+
+    /// Sets the reaction-triage NOT_SPAM cooldown for a user (event-sourced, folded into User aggregate).
+    member _.RecordReactionTriageNotSpam(userId: int64, until: DateTime, actor: Actor) : Task<unit> =
+        recordReactionTriageNotSpamSet userId until actor
+
+    // -----------------------------------------------------------------------
+    // Public members — Profile cache (reaction-spam triage)
+    // -----------------------------------------------------------------------
+
+    /// Returns the cached profile for this user if fetched within `maxAge` (else None).
+    member _.GetCachedUserProfile(userId: int64, maxAge: TimeSpan) : Task<CachedUserProfile option> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT photo_bytes, bio, fetched_at
+FROM user_profile_cache
+WHERE user_id = @userId
+  AND fetched_at > @cutoff
+            """
+            let! rows = conn.QueryAsync<CachedUserProfile>(sql, {| userId = userId; cutoff = utcNow().Subtract maxAge |})
+            return rows |> Seq.tryHead
+        }
+
+    /// Upserts the profile cache row for this user.
+    member _.UpsertUserProfile(userId: int64, photoBytes: byte[] option, bio: string) : Task<unit> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+INSERT INTO user_profile_cache (user_id, photo_bytes, bio, fetched_at)
+VALUES (@userId, @photo, @bio, @now)
+ON CONFLICT (user_id) DO UPDATE
+    SET photo_bytes = EXCLUDED.photo_bytes,
+        bio         = EXCLUDED.bio,
+        fetched_at  = EXCLUDED.fetched_at
+            """
+            let! _ = conn.ExecuteAsync(sql, {| userId = userId
+                                               photo = (photoBytes |> Option.toObj)
+                                               bio = bio
+                                               now = utcNow() |})
+            return ()
+        }
+
+    // -----------------------------------------------------------------------
+    // Public members — Reaction-spam triage dossier
+    // -----------------------------------------------------------------------
+
+    /// Counts MessageReceived events for this user across all chats.
+    member _.GetTotalMessagesByUser(userId: int64) : Task<int> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT COUNT(*)::INT FROM event
+WHERE event_type = 'MessageReceived'
+  AND (data->>'userId')::BIGINT = @userId
+            """
+            let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+            return count
+        }
+
+    /// Earliest event seen for this user — None if user has no events.
+    member _.GetUserFirstSeenAt(userId: int64) : Task<DateTime option> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT MIN(created_at) FROM event
+WHERE stream_id = 'user:' || @userId
+   OR (event_type = 'MessageReceived' AND (data->>'userId')::BIGINT = @userId)
+            """
+            let! result = conn.QueryAsync<Nullable<DateTime>>(sql, {| userId = userId |})
+            return
+                result
+                |> Seq.tryHead
+                |> Option.bind (fun n -> if n.HasValue then Some n.Value else None)
+        }
+
+    /// Returns (chatId, messageId) pairs for every reaction this user has placed where we
+    /// recorded the message coordinates. If `chatFilter` is Some, only returns reactions in that chat.
+    /// Pre-2026-05 events lacked chatId/messageId — those are silently skipped (we can't act on them anyway).
+    member _.GetReactionTargetsForUser(userId: int64, chatFilter: int64 option) : Task<UserMessage array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+SELECT DISTINCT
+    (data->>'chatId')::BIGINT     AS chat_id,
+    (data->>'messageId')::INT     AS message_id
+FROM event
+WHERE event_type = 'UserReactionRecorded'
+  AND stream_id  = 'user:' || @userId
+  AND data ? 'chatId'
+  AND data ? 'messageId'
+  AND (@chatFilter::BIGINT IS NULL OR (data->>'chatId')::BIGINT = @chatFilter)
+            """
+            let! rows = conn.QueryAsync<UserMessage>(sql, {| userId = userId; chatFilter = (chatFilter |> Option.toNullable) |})
+            return Array.ofSeq rows
+        }
+
+    /// Returns the user's last `n` events (mix of MessageReceived and UserReactionRecorded), newest first.
+    /// Old reaction events (pre-PR) without chatId surface with chat_id = 0; renderer treats that as
+    /// "(unknown chat)" rather than inventing a fake one.
+    member _.GetRecentDossierEvents(userId: int64, n: int) : Task<DossierEvent array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            //language=postgresql
+            let sql = """
+(
+    SELECT
+        (data->>'chatId')::BIGINT  AS chat_id,
+        (data->>'messageId')::INT  AS message_id,
+        'message'                  AS kind,
+        data->>'text'              AS text,
+        NULL                       AS emoji,
+        created_at
+    FROM event
+    WHERE event_type = 'MessageReceived'
+      AND (data->>'userId')::BIGINT = @userId
+)
+UNION ALL
+(
+    SELECT
+        COALESCE((data->>'chatId')::BIGINT, 0::BIGINT) AS chat_id,
+        COALESCE((data->>'messageId')::INT, 0::INT)   AS message_id,
+        'reaction'                                    AS kind,
+        NULL                                          AS text,
+        data->>'emoji'                                AS emoji,
+        created_at
+    FROM event
+    WHERE event_type = 'UserReactionRecorded'
+      AND stream_id = 'user:' || @userId
+)
+ORDER BY created_at DESC
+LIMIT @n
+            """
+            let! rows = conn.QueryAsync<DossierEvent>(sql, {| userId = userId; n = n |})
+            return Array.ofSeq rows
         }
 
     // -----------------------------------------------------------------------
@@ -357,6 +657,39 @@ FROM expanded;
     /// Expires a callback (cleanup/orphaned — no vahter action taken).
     member _.ExpireCallback(callbackId: Guid) : Task<unit> =
         expireCallbackImpl callbackId
+
+    /// Gets all active reaction-triage callbacks for a user (BAN/SPAM/NOT_SPAM variants only).
+    /// Used when one vahter resolves a reaction-spammer so the other alerts/buttons for the
+    /// SAME user get cleaned up — first-click-wins, no race for other vahters to disagree.
+    member _.GetActiveReactionTriageCallbacksByUserId(userId: int64) : Task<ActiveCallbackInfo array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+
+            //language=postgresql
+            let sql =
+                """
+SELECT
+    REPLACE(e.stream_id, 'callback:', '')::UUID AS id,
+    (e.data->>'actionChannelId')::BIGINT AS action_channel_id,
+    (SELECT (e3.data->>'actionMessageId')::INT
+     FROM event e3
+     WHERE e3.stream_id = e.stream_id
+       AND e3.event_type = 'CallbackMessagePosted'
+     LIMIT 1) AS action_message_id
+FROM event e
+WHERE e.event_type = 'CallbackCreated'
+  AND (e.data->>'targetUserId')::BIGINT = @userId
+  AND (e.data->>'data')::JSONB ->> 'Case' IN ('ReactionBan', 'ReactionSpam', 'ReactionNotSpam')
+  AND NOT EXISTS (
+      SELECT 1 FROM event e2
+      WHERE e2.stream_id = e.stream_id
+        AND e2.event_type IN ('CallbackResolved', 'CallbackExpired')
+  )
+                """
+
+            let! result = conn.QueryAsync<ActiveCallbackInfo>(sql, {| userId = userId |})
+            return Array.ofSeq result
+        }
 
     /// Gets all active (non-terminal) callbacks for a user.
     member _.GetActiveCallbacksByUserId(userId: int64) : Task<ActiveCallbackInfo array> =
@@ -761,4 +1094,99 @@ WHERE job_name = @jobName;
                     conn.Execute("SELECT pg_advisory_unlock(@key)", {| key = lockKey |}) |> ignore
             else
                 return false
+        }
+
+    // -----------------------------------------------------------------------
+    // Snapshot rebuild (one-off backfill)
+    // -----------------------------------------------------------------------
+
+    /// Rebuilds snapshot_user / snapshot_message from the event log. Idempotent and safe to re-run:
+    /// it RE-FOLDS and overwrites every row (it does not skip up-to-date rows) — required when a code
+    /// change alters the fold, since stream versions are unchanged. Each message row is locked and
+    /// recomputed from both its streams, so it serializes safely with concurrent live writes.
+    /// Paged by stream-id prefix (keyset over idx_event_stream). `onProgress` (optional) is called at
+    /// phase boundaries and every ~5000 streams. Returns the number of streams processed.
+    member _.RebuildSnapshots(?batchSize: int, ?onProgress: string -> unit) : Task<int> =
+        let batch = defaultArg batchSize 500
+        let report = defaultArg onProgress ignore
+        let reportEvery = 5000
+        task {
+            let mutable grandTotal = 0
+
+            // `totalSql` returns the denominator for progress; @prefix is supplied but may be unused.
+            let rebuildPrefix (prefix: string) (phase: string) (totalSql: string)
+                              (handle: string -> NpgsqlConnection -> NpgsqlTransaction -> Task) =
+                task {
+                    use conn = new NpgsqlConnection(connString)
+                    do! conn.OpenAsync()
+                    let! total =
+                        task {
+                            try return! conn.ExecuteScalarAsync<int64>(totalSql, {| prefix = prefix |})
+                            with _ -> return -1L
+                        }
+                    let totalStr = if total < 0L then "?" else string total
+                    report $"{phase}: starting ({totalStr} streams)"
+                    //language=postgresql
+                    let listSql =
+                        "SELECT DISTINCT stream_id FROM event WHERE stream_id LIKE @prefix AND stream_id > @cursor ORDER BY stream_id LIMIT @n"
+                    let mutable cursor = ""
+                    let mutable processed = 0
+                    let mutable lastReported = 0
+                    let mutable go = true
+                    while go do
+                        let! idsSeq = conn.QueryAsync<string>(listSql, {| prefix = prefix; cursor = cursor; n = batch |})
+                        let ids = List.ofSeq idsSeq
+                        if ids.IsEmpty then go <- false
+                        else
+                            let! tx = conn.BeginTransactionAsync()
+                            for sid in ids do
+                                do! handle sid conn tx
+                                processed <- processed + 1
+                            do! tx.CommitAsync()
+                            do! tx.DisposeAsync()
+                            cursor <- List.last ids
+                            if processed - lastReported >= reportEvery then
+                                report $"{phase}: {processed}/{totalStr} streams"
+                                lastReported <- processed
+                    report $"{phase}: done ({processed} streams)"
+                    grandTotal <- grandTotal + processed
+                }
+
+            // chat:msg ids parsed from "<prefix>:{chatId}:{messageId}"
+            let parseChatMsg (sid: string) =
+                let parts = sid.Split(':')
+                int64 parts.[1], int parts.[2]
+
+            let countDistinctSql = "SELECT count(DISTINCT stream_id) FROM event WHERE stream_id LIKE @prefix"
+
+            do! rebuildPrefix "user:%" "users" countDistinctSql (fun sid conn tx ->
+                task {
+                    let userId = sid.Substring("user:".Length) |> int64
+                    let! state = store.FoldEvents((fun s e -> User.Fold(s, e)), User.Zero, sid)
+                    let json = JsonSerializer.Serialize(userSnapshot { state with Id = userId }, snapshotJsonOpts)
+                    do! upsertUserSnapshot userId json conn tx
+                } :> Task)
+
+            // Each message row is recomputed from BOTH streams by upsertMessageSnapshot.
+            // one MessageReceived per message stream — cheaper than count(DISTINCT) via the type index.
+            do! rebuildPrefix "message:%" "messages" "SELECT count(*) FROM event WHERE event_type = 'MessageReceived'" (fun sid conn tx ->
+                task {
+                    let chatId, messageId = parseChatMsg sid
+                    do! upsertMessageSnapshot chatId messageId conn tx
+                } :> Task)
+
+            // Moderation streams whose message sibling exists were already covered above; only handle
+            // orphan moderation (a bot/vahter action on a message that was never recorded).
+            do! rebuildPrefix "moderation:%" "moderation (orphans)" countDistinctSql (fun sid conn tx ->
+                task {
+                    let chatId, messageId = parseChatMsg sid
+                    let! hasMsg =
+                        conn.ExecuteScalarAsync<bool>(
+                            "SELECT EXISTS(SELECT 1 FROM event WHERE stream_id = @sid)",
+                            {| sid = $"message:{chatId}:{messageId}" |}, tx)
+                    if not hasMsg then
+                        do! upsertMessageSnapshot chatId messageId conn tx
+                } :> Task)
+
+            return grandTotal
         }
