@@ -2,6 +2,8 @@
 **/bin
 .idea
 .env
+**/.env.local
+**/.env.*.local
 flyway.conf
 *sln.DotSettings.user
 TestResults
