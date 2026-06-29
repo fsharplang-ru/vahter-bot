@@ -4,6 +4,7 @@ open System
 open System.Net
 open System.Text
 open System.Text.Json
+open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
 
 module Handlers =
@@ -31,12 +32,47 @@ module Handlers =
             Console.WriteLine($"FAKE AZURE IN  {ctx.Request.Method} {url} bodyLen={body.Length}")
             Store.logCall ctx.Request.Method url body
 
-            do! respondJson ctx Store.responseStatus Store.responseBody
+            // Per-call scripted response wins over static, if any are queued.
+            let scripted =
+                let mutable item = Unchecked.defaultof<ScriptedResponse>
+                if Store.responseScript.TryDequeue(&item) then Some item else None
+
+            let status, respBody, delayMs, errorMode =
+                match scripted with
+                | Some s ->
+                    let em = if isNull (box s.errorMode) then "" else s.errorMode
+                    s.status, s.body, s.delayMs, em
+                | None -> Store.responseStatus, Store.responseBody, Store.responseDelayMs, Store.responseErrorMode
+
+            if delayMs > 0 then
+                do! Task.Delay(delayMs)
+
+            match errorMode with
+            | "network" ->
+                // Abort the request so the client sees a TCP-level failure → HttpRequestException.
+                ctx.Abort()
+            | "timeout" ->
+                // Stall well past the client's HttpClient.Timeout so it cancels first.
+                do! Task.Delay(10_000)
+                do! respondJson ctx status respBody
+            | _ ->
+                do! respondJson ctx status respBody
         }
 
     /// Fake Azure OpenAI Chat Completions handler.
-    /// Routes verdict based on keywords in the user message:
-    ///   "kill"  → SPAM,  "spam"  → SKIP,  otherwise → NOT_SPAM
+    ///
+    /// Two routing modes — picked by which json_schema.name the request asks for:
+    ///
+    /// 1. `spam_verdict` (existing message triage) — content is a plain string. Routes by keyword:
+    ///    "kill" → SPAM, "spam" → SKIP, otherwise → NOT_SPAM. Response: `{"verdict":"..."}`
+    ///
+    /// 2. `reaction_spam_verdict` (new reaction triage) — content is an array (multimodal).
+    ///    We grep the raw request body for keywords. Response: `{"verdict":"...", "reason":"..."}`.
+    ///    Keywords in display name / bio steer the verdict so tests can assert each branch:
+    ///       - "ban-me"        → BAN
+    ///       - "react-spam"    → SPAM
+    ///       - "real-lurker"   → NOT_SPAM
+    ///       - otherwise       → UNSURE
     let handleChatCompletions (ctx: HttpContext) =
         task {
             let url = ctx.Request.Path.ToString() + ctx.Request.QueryString.ToString()
@@ -44,29 +80,78 @@ module Handlers =
             Console.WriteLine($"FAKE OPENAI IN {ctx.Request.Method} {url} bodyLen={body.Length}")
             Store.logCall ctx.Request.Method url body
 
-            let verdict =
-                try
-                    use doc = JsonDocument.Parse(body)
-                    let msgs = doc.RootElement.GetProperty("messages")
-                    let userContent =
-                        msgs.EnumerateArray()
-                        |> Seq.tryFind (fun m ->
-                            match m.TryGetProperty("role") with
-                            | true, role -> role.GetString() = "user"
-                            | _ -> false)
-                        |> Option.bind (fun m ->
-                            match m.TryGetProperty("content") with
-                            | true, c -> Some (c.GetString())
-                            | _ -> None)
-                        |> Option.bind Option.ofObj
-                        |> Option.defaultValue ""
-                    if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
-                    elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
-                    else "NOT_SPAM"
-                with _ -> "NOT_SPAM"
+            let isReactionTriage =
+                body.Contains("reaction_spam_verdict", StringComparison.Ordinal)
+
+            // Per-call scripted response wins over keyword routing, if any are queued. This lets
+            // tests inject HTTP 429s (and "network"/"timeout") to exercise retry/backoff and the
+            // failure-fallthrough behavior. Text triage (spam_verdict) and reaction triage
+            // (reaction_spam_verdict) draw from SEPARATE queues, so one path can never consume the
+            // other's scripted entry. When a queue empties, calls fall back to keyword routing below.
+            let scripted =
+                let queue = if isReactionTriage then Store.reactionLlmResponseScript else Store.llmResponseScript
+                let mutable item = Unchecked.defaultof<ScriptedResponse>
+                if queue.TryDequeue(&item) then Some item else None
+
+            if scripted.IsSome then
+                let s = scripted.Value
+                if s.delayMs > 0 then do! Task.Delay(s.delayMs)
+                match (if isNull (box s.errorMode) then "" else s.errorMode) with
+                | "network" -> ctx.Abort()
+                | "timeout" ->
+                    do! Task.Delay(10_000)
+                    do! respondJson ctx s.status s.body
+                | _ -> do! respondJson ctx s.status s.body
+            else
 
             let responseJson =
-                $"""{{
+                if isReactionTriage then
+                    let verdict =
+                        if body.Contains("ban-me", StringComparison.OrdinalIgnoreCase) then "BAN"
+                        elif body.Contains("react-spam", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                        elif body.Contains("real-lurker", StringComparison.OrdinalIgnoreCase) then "NOT_SPAM"
+                        else "UNSURE"
+                    $"""{{
+  "choices": [{{
+    "finish_reason": "stop",
+    "index": 0,
+    "message": {{
+      "content": "{{\"verdict\":\"{verdict}\",\"reason\":\"fake handler routed by keyword\"}}",
+      "role": "assistant"
+    }}
+  }}],
+  "created": 1774736361,
+  "id": "chatcmpl-fake-reaction",
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "usage": {{
+    "completion_tokens": 12,
+    "prompt_tokens": 480,
+    "total_tokens": 492
+  }}
+}}"""
+                else
+                    let verdict =
+                        try
+                            use doc = JsonDocument.Parse(body)
+                            let msgs = doc.RootElement.GetProperty("messages")
+                            let userContent =
+                                msgs.EnumerateArray()
+                                |> Seq.tryFind (fun m ->
+                                    match m.TryGetProperty("role") with
+                                    | true, role -> role.GetString() = "user"
+                                    | _ -> false)
+                                |> Option.bind (fun m ->
+                                    match m.TryGetProperty("content") with
+                                    | true, c -> Some (c.GetString())
+                                    | _ -> None)
+                                |> Option.bind Option.ofObj
+                                |> Option.defaultValue ""
+                            if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
+                            elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
+                            else "NOT_SPAM"
+                        with _ -> "NOT_SPAM"
+                    $"""{{
   "choices": [{{
     "finish_reason": "stop",
     "index": 0,
@@ -102,6 +187,12 @@ module Handlers =
             do! respondJson ctx 200 """{"ok":true}"""
         }
 
+    let resetMock (ctx: HttpContext) =
+        task {
+            Store.resetOcrMock()
+            do! respondJson ctx 200 """{"ok":true}"""
+        }
+
     let setResponse (ctx: HttpContext) =
         task {
             let! body = readBody ctx
@@ -113,6 +204,94 @@ module Handlers =
                 | payload ->
                     Store.responseStatus <- payload.status
                     Store.responseBody <- payload.body
+                    do! respondJson ctx 200 """{"ok":true}"""
+            with _ ->
+                do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+        }
+
+    let setDelay (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload =
+                    JsonSerializer.Deserialize<DelayMockDto>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                match payload with
+                | null -> do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+                | payload ->
+                    Store.responseDelayMs <- payload.delayMs
+                    do! respondJson ctx 200 """{"ok":true}"""
+            with _ ->
+                do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+        }
+
+    let setErrorMode (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload =
+                    JsonSerializer.Deserialize<ErrorModeDto>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                match payload with
+                | null -> do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+                | payload ->
+                    Store.responseErrorMode <- if isNull (box payload.mode) then "" else payload.mode
+                    do! respondJson ctx 200 """{"ok":true}"""
+            with _ ->
+                do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+        }
+
+    let setScript (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload =
+                    JsonSerializer.Deserialize<ResponseScriptDto>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                match payload with
+                | null -> do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+                | payload ->
+                    Store.clearScript ()
+                    if not (isNull (box payload.responses)) then
+                        for r in payload.responses do
+                            Store.responseScript.Enqueue r
+                    do! respondJson ctx 200 """{"ok":true}"""
+            with _ ->
+                do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+        }
+
+    /// Sets the scripted-response queue for the Azure OpenAI chat-completions endpoint.
+    /// An empty/absent `responses` array clears it (calls fall back to keyword routing).
+    let setLlmScript (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload =
+                    JsonSerializer.Deserialize<ResponseScriptDto>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                match payload with
+                | null -> do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+                | payload ->
+                    Store.clearLlmScript ()
+                    if not (isNull (box payload.responses)) then
+                        for r in payload.responses do
+                            Store.llmResponseScript.Enqueue r
+                    do! respondJson ctx 200 """{"ok":true}"""
+            with _ ->
+                do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+        }
+
+    /// Sets the scripted-response queue for the REACTION-triage chat-completions calls.
+    /// An empty/absent `responses` array clears it (calls fall back to keyword routing).
+    let setReactionLlmScript (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload =
+                    JsonSerializer.Deserialize<ResponseScriptDto>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                match payload with
+                | null -> do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""
+                | payload ->
+                    Store.clearReactionLlmScript ()
+                    if not (isNull (box payload.responses)) then
+                        for r in payload.responses do
+                            Store.reactionLlmResponseScript.Enqueue r
                     do! respondJson ctx 200 """{"ok":true}"""
             with _ ->
                 do! respondJson ctx (int HttpStatusCode.BadRequest) """{"ok":false}"""

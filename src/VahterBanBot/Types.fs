@@ -57,31 +57,68 @@ type LlmVerdict =
         | "SKIP"     -> LlmVerdict.Skip
         | _          -> LlmVerdict.Error
 
+/// Verdict for the reaction-spam triage pipeline (separate from LlmVerdict because the
+/// reaction flow has 4 verdicts vs 3 — UNSURE explicitly routes to vahters with the
+/// reason annotation, while message triage only has SPAM/SKIP/NOT_SPAM).
+[<RequireQualifiedAccess>]
+type LlmReactionVerdict =
+    | Ban       // Strong spammer signals — total ban + delete user's messages
+    | Spam      // Likely spammer in this chat — restrict reactions + delete in this chat only
+    | NotSpam   // Legit lurker — set cooldown, no action
+    | Unsure    // LLM is uncertain — fall through to vahter with reason annotation
+    | Error     // HTTP / parse failure — same fallback as Unsure
+    static member FromString(verdictStr: string) =
+        match verdictStr with
+        | "BAN"      -> LlmReactionVerdict.Ban
+        | "SPAM"     -> LlmReactionVerdict.Spam
+        | "NOT_SPAM" -> LlmReactionVerdict.NotSpam
+        | "UNSURE"   -> LlmReactionVerdict.Unsure
+        | _          -> LlmReactionVerdict.Error
+    member this.ToWireString() =
+        match this with
+        | LlmReactionVerdict.Ban     -> "BAN"
+        | LlmReactionVerdict.Spam    -> "SPAM"
+        | LlmReactionVerdict.NotSpam -> "NOT_SPAM"
+        | LlmReactionVerdict.Unsure  -> "UNSURE"
+        | LlmReactionVerdict.Error   -> "ERROR"
+
 // ---------------------------------------------------------------------------
 // Per-stream event DUs
 // ---------------------------------------------------------------------------
 
 type UserEvent =
-    | UsernameChanged      of {| userId: int64; username: string option |}
-    | UserBanned           of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option; bannedAt: DateTime |}
-    | UserUnbanned         of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
-    | UserReactionRecorded of {| userId: int64; delta: int |}
+    | UsernameChanged              of {| userId: int64; username: string option |}
+    | UserBanned                   of {| userId: int64; bannedBy: BannedBy option; actor: Actor option; chatId: int64 option; messageId: int option; messageText: string option; bannedAt: DateTime |}
+    | UserUnbanned                 of {| userId: int64; unbannedBy: int64 option; actor: Actor option |}
+    /// Records a user adding/removing reactions on a specific message. `chatId`, `messageId`
+    /// and `emoji` are option to stay backward compatible with earlier events that didn't carry them.
+    /// `emoji` is the joined emoji string of the user's NewReaction set (e.g. "🔥❤️"), useful for
+    /// vahters reading the dossier — knowing which emoji was used helps spot patterns.
+    | UserReactionRecorded         of {| userId: int64; chatId: int64 option; messageId: int option; emoji: string option; delta: int |}
+    /// Reaction-spam triage verdict NOT_SPAM — sets a cooldown so a legit lurker doesn't
+    /// keep re-triggering the pipeline. Set by LLM (autonomous mode) or by a vahter button.
+    | ReactionTriageNotSpamSet     of {| userId: int64; until: DateTime; actor: Actor |}
 
 type User =
-    { Id:            int64
-      Banned:        (Actor * DateTime) option  // (bannedBy, bannedAt)
-      Username:      string option
-      ReactionCount: int }
+    { Id:             int64
+      Banned:         (Actor * DateTime) option  // (bannedBy, bannedAt)
+      Username:       string option
+      ReactionCount:  int
+      NotSpamUntil:   DateTime option }          // reaction-spam triage cooldown
     member this.IsBanned(banExpiryDays: int, now: DateTime) =
         match this.Banned with
         | None -> false
         | Some (_, bannedAt) ->
             now - bannedAt < TimeSpan.FromDays(float banExpiryDays)
-    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0 }
+    member this.IsInReactionTriageCooldown(now: DateTime) =
+        match this.NotSpamUntil with
+        | Some until -> until > now
+        | None -> false
+    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0; NotSpamUntil = None }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
-        | UsernameChanged e      -> { state with Id = e.userId; Username = e.username }
-        | UserBanned e           ->
+        | UsernameChanged e          -> { state with Id = e.userId; Username = e.username }
+        | UserBanned e               ->
             let actor =
                 match e.actor with
                 | Some a -> a
@@ -93,8 +130,9 @@ type User =
                     | Some (BannedByAI a) -> Actor.LLM {| modelName = a.modelName; promptHash = a.promptHash |}
                     | None -> Actor.Bot None
             { state with Id = e.userId; Banned = Some (actor, e.bannedAt) }
-        | UserUnbanned e         -> { state with Id = e.userId; Banned = None }
-        | UserReactionRecorded e -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
+        | UserUnbanned e             -> { state with Id = e.userId; Banned = None }
+        | UserReactionRecorded e     -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
+        | ReactionTriageNotSpamSet e -> { state with Id = e.userId; NotSpamUntil = Some e.until }
 
     static member fromTgUser (user: Telegram.Bot.Types.User) =
         { User.Zero with Id = user.Id; Username = Option.ofObj user.Username }
@@ -110,8 +148,12 @@ type SpamClassification =
     | Ham
 
 type MessageEvent =
-    | MessageReceived    of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: string |}
-    | MessageEdited      of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: string |}
+    // rawMessage is a JsonElement (not string) on purpose: production has it stored BOTH as a JSON
+    // string (live app) and as a JSON object (legacy backfill) — see issue #166. JsonElement reads
+    // either shape, so folding a stream never breaks; the field is write-only (folds/reads use JSONB
+    // operators, never the DU), and we keep writing a string (see DB.recordMessage*).
+    | MessageReceived    of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: JsonElement |}
+    | MessageEdited      of {| chatId: int64; messageId: int; userId: int64; text: string option; rawMessage: JsonElement |}
     | MessageDeleted     of {| chatId: int64; messageId: int; deletedBy: int64 |}
     | MessageMarkedSpam  of {| chatId: int64; messageId: int; markedBy: int64 option |}
     | MessageMarkedHam   of {| chatId: int64; messageId: int; text: string; markedBy: int64 option |}
@@ -119,15 +161,17 @@ type MessageEvent =
 type Message =
     { Received:       bool
       Deleted:        bool
-      Classification: SpamClassification }
-    static member Zero = { Received = false; Deleted = false; Classification = Unknown }
+      Classification: SpamClassification
+      Text:           string option   // latest text (received/edited/marked-ham), for the snapshot read model
+      UserId:         int64 option }   // author, for the snapshot read model
+    static member Zero = { Received = false; Deleted = false; Classification = Unknown; Text = None; UserId = None }
     static member Fold (state: Message, event: MessageEvent) : Message =
         match event with
-        | MessageReceived _   -> { state with Received = true }
-        | MessageEdited _     -> state   // edit is recorded but doesn't change aggregate state
+        | MessageReceived e   -> { state with Received = true; Text = e.text; UserId = Some e.userId }
+        | MessageEdited e     -> { state with Text = e.text; UserId = Some e.userId }   // latest text wins
         | MessageDeleted _    -> { state with Deleted = true }
         | MessageMarkedSpam _ -> { state with Classification = Spam }
-        | MessageMarkedHam _  -> { state with Classification = Ham }
+        | MessageMarkedHam e  -> { state with Classification = Ham; Text = Some e.text }
 
 // ---------------------------------------------------------------------------
 
@@ -138,6 +182,12 @@ type VahterAction =
     | PotentialSoftSpam
     | PotentialNotSpam
     | DetectedNotSpam
+    /// Reaction-spam triage button: BAN — total ban + remove user's reactions in all chats
+    | ReactionTriageBan
+    /// Reaction-spam triage button: SPAM — restrict reactions + remove existing in originating chat
+    | ReactionTriageSpam
+    /// Reaction-spam triage button: NOT SPAM — set cooldown, no destructive action
+    | ReactionTriageNotSpam
 
 type AutoDeleteReason =
     | MlSpam of {| score: float |}
@@ -160,12 +210,37 @@ type ModerationEvent =
 
 type Moderation =
     { VahterActedCount:    int
-      BotAutoDeletedCount: int }
-    static member Zero = { VahterActedCount = 0; BotAutoDeletedCount = 0 }
+      BotAutoDeletedCount: int
+      LastVahterAction:    VahterAction option }   // last action wins; drives the snapshot verdict
+    static member Zero = { VahterActedCount = 0; BotAutoDeletedCount = 0; LastVahterAction = None }
     static member Fold (state: Moderation, event: ModerationEvent) : Moderation =
         match event with
-        | VahterActed _      -> { state with VahterActedCount = state.VahterActedCount + 1 }
+        | VahterActed e      -> { state with VahterActedCount = state.VahterActedCount + 1; LastVahterAction = Some e.actionType }
         | BotAutoDeleted _   -> { state with BotAutoDeletedCount = state.BotAutoDeletedCount + 1 }
+
+/// A message's spam/ham status spans two streams: its own `message:*` marks AND the sibling
+/// `moderation:*` bot/vahter actions. This unifies them so a single fold over the time-ordered
+/// merge of both streams yields the message's status — the F# home of MlData's verdict logic.
+type MessageTimelineEvent =
+    | FromMessage    of MessageEvent
+    | FromModeration of ModerationEvent
+
+type Message with
+    /// Folds the full Message state from the merged, time-ordered timeline of BOTH streams.
+    /// Spam/ham mapping mirrors DbService.MlData (last decisive event wins): BotAutoDeleted and
+    /// VahterActed PotentialKill/ManualBan -> Spam; VahterActed PotentialNotSpam/DetectedNotSpam ->
+    /// Ham; soft-spam and reaction-triage actions are non-decisive (status unchanged), as in MlData.
+    /// The caller must feed events in (created_at, id) order.
+    static member FoldTimeline (state: Message, ev: MessageTimelineEvent) : Message =
+        match ev with
+        | FromMessage me                     -> Message.Fold(state, me)   // Received/Text/UserId/Deleted + mark verdicts
+        | FromModeration (BotAutoDeleted _)  -> { state with Classification = Spam }
+        | FromModeration (VahterActed e) ->
+            match e.actionType with
+            | PotentialKill | ManualBan          -> { state with Classification = Spam }
+            | PotentialNotSpam | DetectedNotSpam -> { state with Classification = Ham }
+            | PotentialSoftSpam
+            | ReactionTriageBan | ReactionTriageSpam | ReactionTriageNotSpam -> state
 
 // ---------------------------------------------------------------------------
 
@@ -192,19 +267,25 @@ type Callback =
 // ---------------------------------------------------------------------------
 
 type DetectionEvent =
-    | MlScoredMessage          of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
-    | LlmClassified            of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
-    | InvisibleMentionDetected of {| chatId: int64; messageId: int; userId: int64 |}
+    | MlScoredMessage              of {| chatId: int64; messageId: int; score: float; isSpam: bool |}
+    | LlmClassified                of {| chatId: int64; messageId: int; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
+    | InvisibleMentionDetected     of {| chatId: int64; messageId: int; userId: int64 |}
+    /// Verdict from the reaction-spam triage classifier (vision LLM evaluating profile photo + bio + history).
+    /// Recorded in BOTH shadow mode (ignored for action) AND autonomous mode (load-bearing). The presence
+    /// of this event for a given (userId, chatId) means a reaction-spam threshold tripped.
+    | LlmReactionTriageClassified  of {| chatId: int64; userId: int64; verdict: string; reason: string option; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option; shadowMode: bool |}
 
 type Detection =
-    { MlScore:      float option
-      LlmVerdict:   string option }
-    static member Zero = { MlScore = None; LlmVerdict = None }
+    { MlScore:                  float option
+      LlmVerdict:               string option
+      LlmReactionTriageVerdict: string option }
+    static member Zero = { MlScore = None; LlmVerdict = None; LlmReactionTriageVerdict = None }
     static member Fold (state: Detection, event: DetectionEvent) : Detection =
         match event with
-        | MlScoredMessage e          -> { state with MlScore = Some e.score }
-        | LlmClassified e            -> { state with LlmVerdict = Some e.verdict }
-        | InvisibleMentionDetected _ -> state
+        | MlScoredMessage e             -> { state with MlScore = Some e.score }
+        | LlmClassified e               -> { state with LlmVerdict = Some e.verdict }
+        | InvisibleMentionDetected _    -> state
+        | LlmReactionTriageClassified e -> { state with LlmReactionTriageVerdict = Some e.verdict }
 
 [<CLIMutable>]
 type BotConfiguration =
@@ -217,6 +298,9 @@ type BotConfiguration =
       PotentialSpamChannelId: int64
       DetectedSpamChannelId: int64
       AllLogsChannelId: int64
+      /// Private vahter channel where privileged /vahter admin commands are accepted.
+      /// 0 = disabled (admin commands never match).
+      AdminChannelId: int64
       DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
       AllowedUsers: Dictionary<string, int64>
@@ -236,6 +320,10 @@ type BotConfiguration =
       AzureOcrKey: string
       MlEnabled: bool
       MlRetrainScheduledTime: TimeSpan
+      /// When false, the scheduled daily ML retrain is skipped (the loaded model stays put).
+      /// Default true in production; disabled in tests so a wall-clock-triggered retrain can't
+      /// rebuild the pinned fixture model mid-suite.
+      MlRetrainScheduledEnabled: bool
       MlSeed: Nullable<int>
       MlSpamDeletionEnabled: bool
       MlSpamAutobanEnabled: bool
@@ -268,6 +356,20 @@ type BotConfiguration =
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
       LlmChatDescriptions: Dictionary<int64, string>
+      /// Minutes a cached LLM verdict (text or reaction triage) is reused before re-asking
+      /// the model. Dedups identical spam across channels and absorbs rate-limit bursts.
+      LlmVerdictCacheTtlMinutes: int
+      // Reaction-spam triage (vision LLM)
+      /// When true, LLM verdict acts autonomously (UNSURE falls through to vahter).
+      /// When false (default — shadow mode), LLM runs but verdict is recorded only; vahter always decides.
+      LlmReactionTriageAutoAct: bool
+      /// Escape hatch: if true, skip the LLM call entirely (do not even shadow). Normally false.
+      LlmReactionTriageShadowDisable: bool
+      /// Days after vahter/LLM verdict NOT_SPAM before re-triaging the same user.
+      ReactionNotSpamCooldownDays: int
+      /// Debounce window for reaction-triage per user: a reaction burst trips the threshold on every
+      /// reaction, but we run triage at most once per this window. Default: 5s.
+      ReactionTriageDebounce: TimeSpan
       /// Bans older than this many days are considered expired. Default: 7.
       BanExpiryDays: int }
     member this.BotActor =
@@ -307,8 +409,17 @@ type VahterStats =
                 %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountTotal}")
         sb.ToString()
 
-// used as aux type to possibly extend in future without breaking changes 
+// used as aux type to possibly extend in future without breaking changes
 type MessageWrapper= { message: Telegram.Bot.Types.Message }
+
+/// Carries everything a reaction-spam callback handler needs. There is no "message
+/// authored by the suspect" in this flow (the suspect *reacted* to someone else's
+/// message), so we cannot piggy-back on MessageWrapper.
+type ReactionContext =
+    { userId:        int64
+      chatId:        int64
+      llmVerdict:    string option   // e.g. "SPAM"/"BAN"/etc — what the LLM said in shadow mode
+      llmReason:     string option }
 
 // This type must be backwards compatible with the previous version
 // as it is used to (de)serialize the button callback data
@@ -316,6 +427,9 @@ type CallbackMessage =
     | NotASpam of MessageWrapper
     | Spam of MessageWrapper // hard kill - delete all messages and ban user in all chats
     | MarkAsSpam of MessageWrapper  // soft spam - delete message but no ban
+    | ReactionBan of ReactionContext      // total ban + remove user's reactions in all chats + delete user's messages
+    | ReactionSpam of ReactionContext     // restrict reactions + remove existing in originating chat
+    | ReactionNotSpam of ReactionContext  // set cooldown, no destructive action
 
 /// JSON serializer options for event store (de)serialization.
 /// Uses internal tag, unwrapped record cases, named fields, and unwrapped options.
@@ -328,6 +442,46 @@ let eventJsonOpts =
         .WithUnwrapOption()
         .WithSkippableOptionFields(SkippableOptionFields.Always, deserializeNullAsNone = true)
         .ToJsonSerializerOptions()
+
+/// JSON options for the snapshot read-model tables (snapshot_user / snapshot_message).
+/// No union tag is needed (the DTOs are flat primitive records); options are unwrapped and
+/// None fields skipped, so an absent key yields a NULL in the GENERATED column.
+let snapshotJsonOpts =
+    JsonFSharpOptions.Default()
+        .WithUnwrapOption()
+        .WithSkippableOptionFields(SkippableOptionFields.Always)
+        .ToJsonSerializerOptions()
+
+/// Flat snapshot DTOs. Keys MUST match the GENERATED-column expressions in V38__snapshot.sql.
+
+let userSnapshot (s: User) =                 // -> snapshot_user.state
+    let bannedByUserId =
+        s.Banned |> Option.bind (fun (a, _) -> match a with Actor.User u -> Some u.userId | _ -> None)
+    {| userId         = s.Id
+       username       = s.Username
+       banned         = s.Banned.IsSome
+       bannedAt       = s.Banned |> Option.map snd
+       bannedByUserId = bannedByUserId
+       reactionCount  = s.ReactionCount
+       notSpamUntil   = s.NotSpamUntil |}
+
+let messageSnapshot (s: Message) =           // -> snapshot_message.message_data
+    {| userId         = s.UserId
+       text           = s.Text
+       classification = (match s.Classification with SpamClassification.Spam -> "Spam" | SpamClassification.Ham -> "Ham" | SpamClassification.Unknown -> "Unknown")
+       received       = s.Received
+       deleted        = s.Deleted |}
+
+let moderationSnapshot (s: Moderation) =     // -> snapshot_message.moderation_data
+    let verdict =
+        match s.LastVahterAction with
+        | Some (PotentialKill | ManualBan | ReactionTriageBan | ReactionTriageSpam) -> Some "Spam"
+        | Some (PotentialNotSpam | DetectedNotSpam | ReactionTriageNotSpam)         -> Some "NotSpam"
+        | Some PotentialSoftSpam | None                                            -> None
+    {| botAutoDeleted      = s.BotAutoDeletedCount > 0
+       verdict             = verdict
+       vahterActedCount    = s.VahterActedCount
+       botAutoDeletedCount = s.BotAutoDeletedCount |}
 
 // Callback data serialization uses different JSON options (Telegram-aware)
 let private callbackJsonOpts =
