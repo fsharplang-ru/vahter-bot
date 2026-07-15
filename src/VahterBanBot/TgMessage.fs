@@ -68,7 +68,7 @@ type TgMessage private (raw: Message, isEdit: bool) =
 
     // ── Message identity ───────────────────────────────────────────
 
-    member _.MessageId = raw.MessageId
+    member _.MessageId = int64 raw.MessageId
     member _.ChatId    = raw.Chat.Id
     member _.ChatUsername = raw.Chat.Username
     member _.Chat      = raw.Chat
