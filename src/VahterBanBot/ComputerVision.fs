@@ -1,19 +1,17 @@
 module VahterBanBot.ComputerVision
 
 open System
-open System.IO
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open VahterBanBot.Types
 open BotInfra
-open Telegram.Bot
 
 [<AllowNullLiteral>]
 type IComputerVision =
     abstract member AnalyzeImageUrl: url: string -> Task<OcrAnalysis | null>
 
 /// Adapter that delegates to the shared IBotOcr (bytes-based) by downloading the file first.
-type BotOcrComputerVision(botOcr: IBotOcr, botClient: ITelegramBotClient, logger: ILogger<BotOcrComputerVision>) =
+type BotOcrComputerVision(botOcr: IBotOcr, tg: ITelegramApi, logger: ILogger<BotOcrComputerVision>) =
     interface IComputerVision with
         member _.AnalyzeImageUrl(url: string) = task {
             if isNull botOcr then
@@ -35,9 +33,8 @@ type BotOcrComputerVision(botOcr: IBotOcr, botClient: ITelegramBotClient, logger
                             return (null: OcrAnalysis | null)
                         else
                             let filePath = afterBot.Substring(slashIdx + 1)
-                            use ms = new MemoryStream()
-                            do! botClient.DownloadFile(filePath, ms)
-                            let bytes = ReadOnlyMemory<byte>(ms.ToArray())
+                            let! fileBytes = tg.DownloadFile filePath
+                            let bytes = ReadOnlyMemory<byte>(fileBytes)
                             return! botOcr.AnalyzeImageBytes(bytes)
                 with ex ->
                     logger.LogError(ex, "Failed to download and OCR file from {Url}", url)

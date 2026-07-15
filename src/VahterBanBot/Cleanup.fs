@@ -4,8 +4,6 @@ open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Options
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.ML
 open VahterBanBot.Types
 open VahterBanBot.Utils
@@ -14,9 +12,11 @@ open System
 open System.Threading
 open Microsoft.Extensions.Hosting
 
+module Req = Funogram.Telegram.Req
+
 type CleanupService(
     logger: ILogger<CleanupService>,
-    telegramClient: ITelegramBotClient,
+    tg: ITelegramApi,
     botConf: IOptions<BotConfiguration>,
     ml: MachineLearning,
     db: DbService
@@ -45,10 +45,10 @@ type CleanupService(
             match callback.action_message_id with
             | Some msgId ->
                 try
-                    do! telegramClient.DeleteMessage(
-                        ChatId(botConf.Value.DetectedSpamChannelId),
-                        msgId
-                    )
+                    do! tg.CallExn(Req.DeleteMessage.Make(
+                            botConf.Value.DetectedSpamChannelId,
+                            msgId
+                        )) |> taskIgnore
                     deletedFromChannel <- deletedFromChannel + 1
                 with ex ->
                     logger.LogWarning(ex, $"Failed to delete message {msgId} from Detected Spam channel")
@@ -64,10 +64,7 @@ type CleanupService(
 
         let msg = sb.ToString()
         if msg.Length > 0 then
-            do! telegramClient.SendMessage(
-                    chatId = ChatId(botConf.Value.AllLogsChannelId),
-                    text = msg
-                ) |> taskIgnore
+            do! tg.CallExn(Req.SendMessage.Make(botConf.Value.AllLogsChannelId, msg)) |> taskIgnore
             logger.LogInformation msg
     }
     
@@ -81,10 +78,7 @@ type CleanupService(
         %sb.AppendLine(string actionStats)
 
         let msg = sb.ToString()
-        do! telegramClient.SendMessage(
-                chatId = ChatId(botConf.Value.AllLogsChannelId),
-                text = msg
-            ) |> taskIgnore
+        do! tg.CallExn(Req.SendMessage.Make(botConf.Value.AllLogsChannelId, msg)) |> taskIgnore
         logger.LogInformation msg
     }
     
@@ -116,7 +110,7 @@ type CleanupService(
                 do! tryRunJob "daily_cleanup" (TimeSpan.FromHours botConf.Value.CleanupScheduledHour) runCleanup
                 do! tryRunJob "daily_stats" (TimeSpan.FromHours botConf.Value.StatsScheduledHour) runStats
 
-                if botConf.Value.MlEnabled then
+                if botConf.Value.MlEnabled && botConf.Value.MlRetrainScheduledEnabled then
                     do! tryRunJob "daily_ml_retrain" botConf.Value.MlRetrainScheduledTime (fun () -> ml.RetrainAndSave())
 
                 // Check if another pod retrained a newer model (all pods)
@@ -131,6 +125,9 @@ type CleanupService(
                 ()
             with :? OperationCanceledException -> ()
     }
+
+    /// Runs the cleanup job immediately (used by the /vahter cleanup admin command).
+    member _.ForceCleanup() = runCleanup()
 
     interface IHostedService with
         member this.StartAsync _ =
