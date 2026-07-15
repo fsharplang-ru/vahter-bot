@@ -31,10 +31,44 @@ type MessageTests(fixture: MlDisabledVahterTestContainers) =
               message_id = msgUpdate.Message.MessageId
               user_id = msgUpdate.Message.From.Id
               text = msgUpdate.Message.Text
-              raw_message = $"""{{"chat": {{"id": -666, "type": "supergroup", "is_forum": false, "username": "pro.hell", "is_direct_messages": false}}, "date": {date}, "from": {{"id": {msg.From.Id}, "is_bot": false, "first_name": "{msg.From.FirstName}", "is_premium": false, "can_join_groups": false, "can_manage_bots": false, "has_main_web_app": false, "has_topics_enabled": false, "can_connect_to_business": false, "supports_inline_queries": false, "added_to_attachment_menu": false, "can_read_all_group_messages": false, "allows_users_to_create_topics": false}}, "text": "{msg.Text}", "sticker": {{"type": "mask", "width": 512, "height": 512, "file_id": "sticker-id", "is_video": false, "is_animated": false, "file_unique_id": "sticker-uid", "needs_repainting": false}}, "entities": [{{"type": "code", "length": 6, "offset": 0}}], "message_id": {msg.MessageId}, "is_paid_post": false, "is_from_offline": false, "is_topic_message": false, "has_media_spoiler": false, "is_automatic_forward": false, "has_protected_content": false, "show_caption_above_media": false}}"""
+              raw_message = $"""{{"chat": {{"id": -666, "type": "supergroup", "is_forum": false, "username": "pro.hell", "is_direct_messages": false}}, "date": {date}, "from": {{"id": {msg.From.Id}, "is_bot": false, "first_name": "{msg.From.FirstName}", "is_premium": false, "can_join_groups": false, "can_manage_bots": false, "has_main_web_app": false, "has_topics_enabled": false, "supports_guest_queries": false, "can_connect_to_business": false, "supports_inline_queries": false, "added_to_attachment_menu": false, "can_read_all_group_messages": false, "allows_users_to_create_topics": false}}, "text": "{msg.Text}", "sticker": {{"type": "mask", "width": 512, "height": 512, "file_id": "sticker-id", "is_video": false, "is_animated": false, "file_unique_id": "sticker-uid", "needs_repainting": false}}, "entities": [{{"type": "code", "length": 6, "offset": 0}}], "message_id": {msg.MessageId}, "is_paid_post": false, "is_from_offline": false, "is_topic_message": false, "has_media_spoiler": false, "is_automatic_forward": false, "has_protected_content": false, "show_caption_above_media": false}}"""
               created_at = dbMsg.Value.created_at },
             dbMsg.Value
         )                 
+    }
+
+    [<Fact>]
+    let ``MlData counts custom_emoji entities from live rows and tolerates backfill rows`` () = task {
+        // Live path (issue #166): the webhook stores rawMessage as a JSON *string*;
+        // MlData must unwrap it before reading entities, or custom_emoji_count is
+        // silently 0 for every live row.
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "emoji spam candidate")
+        msgUpdate.Message.Entities <-
+            [| MessageEntity(Type = MessageEntityType.CustomEmoji, Offset = 0, Length = 2, CustomEmojiId = "111")
+               MessageEntity(Type = MessageEntityType.CustomEmoji, Offset = 2, Length = 2, CustomEmojiId = "222")
+               MessageEntity(Type = MessageEntityType.Code, Offset = 4, Length = 5) |]
+        let! _ = fixture.SendMessage msgUpdate
+
+        // V27-backfill row in its post-V40 shape: rawMessage is the string "{}" (no entities).
+        use conn = new Npgsql.NpgsqlConnection(fixture.DbConnectionString)
+        //language=postgresql
+        let seedSql =
+            """
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES ('message:-666:999777', 1,
+        jsonb_build_object('Case', 'MessageReceived', 'chatId', -666, 'messageId', 999777,
+                           'userId', 42, 'text', 'backfilled spam', 'rawMessage', '{}'),
+        now())
+ON CONFLICT DO NOTHING
+            """
+        let! _ = Dapper.SqlMapper.ExecuteAsync(conn, seedSql)
+
+        let db = VahterBanBot.DbService(fixture.DbConnectionString, TimeProvider.System)
+        let! mlData = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
+
+        let byText t = mlData |> Array.find (fun x -> x.text = t)
+        Assert.Equal(2, (byText "emoji spam candidate").custom_emoji_count)
+        Assert.Equal(0, (byText "backfilled spam").custom_emoji_count)
     }
 
     [<Fact>]
