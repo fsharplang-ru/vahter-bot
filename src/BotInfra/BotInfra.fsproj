@@ -10,16 +10,17 @@
     <Compile Include="TelegramHelpers.fs" />
     <Compile Include="JsonSetup.fs" />
     <Compile Include="EventStore.fs" />
-    <Compile Include="AzureOcr.fs" />
     <Compile Include="LiveOptions.fs" />
     <Compile Include="OcrService.fs" />
     <Compile Include="DbSettings.fs" />
+    <Compile Include="AdminHooks.fs" />
     <Compile Include="DapperSetup.fs" />
     <Compile Include="Observability.fs" />
     <Compile Include="WebhookHost.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.AI.Vision.ImageAnalysis" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Npgsql" />
     <PackageReference Include="Npgsql.OpenTelemetry" />

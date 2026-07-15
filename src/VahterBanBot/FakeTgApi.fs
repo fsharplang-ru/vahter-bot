@@ -15,6 +15,8 @@ open VahterBanBot.Utils
 let tryParseFileIdFromBodyValue(request: HttpRequestMessage) =
     let mutable fileId: string option = None
     if request.Method = HttpMethod.Post && not(isNull request.Content) then
+        // NOTE(project-agent): intentional blocking call in test-only fake Telegram API.
+        // No SynchronizationContext under the test host, so this cannot deadlock. Do not flag.
         let body = request.Content.ReadAsStringAsync().Result
         let jsonDoc = JsonDocument.Parse(body)
         match jsonDoc.RootElement.TryGetProperty("file_id") with
