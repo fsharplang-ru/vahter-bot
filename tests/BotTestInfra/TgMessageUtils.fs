@@ -201,6 +201,23 @@ type Tg() =
             )
         )
 
+    /// A reaction authored by a channel (actor_chat) rather than a user. Telegram sends ActorChat
+    /// and leaves User null in this case (anonymous channel admin / a channel reacting on its own
+    /// behalf). Exercises the null-User guard in OnMessageReaction.
+    static member quickChannelReaction(chat: Chat, messageId: int, actorChat: Chat, ?emoji: string) =
+        let reactionEmoji = emoji |> Option.defaultValue "\U0001F44D"
+        Update(
+            Id = next(),
+            MessageReaction = MessageReactionUpdated(
+                Chat = chat,
+                MessageId = messageId,
+                ActorChat = actorChat,
+                Date = DateTime.UtcNow,
+                OldReaction = [||],
+                NewReaction = [| ReactionTypeEmoji(Emoji = reactionEmoji) |]
+            )
+        )
+
     // ── Message factories (CouponHubBot-style) ──────────────────────────────
 
     static member dmMessage(text: string, fromUser: User) =
@@ -229,6 +246,36 @@ type Tg() =
                     From = fromUser,
                     Chat = chat,
                     Date = DateTime.UtcNow,
+                    Photo = [|
+                        PhotoSize(
+                            FileId = fid,
+                            FileUniqueId = fid + "-uid",
+                            FileSize = Nullable<int64>(1024L),
+                            Width = 10,
+                            Height = 10
+                        )
+                    |]
+                )
+        )
+
+    /// Album photo (sets MediaGroupId so the bot's album router fires). Each photo
+    /// of a real Telegram album shares the same media_group_id but has a distinct
+    /// message_id and file_id. Tests pass an explicit messageId to assert
+    /// reply_parameters.message_id matches in per-failed-photo replies.
+    static member dmAlbumPhoto(fromUser: User, mediaGroupId: string, ?fileId: string, ?messageId: int, ?caption: string) =
+        let chat = Tg.privateChat(id = fromUser.Id)
+        let fid = defaultArg fileId ($"album-photo-{nextInt64 ()}")
+        let mid = defaultArg messageId (next())
+        Update(
+            Id = next(),
+            Message =
+                Message(
+                    Id = mid,
+                    Caption = (defaultArg caption null),
+                    From = fromUser,
+                    Chat = chat,
+                    Date = DateTime.UtcNow,
+                    MediaGroupId = mediaGroupId,
                     Photo = [|
                         PhotoSize(
                             FileId = fid,

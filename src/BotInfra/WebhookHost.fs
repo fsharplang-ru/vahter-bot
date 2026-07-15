@@ -1,6 +1,8 @@
 namespace BotInfra
 
 open System
+open System.IO
+open System.Net.Http
 open System.Text.Json
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
@@ -45,6 +47,27 @@ module WebhookHost =
                 TelegramBotClient(options, httpClient) :> ITelegramBotClient
             )
 
+        // Funogram stack (dual-registered during the Telegram.Bot -> Funogram migration;
+        // the Telegram.Bot block above is deleted once both bots are migrated).
+        %builder.Services.AddSingleton<Funogram.Types.BotConfig>(Func<IServiceProvider, Funogram.Types.BotConfig>(fun sp ->
+            let httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("telegram_bot_client")
+            { IsTest = false
+              Token = cfg.BotToken
+              Offset = None
+              Limit = None
+              Timeout = Some 60000L
+              AllowedUpdates = None
+              OnError = ignore
+              ApiEndpointUrl =
+                  match cfg.TelegramApiBaseUrl with
+                  | null -> Uri "https://api.telegram.org/bot"
+                  // FakeTgApi override: its routes are /bot{token}/{method} and /file/bot{token}/{*path}
+                  | baseUrl -> Uri(baseUrl.TrimEnd('/') + "/bot")
+              Client = httpClient
+              WebHook = None
+              RequestLogger = None }))
+        %builder.Services.AddSingleton<ITelegramApi, TelegramApi>()
+
         // TimeProvider (frozen in tests via BOT_FIXED_UTC_NOW).
         // Registered as MutableTimeProvider so the reload endpoint can advance time at runtime.
         let mtp = Time.MutableTimeProvider(Time.fromEnvironment())
@@ -60,10 +83,24 @@ module WebhookHost =
         | true, headerValues when headerValues.Count > 0 && headerValues[0] = secretToken -> true
         | _ -> false
 
-    /// Maps GET /health -> "OK" and POST {webhookRoute} -> validate + deserialize + onUpdate.
+    /// Telegram.Bot-flavored webhook body parser (pre-migration bots); Funogram bots
+    /// use FunogramJson.parseUpdate instead.
+    let parseTelegramBotUpdate (body: Stream) : Task<Update option> =
+        task {
+            try
+                let! update = JsonSerializer.DeserializeAsync<Update>(body, telegramJsonOptions)
+                return Option.ofObj update
+            with :? JsonException ->
+                return None
+        }
+
+    /// Maps GET /health -> "OK" and POST {webhookRoute} -> validate + parseUpdate + onUpdate.
+    /// Generic over the update type so Telegram.Bot and Funogram bots share the pipeline
+    /// during the migration; parseUpdate returns None for malformed bodies (-> 400).
     let mapWebhookEndpoints
         (cfg: WebhookConfig)
-        (onUpdate: HttpContext -> Update -> Task<unit>)
+        (parseUpdate: Stream -> Task<'u option>)
+        (onUpdate: HttpContext -> 'u -> Task<unit>)
         (app: WebApplication) =
 
         %app.MapGet("/health", Func<string>(fun () -> "OK"))
@@ -73,11 +110,9 @@ module WebhookHost =
                 if not (validateApiKey cfg.SecretToken ctx) then
                     return Results.Text("Access Denied", statusCode = 401)
                 else
-                    let! update = JsonSerializer.DeserializeAsync<Update>(ctx.Request.Body, telegramJsonOptions)
-
-                    if isNull update then
-                        return Results.BadRequest()
-                    else
+                    match! parseUpdate ctx.Request.Body with
+                    | None -> return Results.BadRequest()
+                    | Some update ->
                         do! onUpdate ctx update
                         return Results.Ok()
             }))

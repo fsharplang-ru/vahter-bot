@@ -1,17 +1,56 @@
 namespace BotInfra
 
 open System
+open System.Collections.Generic
+open System.Diagnostics
+open System.Diagnostics.Metrics
 open System.Text.Json
 open System.Text.RegularExpressions
+open System.Threading
 open System.Threading.Tasks
 open Dapper
 open Npgsql
+
+/// OpenTelemetry primitives for the event store. Self-contained in BotInfra so any bot gets
+/// the same spans/metrics; the source/meter names are registered in `Observability.fs`.
+/// A `eventStore.load` span is emitted per stream load tagged `source = db | cache`, so a
+/// cache hit is visible in Tempo as a span with NO child `postgresql` span.
+module internal EventStoreTelemetry =
+    let activitySource = new ActivitySource("BotInfra.EventStore")
+    let private meter = new Meter("BotInfra.EventStore")
+    let private streamLoadsCounter =
+        meter.CreateCounter<int64>(
+            "eventstore_stream_loads_total", "loads",
+            "Event-stream loads into aggregate state, tagged by source (db|cache)")
+    let private cacheMutationsCounter =
+        meter.CreateCounter<int64>(
+            "eventstore_stream_cache_mutations_total", "mutations",
+            "Request-scoped stream-cache mutations, tagged by action (appended|evicted)")
+
+    /// Records a load and tags the (possibly null) load span with its provenance.
+    let recordLoad (activity: Activity) (source: string) (streamId: string) (version: int) (eventCount: int) =
+        if not (isNull activity) then
+            activity.SetTag("stream_id", streamId)
+                    .SetTag("source", source)
+                    .SetTag("cache.hit", box (source = "cache"))
+                    .SetTag("stream_version", version)
+                    .SetTag("event_count", eventCount)
+            |> ignore
+        streamLoadsCounter.Add(1L, KeyValuePair("source", box source))
+
+    /// Records a cache mutation (append/evict) on a metric and the enclosing span, if any.
+    let recordMutation (action: string) (streamId: string) =
+        cacheMutationsCounter.Add(1L, KeyValuePair("action", box action))
+        match Activity.Current with
+        | null -> ()
+        | a -> a.SetTag("eventstore.cache.action", action) |> ignore
 
 /// Raw row materialized from the per-bot event table.
 /// `data` is JSONB read back as TEXT so Dapper can map it as a plain string.
 [<CLIMutable>]
 type RawEvent =
-    { stream_id:      string
+    { id:             int64
+      stream_id:      string
       stream_version: int
       event_type:     string
       data:           string
@@ -44,7 +83,7 @@ type EventStore(connString: string, tableName: string, jsonOptions: JsonSerializ
 
     let selectAllSql =
         $"""
-SELECT stream_id, stream_version, event_type, data::TEXT AS data, created_at
+SELECT id::BIGINT AS id, stream_id, stream_version, event_type, data::TEXT AS data, created_at
 FROM {tableName}
 WHERE stream_id = @streamId
 ORDER BY stream_version
@@ -61,17 +100,72 @@ RETURNING id
     let maxVersionSql =
         $"SELECT MAX(stream_version) FROM {tableName} WHERE stream_id = @streamId"
 
+    // Request-scoped identity map (unit of work): while a scope is active, repeated loads of the
+    // same stream within one handle are served from memory instead of re-querying Postgres. The
+    // AsyncLocal value is null outside a scope (no caching). Only the `readStream` path is cached;
+    // the in-TX projection read (`ReadRawEventsForStream`) is deliberately left uncached so
+    // projections always see freshly-inserted rows with their real DB-assigned id/created_at.
+    // NOTE: cached raws are only ever folded by `data` + `stream_version` (id/created_at/event_type
+    // are never read off the cache — verified for all readStream consumers), so appended events are
+    // synthesized in-memory below without a re-read.
+    let scopedCache = AsyncLocal<Dictionary<string, RawEvent list * int>>()
+
+    let cacheTryGet (streamId: string) : (RawEvent list * int) voption =
+        let c = scopedCache.Value
+        if isNull c then ValueNone
+        else
+            match c.TryGetValue streamId with
+            | true, v -> ValueSome v
+            | _ -> ValueNone
+
+    let cachePut (streamId: string) (entry: RawEvent list * int) =
+        let c = scopedCache.Value
+        if not (isNull c) then c[streamId] <- entry
+
+    let cacheEvict (streamId: string) =
+        let c = scopedCache.Value
+        if not (isNull c) then
+            if c.Remove streamId then EventStoreTelemetry.recordMutation "evicted" streamId
+
+    /// Reflects an append into the cache (if a scope is active) by synthesizing the new rows in
+    /// memory, so a subsequent load in the same handle is free and reflects our own write.
+    /// Synthesized rows carry meaningful `data` + `stream_version` only (see note above).
+    let cacheAppend (streamId: string) (priorRaws: RawEvent list) (baseVersion: int) (newEvents: 'TEvent list) =
+        let c = scopedCache.Value
+        if not (isNull c) then
+            let synthesized =
+                newEvents
+                |> List.mapi (fun i e ->
+                    { id = 0L
+                      stream_id = streamId
+                      stream_version = baseVersion + i + 1
+                      event_type = ""
+                      data = JsonSerializer.Serialize<'TEvent>(e, jsonOptions)
+                      created_at = Unchecked.defaultof<DateTime> })
+            let newVersion = baseVersion + List.length newEvents
+            c[streamId] <- (priorRaws @ synthesized, newVersion)
+            EventStoreTelemetry.recordMutation "appended" streamId
+
     let readStream (streamId: string) : Task<RawEvent list * int> =
         task {
-            use conn = new NpgsqlConnection(connString)
-            let! rows = conn.QueryAsync<RawEvent>(selectAllSql, {| streamId = streamId |})
-            let events = List.ofSeq rows
-            let version =
-                events
-                |> List.tryLast
-                |> Option.map (fun e -> e.stream_version)
-                |> Option.defaultValue 0
-            return events, version
+            match cacheTryGet streamId with
+            | ValueSome (events, version) ->
+                use activity = EventStoreTelemetry.activitySource.StartActivity("eventStore.load")
+                EventStoreTelemetry.recordLoad activity "cache" streamId version (List.length events)
+                return events, version
+            | ValueNone ->
+                use activity = EventStoreTelemetry.activitySource.StartActivity("eventStore.load")
+                use conn = new NpgsqlConnection(connString)
+                let! rows = conn.QueryAsync<RawEvent>(selectAllSql, {| streamId = streamId |})
+                let events = List.ofSeq rows
+                let version =
+                    events
+                    |> List.tryLast
+                    |> Option.map (fun e -> e.stream_version)
+                    |> Option.defaultValue 0
+                cachePut streamId (events, version)
+                EventStoreTelemetry.recordLoad activity "db" streamId version (List.length events)
+                return events, version
         }
 
     let insertEvents
@@ -90,6 +184,14 @@ RETURNING id
             return insertedCount
         }
 
+    /// Begins a request-scoped identity-map scope. Repeated loads of the same stream within the
+    /// returned scope are served from memory; dispose restores the prior scope (supports nesting).
+    /// Intended to wrap one update handle — see the webhook entry point.
+    member _.BeginRequestScope() : IDisposable =
+        let prev = scopedCache.Value
+        scopedCache.Value <- Dictionary<string, RawEvent list * int>()
+        { new IDisposable with member _.Dispose() = scopedCache.Value <- prev }
+
     /// Returns the highest stream_version for the given stream, or 0 if the stream is empty.
     member _.GetStreamVersion(streamId: string) : Task<int> =
         task {
@@ -103,6 +205,40 @@ RETURNING id
     /// `version = 0` means the stream does not exist yet.
     member _.GetRawEventsForStream(streamId: string) : Task<RawEvent list * int> =
         readStream streamId
+
+    /// Reads all RawEvents for a stream on a caller-supplied connection/transaction, so a
+    /// projection can see rows just inserted in the same TX. Ordered by stream_version.
+    member _.ReadRawEventsForStream(conn: NpgsqlConnection, tx: NpgsqlTransaction, streamId: string) : Task<RawEvent list> =
+        task {
+            let! rows = conn.QueryAsync<RawEvent>(selectAllSql, {| streamId = streamId |}, tx)
+            return List.ofSeq rows
+        }
+
+    /// Reads RawEvents for several streams in ONE round-trip on a caller-supplied
+    /// connection/transaction, returning a `streamId -> RawEvent list` map (each list ordered by
+    /// stream_version; absent streams map to an empty list). Lets a projection that needs sibling
+    /// streams (e.g. message:* + moderation:*) fold them after a single query instead of N reads.
+    member _.ReadRawEventsForStreams(conn: NpgsqlConnection, tx: NpgsqlTransaction, streamIds: string list) : Task<IReadOnlyDictionary<string, RawEvent list>> =
+        task {
+            let sql =
+                $"""
+SELECT id::BIGINT AS id, stream_id, stream_version, event_type, data::TEXT AS data, created_at
+FROM {tableName}
+WHERE stream_id = ANY(@streamIds)
+ORDER BY stream_id, stream_version
+"""
+            let! rows = conn.QueryAsync<RawEvent>(sql, {| streamIds = List.toArray streamIds |}, tx)
+            let byStream =
+                rows
+                |> Seq.groupBy (fun r -> r.stream_id)
+                |> Seq.map (fun (sid, rs) -> sid, List.ofSeq rs)
+                |> dict
+            // Ensure every requested stream is present (empty when it has no events yet).
+            let result = Dictionary<string, RawEvent list>()
+            for sid in streamIds do
+                result[sid] <- (match byStream.TryGetValue sid with | true, v -> v | _ -> [])
+            return result :> IReadOnlyDictionary<string, RawEvent list>
+        }
 
     /// Reads all events for a stream in version order, deserialized into `'TEvent`.
     member _.GetEventsForStream<'TEvent>(streamId: string) : Task<'TEvent[]> =
@@ -200,9 +336,13 @@ RETURNING id
                 else
                     match! this.TryAppend(streamId, version, newEvents) with
                     | Ok _ ->
+                        cacheAppend streamId raws version newEvents
                         let finalState = newEvents |> List.fold fold state
                         result <- ValueSome (newEvents, finalState)
-                    | Error ConcurrencyConflict -> ()
+                    | Error ConcurrencyConflict ->
+                        // Stale read lost the version race — drop the cached entry so the retry
+                        // re-reads the committed state fresh from the DB.
+                        cacheEvict streamId
             return result.Value
         }
 
@@ -234,9 +374,13 @@ RETURNING id
                         | None   -> fun _ _ -> Task.CompletedTask
                     match! this.TryAppendWithProjection(streamId, version, newEvents, proj) with
                     | Ok _ ->
+                        cacheAppend streamId raws version newEvents
                         let finalState = newEvents |> List.fold fold state
                         result <- ValueSome (newEvents, finalState)
-                    | Error ConcurrencyConflict -> ()
+                    | Error ConcurrencyConflict ->
+                        // Stale read lost the version race — drop the cached entry so the retry
+                        // re-reads the committed state fresh from the DB.
+                        cacheEvict streamId
             return result.Value
         }
 
