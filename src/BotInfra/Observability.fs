@@ -80,6 +80,7 @@ module Observability =
                         ]
                     )
                     .AddSource(activitySourceName)
+                    .AddSource("BotInfra.EventStore")
                 getEnvWith "OTEL_EXPORTER_OTLP_ENDPOINT" (fun endpoint ->
                     %builder.AddOtlpExporter(fun options ->
                         options.Endpoint <- Uri(endpoint)
@@ -95,6 +96,7 @@ module Observability =
                     .AddHttpClientInstrumentation()
                     .AddAspNetCoreInstrumentation()
                     .AddMeter(meterName)
+                    .AddMeter("BotInfra.EventStore")
                 getEnvWith "OTEL_EXPORTER_CONSOLE" (fun v ->
                     if Boolean.Parse(v) then %builder.AddConsoleExporter()
                 )
