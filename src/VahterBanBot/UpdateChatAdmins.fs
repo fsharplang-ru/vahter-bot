@@ -5,8 +5,6 @@ open System.Text
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Options
-open Telegram.Bot
-open Telegram.Bot.Types
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open BotInfra
@@ -14,9 +12,11 @@ open System
 open System.Threading
 open Microsoft.Extensions.Hosting
 
+module Req = Funogram.Telegram.Req
+
 type UpdateChatAdmins(
     logger: ILogger<UpdateChatAdmins>,
-    telegramClient: ITelegramBotClient,
+    tg: ITelegramApi,
     botConf: IOptions<BotConfiguration>
 ) =
     let mutable timer: Timer = null
@@ -28,14 +28,17 @@ type UpdateChatAdmins(
             %sb.AppendLine("New chat admins:")
             let result = HashSet<int64>()
             for chatId in botConf.Value.ChatsToMonitor.Values do
-                let! admins = telegramClient.GetChatAdministrators(ChatId chatId)
+                let! admins = tg.CallExn(Req.GetChatAdministrators.Make chatId)
 
                 // wait a bit so we don't get rate limited
                 do! Task.Delay 100
 
                 for admin in admins do
-                    if result.Add admin.User.Id then
-                        %sb.AppendJoin(",", $"{prependUsername admin.User.Username} ({admin.User.Id})")
+                    // status/user read via Tg helpers — the ChatMember DU cases are
+                    // misdiscriminated by Funogram's converter (see Utils.Tg).
+                    let user = Tg.chatMemberUser admin
+                    if result.Add user.Id then
+                        %sb.AppendJoin(",", $"{prependUsername (Option.toObj user.Username)} ({user.Id})")
             UpdateChatAdmins.Admins <- result
             logger.LogInformation (sb.ToString())
         with

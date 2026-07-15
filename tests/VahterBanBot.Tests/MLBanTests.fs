@@ -16,7 +16,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
     
@@ -29,7 +29,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
     
@@ -42,7 +42,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
     
@@ -64,11 +64,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message was NOT auto banned (because it's an automatic forward)
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
         
         // verify the message was saved to DB
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True dbMsg.IsSome
     }
     
@@ -80,7 +80,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
     
@@ -91,7 +91,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
     
@@ -102,7 +102,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
     
@@ -114,25 +114,25 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
         // assert it is not false-positive
-        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
+        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message.Value
         Assert.False isFalsePositive
         // assert user is NOT banned (auto-delete is not the same as ban)
-        let! userBanned = fixture.UserBanned msgUpdate.Message.From.Id
+        let! userBanned = fixture.UserBanned msgUpdate.Message.Value.From.Value.Id
         Assert.False userBanned
         
         // send a callback to mark it as false-positive (NOT SPAM button)
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "NotASpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
         // assert it is false-positive
-        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
+        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message.Value
         Assert.True isFalsePositive
         // CRITICAL: assert user is still NOT banned after NOT SPAM button
-        let! userBanned = fixture.UserBanned msgUpdate.Message.From.Id
+        let! userBanned = fixture.UserBanned msgUpdate.Message.Value.From.Value.Id
         Assert.False userBanned
     }
     
@@ -146,7 +146,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // For potential spam, message is NOT auto-deleted (deleteMessage = false)
-        let! msgAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgAutoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         // If this is potential spam, it won't be auto-deleted
         // If it IS auto-deleted, it means score >= threshold, but the test still validates the bug fix
         
@@ -155,7 +155,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.False userBannedBefore
         
         // Try to get NotASpam callback (this exists for both detected and potential spam)
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "NotASpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
@@ -173,17 +173,17 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
         
         // send a callback to mark it as false-positive
         // we are sending this as a usual user
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message (nameof CallbackMessage.NotASpam)
-        let msgCallback = Tg.callback(string callbackId, from = msgUpdate.Message.From)
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value (nameof CallbackMessage.NotASpam)
+        let msgCallback = Tg.callback(string callbackId, from = msgUpdate.Message.Value.From.Value)
         let! _ = fixture.SendMessage msgCallback
         
         // assert it is still NOT a false-positive
-        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message
+        let! isFalsePositive = fixture.IsMessageFalsePositive msgUpdate.Message.Value
         Assert.False isFalsePositive
     }
     
@@ -196,22 +196,22 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         
         // 1 - no ban
         let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgBanned
         
         // 2 - no ban
         let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgBanned
         
         // 3 - no ban
         let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.False msgBanned
         
         // 4 - ban (depends on the ML_SPAM_AUTOBAN_SCORE_THRESHOLD)
         let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True msgBanned
     }
     
@@ -225,27 +225,27 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         
         // 1 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
         
         // 1.5 - no ban
         let! _ = fixture.SendMessage notSpam
-        let! msgBanned = fixture.MessageBanned notSpam.Message
+        let! msgBanned = fixture.MessageBanned notSpam.Message.Value
         Assert.False msgBanned
         
         // 2 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
         
         // 3 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
         
         // 4 - no ban (as user posted 1 good message in beetween)
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
     }
     
@@ -258,30 +258,30 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         
         // 1 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
-        let! msgDeleted = fixture.MessageIsAutoDeleted spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
+        let! msgDeleted = fixture.MessageIsAutoDeleted spam.Message.Value
         Assert.True msgDeleted
         Assert.False msgBanned
         
         // 1.5 - vahter marked as false-positive via button
         // send a callback to mark it as false-positive
-        let! callbackId = fixture.GetCallbackId spam.Message "NotASpam"
+        let! callbackId = fixture.GetCallbackId spam.Message.Value "NotASpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
         // 2 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
         
         // 3 - no ban
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
         
         // 4 - no ban (as vahter marked this as false positive)
         let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message
+        let! msgBanned = fixture.MessageBanned spam.Message.Value
         Assert.False msgBanned
     }
     
@@ -294,7 +294,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
     
@@ -306,7 +306,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -319,7 +319,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // assert that the message got auto banned
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -330,10 +330,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
         
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.Equal("2222222", dbMsg.Value.text)
     }
 
@@ -344,10 +344,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
         
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.Equal("b", dbMsg.Value.text)
     }
 
@@ -365,10 +365,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
         
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.Equal("2222222", dbMsg.Value.text)
     }
 
@@ -386,10 +386,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
         
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.Equal("b", dbMsg.Value.text)
     }
     
@@ -404,10 +404,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
         
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.Equal("Hello!\nb", dbMsg.Value.text)
     }
     
@@ -425,7 +425,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.False(userBannedBefore, "User should not be banned initially")
         
         // Click MarkAsSpam button (soft spam) - uses the new third button
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "MarkAsSpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
@@ -435,7 +435,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.False(userBannedAfter, "User should NOT be banned after MarkAsSpam - this is soft delete only!")
         
         // Message should be marked as false negative (spam for ML training)
-        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message
+        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message.Value
         Assert.True(isFalseNegative, "Message should be marked as false negative for ML")
     }
     
@@ -449,12 +449,12 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
         
         // Try to click MarkAsSpam as regular user (not vahter)
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "MarkAsSpam"
         let msgCallback = Tg.callback(string callbackId, from = user) // regular user, not vahter
         let! _ = fixture.SendMessage msgCallback
         
         // Message should NOT be marked as false negative (action was rejected)
-        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message
+        let! isFalseNegative = fixture.IsMessageFalseNegative msgUpdate.Message.Value
         Assert.False(isFalseNegative, "Non-vahter should not be able to mark message as spam")
     }
     
@@ -482,7 +482,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
             let! _ = fixture.SendMessage msgUpdate
             
             // Click MarkAsSpam (soft spam)
-            let! callbackId = fixture.GetCallbackId msgUpdate.Message "MarkAsSpam"
+            let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "MarkAsSpam"
             let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
             let! _ = fixture.SendMessage msgCallback
             
@@ -494,7 +494,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let finalMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "33", from = user)
         let! _ = fixture.SendMessage finalMsg
         
-        let! callbackId = fixture.GetCallbackId finalMsg.Message "MarkAsSpam"
+        let! callbackId = fixture.GetCallbackId finalMsg.Message.Value "MarkAsSpam"
         let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgCallback
         
@@ -514,7 +514,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -527,7 +527,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -540,7 +540,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True dbMsg.IsSome
         Assert.Equal("b\nhello", dbMsg.Value.text)
     }
@@ -555,7 +555,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -569,7 +569,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -582,7 +582,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -595,7 +595,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -608,7 +608,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True dbMsg.IsSome
         Assert.Equal("hello\nb", dbMsg.Value.text)
     }
@@ -622,7 +622,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -654,7 +654,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         // With the fix, processMessage runs → ML scores the message.
         // With the bug, isAutoBanned short-circuits → no ML scoring.
-        let! mlScore = fixture.GetMlScore newMsg.Message
+        let! mlScore = fixture.GetMlScore newMsg.Message.Value
         Assert.True(mlScore.IsSome, "Message from unbanned user should be ML-scored, not short-circuited by stale ban check")
     }
 
@@ -700,13 +700,13 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         let! _ = fixture.SendMessage msgUpdate
 
         // Sanity: a NotASpam callback exists for this message in the Detected Spam channel
-        let! callbackId = fixture.GetCallbackId msgUpdate.Message "NotASpam"
+        let! callbackId = fixture.GetCallbackId msgUpdate.Message.Value "NotASpam"
 
         do! fixture.ClearFakeCalls()
 
         // Vahter replies /ban → TotalBan(Actor.User) → sweep
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(System.Net.HttpStatusCode.OK, banResp.StatusCode)
 
@@ -747,7 +747,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
         // With ban expiry, processMessage runs → ML scores the message.
         // Without ban expiry, the "already banned" check short-circuits → no ML scoring.
-        let! mlScore = fixture.GetMlScore newMsg.Message
+        let! mlScore = fixture.GetMlScore newMsg.Message.Value
         Assert.True(mlScore.IsSome, "Message from user with expired ban should be ML-scored, not suppressed")
 
         // Revert time to system clock
