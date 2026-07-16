@@ -11,11 +11,11 @@ open Microsoft.Extensions.Options
 open Microsoft.ML
 open Microsoft.ML.Data
 open Microsoft.ML.Trainers
-open Telegram.Bot
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
+open Funogram.Telegram.Types
 open VahterBanBot.Types
 open BotInfra
+
+module Req = Funogram.Telegram.Req
 
 [<CLIMutable>]
 type SpamOrHam =
@@ -34,7 +34,7 @@ type Prediction =
 
 type MachineLearning(
     logger: ILogger<MachineLearning>,
-    telegramClient: ITelegramBotClient,
+    tg: ITelegramApi,
     botConf: IOptions<BotConfiguration>,
     db: DbService,
     timeProvider: TimeProvider
@@ -168,26 +168,25 @@ type MachineLearning(
         let metricsStr = metricsToString metrics sw.Elapsed
         logger.LogInformation metricsStr
         if sendMetrics then
-            do! telegramClient.SendMessage(
-                    chatId = ChatId(botConf.Value.AllLogsChannelId),
-                    text = metricsStr,
+            do! tg.CallExn(Req.SendMessage.Make(
+                    botConf.Value.AllLogsChannelId,
+                    metricsStr,
                     parseMode = ParseMode.Markdown
-                ) |> taskIgnore
+                )) |> taskIgnore
         logger.LogInformation "Model trained and saved"
     }
 
     // if ML is ready (either disabled or model is trained)
     member _.IsReady = not botConf.Value.MlEnabled || predictionEngine.IsSome
 
-    member _.Predict(text: string, userMsgCount: int, entities: MessageEntity array) =
+    member _.Predict(text: string, userMsgCount: int, entities: MessageEntity array option) =
         try
             match predictionEngine with
             | Some predictionEngine ->
                 let emojiCount =
                     entities
-                    |> Option.ofObj
                     |> Option.defaultValue [||]
-                    |> Seq.filter (fun x -> x.Type = MessageEntityType.CustomEmoji)
+                    |> Seq.filter (fun x -> x.Type = "custom_emoji")
                     |> Seq.length
                 
                 predictionEngine.Predict

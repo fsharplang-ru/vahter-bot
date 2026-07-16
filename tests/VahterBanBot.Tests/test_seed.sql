@@ -912,15 +912,28 @@ SELECT
 FROM "user"
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
--- 2. MessageReceived — from message table
+-- 2. MessageReceived — from message table.
+-- rawMessage is a JSON *string* — the single canonical shape since V40 normalized the
+-- old object-form backfill rows (issue #166). to_jsonb(raw_message::text) produces the
+-- exact shape the live app writes and V40 leaves behind.
 INSERT INTO event(stream_id, stream_version, data, created_at)
 SELECT
     'message:' || chat_id || ':' || message_id,
     1,
     jsonb_build_object('Case', 'MessageReceived', 'chatId', chat_id, 'messageId', message_id,
-                       'userId', user_id, 'text', text, 'rawMessage', raw_message::jsonb),
+                       'userId', user_id, 'text', text, 'rawMessage', to_jsonb(raw_message::text)),
     created_at
 FROM message
+ON CONFLICT (stream_id, stream_version) DO NOTHING;
+
+-- 2b. One hand-written string-shaped MessageReceived kept for fold/rebuild coverage.
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES
+    ('message:-666:20001', 1,
+     jsonb_build_object('Case', 'MessageReceived', 'chatId', -666, 'messageId', 20001, 'userId', 1001,
+                        'text', 'live string shape',
+                        'rawMessage', to_jsonb('{"text":"live string shape"}'::text)),
+     now() - '2 days'::INTERVAL)
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
 -- 3. UserBanned — union manual bans + (no bot bans in seed), offset by 1 for UsernameChanged

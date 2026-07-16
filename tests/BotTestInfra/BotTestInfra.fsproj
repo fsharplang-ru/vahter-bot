@@ -11,7 +11,8 @@
   <ItemGroup>
     <PackageReference Include="Dapper" />
     <PackageReference Include="Npgsql" />
-    <PackageReference Include="Telegram.Bot" />
+    <PackageReference Include="Funogram" />
+    <PackageReference Include="Funogram.Telegram" />
     <PackageReference Include="Testcontainers" />
     <PackageReference Include="Testcontainers.PostgreSql" />
     <PackageReference Include="xunit.v3.extensibility.core" />
