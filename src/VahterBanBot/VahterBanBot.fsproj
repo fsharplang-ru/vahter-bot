@@ -12,17 +12,21 @@
     <Compile Include="Telemetry.fs" />
     <Compile Include="DB.fs" />
     <Compile Include="OcrCache.fs" />
+    <Compile Include="LlmVerdictCache.fs" />
     <Compile Include="ML.fs" />
     <Compile Include="ComputerVision.fs" />
+    <Compile Include="ProfileFetcher.fs" />
     <Compile Include="LlmTriage.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />
     <Compile Include="Cleanup.fs" />
     <Compile Include="StartupMessage.fs" />
+    <Compile Include="BotCommandsSetup.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" />
     <PackageReference Include="Dapper.FSharp" />
     <PackageReference Include="FSharp.SystemTextJson" />
     <PackageReference Include="Microsoft.ML" />
