@@ -1,14 +1,10 @@
 namespace VahterBanBot
 
 open System
-open System.Text.Json
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
-open Telegram.Bot.Types.ReplyMarkups
-open VahterBanBot.Utils
-open BotInfra.TelegramHelpers
+open Funogram.Telegram.Types
+open BotInfra
 
-/// Wrapper around Telegram.Bot.Types.Message.
+/// Wrapper around Funogram.Telegram.Types.Message.
 /// All sender resolution (channel sender → SenderChat) is baked in.
 /// The raw message is never mutated; enrichment text is kept separately.
 type TgMessage private (raw: Message, isEdit: bool) =
@@ -37,48 +33,59 @@ type TgMessage private (raw: Message, isEdit: bool) =
     /// True when the message is sent on behalf of a channel
     /// (From is the technical @Channel_Bot user and SenderChat is a Channel).
     member _.IsChannelSender =
-        raw.From <> null &&
-        raw.From.IsBot &&
-        raw.From.Username = "Channel_Bot" &&
-        raw.SenderChat <> null &&
-        raw.SenderChat.Type = ChatType.Channel
+        match raw.From, raw.SenderChat with
+        | Some from, Some senderChat ->
+            from.IsBot
+            && from.Username = Some "Channel_Bot"
+            && senderChat.Type = ChatType.Channel
+        | _ -> false
 
     /// True when the message has a resolvable sender (either a real user or a channel sender).
     member this.HasSender =
-        this.IsChannelSender || raw.From <> null
+        this.IsChannelSender || raw.From.IsSome
 
     /// Resolved sender ID – SenderChat.Id for channel senders, From.Id otherwise.
     member this.SenderId =
-        if this.IsChannelSender then raw.SenderChat.Id
-        else raw.From.Id
+        if this.IsChannelSender then raw.SenderChat.Value.Id
+        else raw.From.Value.Id
 
     /// Resolved sender username – SenderChat.Username for channel senders, From.Username otherwise.
-    member this.SenderUsername =
-        if this.IsChannelSender then raw.SenderChat.Username
-        else raw.From.Username
+    /// Kept as a nullable string (not option) to preserve the pre-migration member shape.
+    member this.SenderUsername : string =
+        if this.IsChannelSender then raw.SenderChat.Value.Username |> Option.toObj
+        else raw.From.Value.Username |> Option.toObj
 
     /// Human-readable display name – channel title for channel senders,
     /// FirstName + LastName (trimmed) for regular users.
     member this.SenderDisplayName =
         if this.IsChannelSender then
-            if isNull raw.SenderChat.Title then raw.SenderChat.Username
-            else raw.SenderChat.Title
+            let senderChat = raw.SenderChat.Value
+            match senderChat.Title with
+            | Some title -> title
+            | None -> senderChat.Username |> Option.toObj
         else
-            $"{raw.From.FirstName} {raw.From.LastName}".Trim()
+            let from = raw.From.Value
+            let lastName = defaultArg from.LastName String.Empty
+            $"{from.FirstName} {lastName}".Trim()
 
     // ── Message identity ───────────────────────────────────────────
 
     member _.MessageId = raw.MessageId
+    /// Set for ephemeral messages (Bot API 10.2) instead of a regular MessageId.
+    member _.EphemeralMessageId = raw.EphemeralMessageId
+    /// True for ephemeral messages (e.g. commands registered with is_ephemeral) —
+    /// invisible to other chat members, auto-expiring, not deletable via DeleteMessage.
+    member _.IsEphemeral = raw.EphemeralMessageId.IsSome
     member _.ChatId    = raw.Chat.Id
-    member _.ChatUsername = raw.Chat.Username
+    member _.ChatUsername : string = raw.Chat.Username |> Option.toObj
     member _.Chat      = raw.Chat
 
     // ── Text ───────────────────────────────────────────────────────
 
     /// The original TextOrCaption from the raw message (never enriched).
-    member _.OriginalText =
-        if isNull raw.Text then raw.Caption
-        else raw.Text
+    /// Nullable string to preserve the pre-migration member shape.
+    member _.OriginalText : string =
+        raw.Text |> Option.orElse raw.Caption |> Option.toObj
 
     /// Combined text: prefix enrichments + original + suffix enrichments.
     member this.Text =
@@ -97,20 +104,22 @@ type TgMessage private (raw: Message, isEdit: bool) =
 
     // ── Sub-objects (safe to expose – no From leakage) ─────────────
 
-    member _.IsAutomaticForward = raw.IsAutomaticForward
-    member _.Entities     =
-        if isNull raw.Text then raw.CaptionEntities
-        else raw.Entities
-    member _.Photos       = raw.Photo
+    member _.IsAutomaticForward = raw.IsAutomaticForward = Some true
+    member _.Entities : MessageEntity[] option =
+        if raw.Text.IsSome then raw.Entities
+        else raw.CaptionEntities
+    member _.Photos : PhotoSize[] = raw.Photo |> Option.defaultValue [||]
     member _.SenderChat   = raw.SenderChat
     member _.Quote        = raw.Quote
     member _.ExternalReply = raw.ExternalReply
+    /// Photos of the external-reply quote (empty when there is no external reply or no photo).
+    member _.ExternalReplyPhotos : PhotoSize[] =
+        raw.ExternalReply |> Option.bind _.Photo |> Option.defaultValue [||]
     member _.ReplyMarkup  = raw.ReplyMarkup
 
     /// Wrapped reply-to message (if present).
     member _.ReplyToMessage =
-        if isNull raw.ReplyToMessage then None
-        else Some (TgMessage.Create raw.ReplyToMessage)
+        raw.ReplyToMessage |> Option.map (fun m -> TgMessage.Create m)
 
     // ── Enrichment (mutable, raw message stays untouched) ──────────
 
@@ -131,8 +140,10 @@ type TgMessage private (raw: Message, isEdit: bool) =
     member internal _.RawMessage = raw
 
     /// Serialized JSON of the original un-enriched raw message (for DB raw_message column).
+    /// Funogram wire format (snake_case) — the same shape Telegram.Bot persisted, pinned
+    /// by tests/SerializationCompat.Tests.
     member _.RawJson =
-        JsonSerializer.Serialize(raw, options = telegramJsonOptions)
+        FunogramJson.serialize raw
 
     // ── Factory ────────────────────────────────────────────────────
 

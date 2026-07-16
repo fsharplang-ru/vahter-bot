@@ -1,30 +1,30 @@
 open System
 open System.Diagnostics
-open System.Text.Json
-open System.Threading
+open System.Net.Http
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
 open Microsoft.Extensions.Logging
-open Telegram.Bot
-open Telegram.Bot.Polling
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Options
 open VahterBanBot
+open VahterBanBot.Bot
 open VahterBanBot.Cleanup
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.OcrCache
+open VahterBanBot.LlmVerdictCache
 open VahterBanBot.LlmTriage
+open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.StartupMessage
+open VahterBanBot.BotCommandsSetup
 open VahterBanBot.UpdateChatAdmins
 open BotInfra
-open BotInfra.TelegramHelpers
 open BotInfra.JsonSetup
+
+module Req = Funogram.Telegram.Req
 
 type Root = class end
 
@@ -34,6 +34,9 @@ let connString = getEnv "DATABASE_URL"
 
 let loadDbSettings () =
     try
+        // NOTE(project-agent): intentional blocking call. Runs once at module init before the
+        // ASP.NET Core host exists; there is no SynchronizationContext to deadlock against, and
+        // settings must be loaded synchronously to build the DI container. Do not flag.
         DbSettings.loadBotSettings(connString).GetAwaiter().GetResult()
     with e ->
         eprintfn "[FATAL] Failed to load bot settings from database: %O" e
@@ -63,6 +66,7 @@ let buildBotConf () =
       PotentialSpamChannelId = getRequiredSetting "POTENTIAL_SPAM_CHANNEL_ID" |> int64
       DetectedSpamChannelId = getRequiredSetting "DETECTED_SPAM_CHANNEL_ID" |> int64
       AllLogsChannelId = getRequiredSetting "ALL_LOGS_CHANNEL_ID" |> int64
+      AdminChannelId = getSettingOr "ADMIN_CHANNEL_ID" "0" |> int64
       DetectedSpamCleanupAge = getSettingOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getRequiredSetting "CHATS_TO_MONITOR" |> fromJson
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
@@ -90,6 +94,7 @@ let buildBotConf () =
       MlRetrainScheduledTime =
           let s = getSettingOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
           TimeOnly.Parse(s).ToTimeSpan()
+      MlRetrainScheduledEnabled = getSettingOr "ML_RETRAIN_SCHEDULED_ENABLED" "true" |> bool.Parse
       MlSeed =
           match getSetting "ML_SEED" with
           | null -> Nullable<int>()
@@ -123,7 +128,16 @@ let buildBotConf () =
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
-      BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int }
+      LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
+      // Reaction-spam triage (vision LLM)
+      LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
+      LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse
+      ReactionNotSpamCooldownDays    = getSettingOr "REACTION_NOT_SPAM_COOLDOWN_DAYS" "30" |> int
+      ReactionTriageDebounce         = getSettingOr "REACTION_TRIAGE_DEBOUNCE_SECONDS" "5" |> int64 |> TimeSpan.FromSeconds
+      BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int
+      // Ephemeral commands & confirmations (Bot API 10.2)
+      EphemeralCommandsEnabled     = getSettingOr "EPHEMERAL_COMMANDS_ENABLED" "false" |> bool.Parse
+      EphemeralConfirmationEnabled = getSettingOr "EPHEMERAL_CONFIRMATION_ENABLED" "false" |> bool.Parse }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled
@@ -159,24 +173,47 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<DbService>(fun sp ->
         DbService(connString, sp.GetRequiredService<TimeProvider>()))
     .AddSingleton<IOcrCache>(fun _ -> OcrCacheRepository(connString) :> IOcrCache)
+    // Reload hook: lets admin commands publish bot_setting changes without a restart
+    .AddSingleton<ISettingsReloader>({ new ISettingsReloader with
+        member _.Reload() = task { reloadSettings() } :> Task })
+    .AddSingleton<ILlmVerdictCache>(fun _ -> LlmVerdictCacheRepository(connString) :> ILlmVerdictCache)
     .AddSingleton<BotService>()
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
-    .AddHostedService<CleanupService>()
+    // Single CleanupService instance, exposed both as the hosted scheduler and as
+    // the IForcedCleanup used by the /vahter cleanup admin command.
+    .AddSingleton<CleanupService>()
+    .AddHostedService<CleanupService>(fun sp -> sp.GetRequiredService<CleanupService>())
+    .AddSingleton<IForcedCleanup>(fun sp ->
+        let cs = sp.GetRequiredService<CleanupService>()
+        { new IForcedCleanup with member _.Run() = cs.ForceCleanup() :> Task })
     .AddHostedService<StartupMessage>()
+    .AddHostedService<BotCommandsSetupService>()
     .AddHostedService<UpdateChatAdmins>()
 
-// OCR: register shared IBotOcr, then the VahterBanBot adapter that keeps the IComputerVision interface
+// OCR: register shared IBotOcr (Azure AI Vision SDK; SDK-native retry), then the VahterBanBot
+// adapter that keeps the IComputerVision interface.
 %builder.Services.AddSingleton<IOptions<BotOcrConfig>>(botOcrOptions)
-%builder.Services.AddHttpClient<IBotOcr, AzureBotOcr>()
+%builder.Services.AddSingleton<IBotOcr>(fun sp ->
+    AzureBotOcr(
+        sp.GetRequiredService<IOptions<BotOcrConfig>>(),
+        sp.GetRequiredService<ILogger<AzureBotOcr>>(),
+        null) :> IBotOcr)
 %builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
-%builder.Services.AddHttpClient<ILlmTriage, AzureLlmTriage>()
+// Both LLM classifiers talk to Azure OpenAI through the Azure.AI.OpenAI SDK, which carries its own
+// retry pipeline (honors Retry-After on 429) — see LlmTriage.fs. Singleton so the per-instance
+// single-flight/verdict-cache state and the memoized ChatClient are shared across requests.
+%builder.Services.AddSingleton<ILlmTriage, AzureLlmTriage>()
+%builder.Services.AddSingleton<IReactionTriageClassifier, AzureReactionTriage>()
+%builder.Services.AddSingleton<IUserProfileFetcher, UserProfileFetcher>()
 
 let app = builder.Build()
 
 // Ensure bot user record exists in DB (result not needed -- identity comes from BotConfiguration.BotActor)
 let startupBotConf = botConfOptions.Value
+// NOTE(project-agent): intentional blocking call. One-time startup seeding after the host is
+// built but before it runs; ASP.NET Core has no SynchronizationContext so this cannot deadlock.
 (app.Services.GetRequiredService<DbService>().UpsertUser(startupBotConf.BotUserId, Some startupBotConf.BotUserName)).Result |> ignore
 
 // Readiness check for ML model (used by startupProbe)
@@ -206,47 +243,72 @@ let startupBotConf = botConfOptions.Value
         Results.Ok "Settings reloaded"
 ))
 
+// One-off backfill of the snapshot_* read models from the event log. Idempotent; run manually
+// after deploy. Not auto-run on boot — the event table is too large to rescan every start.
+%app.MapPost("/rebuild-snapshots", Func<HttpContext, Task<IResult>>(fun ctx ->
+    task {
+        if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
+            return Results.Text("Access Denied", statusCode = 401)
+        else
+            let db = ctx.RequestServices.GetRequiredService<DbService>()
+            let logger = ctx.RequestServices.GetRequiredService<ILogger<Root>>()
+            logger.LogInformation "Snapshot rebuild starting"
+            let onProgress (msg: string) = logger.LogInformation("Snapshot rebuild progress: {Progress}", msg)
+            let! count = db.RebuildSnapshots(onProgress = onProgress)
+            logger.LogInformation("Snapshot rebuild done: {Count} streams", count)
+            return Results.Ok $"Rebuilt {count} snapshots"
+    }))
+
 // Main webhook endpoint with bot-specific update handling
-WebhookHost.mapWebhookEndpoints webhookCfg (fun ctx update ->
+WebhookHost.mapWebhookEndpoints webhookCfg FunogramJson.parseUpdate (fun ctx rawBody update ->
     task {
         let logger = ctx.RequestServices.GetRequiredService<ILogger<Root>>()
-
-        let updateBodyJson =
-            try JsonSerializer.Serialize(update, options = telegramJsonOptions)
-            with e -> e.Message
-        use topActivity =
-            botActivity
-              .StartActivity("postUpdate")
-              .SetTag("updateBodyObject", update)
-              .SetTag("updateBodyJson", updateBodyJson)
-
-        let bot = ctx.RequestServices.GetRequiredService<BotService>()
+        use topActivity = botActivity.StartActivity("postUpdate")
+        Telemetry.setUpdateIdentityTags topActivity update
+        // The raw update is logged exactly once per update, before anything that can
+        // fail — even a DI-resolution error below still leaves the payload in Loki.
+        // RawJson makes it a real nested JSON property (not an escaped blob), and the
+        // TraceId enricher ties the line to this trace; error logs don't repeat the body.
+        JsonLogging.withRawJsonProperty "RawUpdate" rawBody (fun () ->
+            logger.LogInformation("Received Telegram update {UpdateId}", update.UpdateId))
         try
+            let bot = ctx.RequestServices.GetRequiredService<BotService>()
+            // Request-scoped event-stream cache: collapses the repeated per-stream reads one update
+            // would otherwise issue (e.g. the user stream loaded 3× per message). Scoped to this
+            // handle and disposed below; concurrent updates are isolated via AsyncLocal.
+            let db = ctx.RequestServices.GetRequiredService<DbService>()
+            use _ = db.BeginEventScope()
             do! bot.OnUpdate(update)
             %topActivity.SetTag("update-error", false)
             %topActivity.SetStatus(ActivityStatusCode.Ok)
         with e ->
-            logger.LogError(e, $"Unexpected error while processing update: {updateBodyJson}")
+            logger.LogError(e, "Unexpected error while processing update {UpdateId}", update.UpdateId)
             %topActivity.SetStatus(ActivityStatusCode.Error)
             %topActivity.SetTag("update-error", true)
     }) app
 
 let server = app.RunAsync()
 
-// Dev mode only
+// Dev mode only: long-poll getUpdates in the background instead of the webhook.
 if botConfOptions.Value.UsePolling then
-    let telegramClient = app.Services.GetRequiredService<ITelegramBotClient>()
-    let pollingHandler = {
-        new IUpdateHandler with
-          member x.HandleUpdateAsync (botClient: ITelegramBotClient, update: Update, cancellationToken: CancellationToken) =
-            task {
-                if update.Message <> null && update.Message.Type = MessageType.Text then
-                    let bot = app.Services.GetRequiredService<BotService>()
-                    do! bot.OnUpdate(update)
-            }
-          member this.HandleErrorAsync(botClient, ``exception``, source, cancellationToken) =
-              Task.CompletedTask
+    let tg = app.Services.GetRequiredService<ITelegramApi>()
+    let logger = app.Services.GetRequiredService<ILogger<Root>>()
+    let pollingLoop () = task {
+        let mutable offset = 0L
+        while true do
+            try
+                let! updates = tg.CallExn(Req.GetUpdates.Make(offset = offset, timeout = 30L))
+                for update in updates do
+                    offset <- max offset (update.UpdateId + 1L)
+                    if update.Message |> Option.exists _.Text.IsSome then
+                        let bot = app.Services.GetRequiredService<BotService>()
+                        use _ = app.Services.GetRequiredService<DbService>().BeginEventScope()
+                        do! bot.OnUpdate(update)
+            with e ->
+                // polling is dev-only; log and keep the loop alive
+                logger.LogWarning(e, "Polling getUpdates iteration failed")
+                do! Task.Delay 1000
     }
-    telegramClient.StartReceiving(pollingHandler, null, CancellationToken.None)
+    %(pollingLoop() : Task<unit>)
 
 server.Wait()
