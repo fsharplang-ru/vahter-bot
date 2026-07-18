@@ -12,7 +12,7 @@ type PingTests(fixture: MlDisabledVahterTestContainers) =
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0])
         
         // assert that the message is not in the db
-        let! dbMsg = fixture.TryGetDbMessage msg.Message
+        let! dbMsg = fixture.TryGetDbMessage msg.Message.Value
         Assert.False dbMsg.IsSome
         
         // send the message to the bot
@@ -20,7 +20,7 @@ type PingTests(fixture: MlDisabledVahterTestContainers) =
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
         
         // assert that the message is in the db
-        let! dbMsg = fixture.TryGetDbMessage msg.Message
+        let! dbMsg = fixture.TryGetDbMessage msg.Message.Value
         Assert.True dbMsg.IsSome
     }
 
@@ -30,7 +30,7 @@ type PingTests(fixture: MlDisabledVahterTestContainers) =
         let msg = Tg.quickMsg(chat = Tg.chat())
         
         // assert that the message is not in the db
-        let! dbMsg = fixture.TryGetDbMessage msg.Message
+        let! dbMsg = fixture.TryGetDbMessage msg.Message.Value
         Assert.False dbMsg.IsSome
         
         // send the message to the bot
@@ -38,7 +38,7 @@ type PingTests(fixture: MlDisabledVahterTestContainers) =
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
         
         // assert that the message is still not in the db
-        let! dbMsg = fixture.TryGetDbMessage msg.Message
+        let! dbMsg = fixture.TryGetDbMessage msg.Message.Value
         Assert.False dbMsg.IsSome
     }
 
