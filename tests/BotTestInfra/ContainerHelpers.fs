@@ -62,6 +62,24 @@ let buildImageWithLogs (artifactsDir: string) (name: string) (image: IFutureDock
             raise (Exception(visibleMsg, ex))
     } :> Task
 
+let private sharedImageSpecs = System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<IFutureDockerImage * StringLogger>>()
+let private imageBuilds = System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task>>()
+
+/// Returns the process-wide shared image spec for `imageName`, creating it via `mk` on first
+/// use. Assembly fixtures initialize in parallel and use the same image names; each fixture
+/// must reference the SAME IFutureDockerImage instance, because a container built from a
+/// FutureDockerImage resolves the image name from that instance's created state.
+let getOrCreateImageSpec (imageName: string) (mk: unit -> IFutureDockerImage * StringLogger) =
+    sharedImageSpecs.GetOrAdd(imageName, fun _ -> Lazy<IFutureDockerImage * StringLogger>(valueFactory = Func<_>(mk))).Value
+
+/// Builds each uniquely-named image at most once per test process, sharing the task across
+/// assembly fixtures. Per-fixture delete-and-rebuild of the same tags duplicated build work
+/// and raced: not every container engine allows deleting an image that another fixture's
+/// in-flight build still holds (409 Conflict).
+let buildImageOncePerProcess (imageName: string) (artifactsDir: string) (name: string) (image: IFutureDockerImage) (logger: StringLogger) : Task =
+    imageBuilds.GetOrAdd(imageName, fun _ ->
+        Lazy<Task>(fun () -> buildImageWithLogs artifactsDir name image logger)).Value
+
 // ── Container factories ──────────────────────────────────────────────────────
 
 let createNetwork () : INetwork =
@@ -77,6 +95,10 @@ let createFlywayContainer (network: INetwork) (migrationsPath: string) (dbAlias:
     ContainerBuilder("flyway/flyway")
         .WithNetwork(network)
         .WithBindMount(migrationsPath, "/flyway/sql", AccessMode.ReadOnly)
+        // Without label=disable, hosts with SELinux enforcing block the container from
+        // reading the bind-mounted repo files, and flyway silently skips /flyway/sql.
+        // The option is a no-op where SELinux isn't in use (Ubuntu CI, Docker Desktop).
+        .WithCreateParameterModifier(fun p -> p.HostConfig.SecurityOpt <- ResizeArray ["label=disable"])
         .WithEnvironment("FLYWAY_URL", $"jdbc:postgresql://{dbAlias}:5432/{dbName}")
         .WithEnvironment("FLYWAY_USER", "admin")
         .WithEnvironment("FLYWAY_PASSWORD", "admin")
