@@ -31,3 +31,17 @@ let timeSpanAsHumanReadable (ts: TimeSpan) =
     else
         pluralize ts.TotalDays "day"
 
+/// Funogram type helpers.
+module Tg =
+    open Funogram.Telegram.Types
+
+    /// The affected user of a ChatMember — every case carries one.
+    let chatMemberUser (member': ChatMember) : User =
+        match member' with
+        | ChatMember.Owner m -> m.User
+        | ChatMember.Administrator m -> m.User
+        | ChatMember.Member m -> m.User
+        | ChatMember.Restricted m -> m.User
+        | ChatMember.Left m -> m.User
+        | ChatMember.Banned m -> m.User
+

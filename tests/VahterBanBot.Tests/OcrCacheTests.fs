@@ -1,6 +1,6 @@
 module VahterBanBot.Tests.OcrCacheTests
 
-open Telegram.Bot.Types
+open Funogram.Telegram.Types
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
@@ -17,13 +17,7 @@ type OcrCacheTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) 
 
         // Stable photo identity: cache key is FileUniqueId.
         let testPhoto =
-            PhotoSize(
-                FileId = "ocr-cache-test",
-                FileUniqueId = "ocr-cache-test-uid",
-                FileSize = 1024,
-                Width = 10,
-                Height = 10
-            )
+            PhotoSize.Create("ocr-cache-test", "ocr-cache-test-uid", 10L, 10L, fileSize = 1024L)
 
         do! fixture.SetOcrText "OCR-CACHE-TEST-MARKER"
 
@@ -33,7 +27,7 @@ type OcrCacheTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) 
         let msg1 = Tg.quickMsg(chat = chat, text = null, photos = [|testPhoto|])
         let! _ = fixture.SendMessage msg1
 
-        let! db1 = fixture.TryGetDbMessage msg1.Message
+        let! db1 = fixture.TryGetDbMessage msg1.Message.Value
         Assert.True(db1.IsSome, "First message should be recorded after enrichment")
         Assert.Contains("OCR-CACHE-TEST-MARKER", db1.Value.text)
 
@@ -44,7 +38,7 @@ type OcrCacheTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) 
         let msg2 = Tg.quickMsg(chat = chat, text = null, photos = [|testPhoto|])
         let! _ = fixture.SendMessage msg2
 
-        let! db2 = fixture.TryGetDbMessage msg2.Message
+        let! db2 = fixture.TryGetDbMessage msg2.Message.Value
         Assert.True(db2.IsSome, "Second message should be recorded after cache-hit enrichment")
         Assert.Contains("OCR-CACHE-TEST-MARKER", db2.Value.text)
 
