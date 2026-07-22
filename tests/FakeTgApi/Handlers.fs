@@ -4,6 +4,7 @@ open System
 open System.Net
 open System.Text
 open System.Text.Json
+open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
 
 module Handlers =
@@ -14,6 +15,22 @@ module Handlers =
         task {
             if ctx.Request.ContentLength.HasValue && ctx.Request.ContentLength.Value = 0L then
                 return ""
+            elif ctx.Request.HasFormContentType then
+                // Real Telegram accepts multipart/form-data and urlencoded forms for every
+                // method (Funogram sends multipart for all requests; Telegram.Bot uses it
+                // for file uploads). Fold form fields into a JSON object so the JSON-based
+                // handlers below work for both encodings. Field values that parse as JSON
+                // (numbers, bools, nested objects like reply_markup) are embedded as-is;
+                // everything else becomes a JSON string. Uploaded files are ignored.
+                let! form = ctx.Request.ReadFormAsync()
+                let obj = Json.Nodes.JsonObject()
+                for kv in form do
+                    let raw = kv.Value.ToString()
+                    let node =
+                        try Json.Nodes.JsonNode.Parse raw
+                        with _ -> Json.Nodes.JsonValue.Create raw :> Json.Nodes.JsonNode
+                    obj[kv.Key] <- node
+                return obj.ToJsonString()
             else
                 use reader = new IO.StreamReader(ctx.Request.Body, Encoding.UTF8)
                 return! reader.ReadToEndAsync()
@@ -43,6 +60,18 @@ module Handlers =
             | _ -> 1L
         with _ -> 1L
 
+    /// Returns chat_id as a raw string, handling both numeric and "@username" forms.
+    let parseChatIdRaw (body: string) : string =
+        try
+            use doc = JsonDocument.Parse(body: string)
+            match doc.RootElement.TryGetProperty("chat_id") with
+            | true, v ->
+                match v.ValueKind with
+                | JsonValueKind.String -> v.GetString()
+                | _ -> string (v.GetInt64())
+            | _ -> ""
+        with _ -> ""
+
     let parseChatIdAndMessageId (body: string) =
         let chatId = parseChatId body
         let messageId =
@@ -63,18 +92,34 @@ module Handlers =
     let private handleSimulatedError ctx =
         respondJson ctx 400 """{"ok":false,"error_code":400,"description":"Simulated error by test"}"""
 
+    /// Bot API 10.2 ephemeral messages (AlitaBot /summary, Phase-1 Slice 4): when the
+    /// request carries `receiver_user_id`, real Telegram's response Message would carry
+    /// an `ephemeral_message_id` — faked additively here (both fields just echo the same
+    /// allocated id) purely so a fake-suite test can assert `receiver_user_id` reached
+    /// the wire; the fake never rejects it (see src/AlitaBot/README.md for what real
+    /// Telegram does per chat type).
     let private handleSendMessage ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
+        let hasReceiverUserId =
+            try
+                use doc = JsonDocument.Parse(body: string)
+                match doc.RootElement.TryGetProperty("receiver_user_id") with
+                | true, v -> v.ValueKind = JsonValueKind.Number
+                | _ -> false
+            with _ -> false
+        let ephemeralField = if hasReceiverUserId then $""","ephemeral_message_id":{msgId}""" else ""
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}},"text":"ok"}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}},"text":"ok"{ephemeralField}}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleSendPhoto ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}},"caption":"ok"}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}},"caption":"ok"}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleSendMediaGroup ctx body =
@@ -87,16 +132,18 @@ module Handlers =
             with _ -> 1
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         let msgs =
-            [| for i in 1 .. count do
-                   $"""{{"message_id":{i},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}""" |]
+            [| for _ in 1 .. count do
+                   let msgId = Store.allocMessageId()
+                   $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}""" |]
             |> String.concat ","
         respondJson ctx 200 (okResult $"[{msgs}]")
 
     let private handleForwardMessage ctx body =
         let chatId = parseChatId body
         let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let msgId = Store.allocMessageId()
         let resultJson =
-            $"""{{"message_id":1,"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}"""
+            $"""{{"message_id":{msgId},"date":{now},"chat":{{"id":{chatId},"type":"private"}}}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleGetChatMember ctx (body: string) =
@@ -115,6 +162,28 @@ module Handlers =
             | _ -> "member"
         let resultJson =
             $"""{{"status":"{normalized}","user":{{"id":{userId},"is_bot":false,"first_name":"x"}}}}"""
+        respondJson ctx 200 (okResult resultJson)
+
+    let private handleGetUserProfilePhotos ctx =
+        // Tests don't depend on actual profile photos — the reaction-triage classifier
+        // tolerates None (privacy-strict users), and the fake LLM routes by request body keywords.
+        respondJson ctx 200 (okResult """{"total_count":0,"photos":[]}""")
+
+    let private handleGetChat ctx (body: string) =
+        // Minimal ChatFullInfo. No `bio` field — empty bio in dossier.
+        let raw = parseChatIdRaw body
+        let resultJson =
+            if not (String.IsNullOrEmpty raw) && raw.StartsWith "@" then
+                let uname = raw.TrimStart('@')
+                match Store.chatByUsername.TryGetValue(uname.ToLowerInvariant()) with
+                | true, (id, title) ->
+                    $"""{{"id":{id},"type":"supergroup","username":"{uname}","title":"{title}","accent_color_id":0,"max_reaction_count":11}}"""
+                | _ ->
+                    // Unknown username — return a benign default (id 1).
+                    $"""{{"id":1,"type":"private","accent_color_id":0,"max_reaction_count":11}}"""
+            else
+                let chatId = parseChatId body
+                $"""{{"id":{chatId},"type":"private","accent_color_id":0,"max_reaction_count":11}}"""
         respondJson ctx 200 (okResult resultJson)
 
     let private handleGetFile ctx (body: string) =
@@ -147,6 +216,14 @@ module Handlers =
         Console.WriteLine($"FAKE TG IN  {methodName} {url} bodyLen={len}")
         Store.logCall methodName url body
 
+        // Optional artificial delay (race-test control). Applied AFTER the call is
+        // logged so concurrent observers see the call has arrived even while
+        // we're sleeping. 0 (the default) skips Task.Delay entirely.
+        match Store.methodDelays.TryGetValue methodName with
+        | true, delayMs when delayMs > 0 ->
+            do! Task.Delay delayMs
+        | _ -> ()
+
         match methodName with
         | m when Store.methodErrors.TryGetValue(m) |> fst ->
             do! handleSimulatedError ctx
@@ -159,6 +236,10 @@ module Handlers =
             do! handleSimpleOk ctx
         | "getChatMember"    -> do! handleGetChatMember ctx body
         | "getFile"          -> do! handleGetFile ctx body
+        | "getUserProfilePhotos" -> do! handleGetUserProfilePhotos ctx
+        | "getChat"          -> do! handleGetChat ctx body
+        | "deleteMessageReaction" | "deleteAllMessageReactions" ->
+            do! handleSimpleOk ctx
         | "getChatAdministrators" -> do! handleGetChatAdministrators ctx
         | "editMessageReplyMarkup" | "editMessageText" ->
             do! handleMessageWithChatAndId ctx body
@@ -249,6 +330,20 @@ module Handlers =
                 do! respondJson ctx 400 (okResult "false")
         }
 
+    let setMockChat (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload = JsonSerializer.Deserialize<ChatMock>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                if Object.ReferenceEquals(payload, null) || String.IsNullOrWhiteSpace payload.username then
+                    do! respondJson ctx 400 (okResult "false")
+                else
+                    Store.chatByUsername[payload.username.TrimStart('@').ToLowerInvariant()] <- (payload.id, payload.title)
+                    do! respondJson ctx 200 (okResult "true")
+            with _ ->
+                do! respondJson ctx 400 (okResult "false")
+        }
+
     let setMethodError (ctx: HttpContext) =
         task {
             let! body = readBody ctx
@@ -261,6 +356,23 @@ module Handlers =
                     do! respondJson ctx 200 (okResult "true")
                 else
                     Store.methodErrors.TryRemove(payload.methodName) |> ignore
+                    do! respondJson ctx 200 (okResult "true")
+            with _ ->
+                do! respondJson ctx 400 (okResult "false")
+        }
+
+    let setMethodDelay (ctx: HttpContext) =
+        task {
+            let! body = readBody ctx
+            try
+                let payload = JsonSerializer.Deserialize<MethodDelayMock>(body, JsonSerializerOptions(JsonSerializerDefaults.Web))
+                if Object.ReferenceEquals(payload, null) || String.IsNullOrWhiteSpace payload.methodName then
+                    do! respondJson ctx 400 (okResult "false")
+                elif payload.delayMs > 0 then
+                    Store.methodDelays[payload.methodName] <- payload.delayMs
+                    do! respondJson ctx 200 (okResult "true")
+                else
+                    Store.methodDelays.TryRemove(payload.methodName) |> ignore
                     do! respondJson ctx 200 (okResult "true")
             with _ ->
                 do! respondJson ctx 400 (okResult "false")

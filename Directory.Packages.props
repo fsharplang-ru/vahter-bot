@@ -10,7 +10,14 @@
     <PackageVersion Include="FSharp.Core" Version="10.1.201" />
 
     <!-- Telegram -->
-    <PackageVersion Include="Telegram.Bot" Version="22.9.6" />
+    <PackageVersion Include="Funogram" Version="3.0.5" />
+    <PackageVersion Include="Funogram.Telegram" Version="10.2.0" />
+
+    <!-- Azure OpenAI SDK (LLM triage; SDK-native retry honors Retry-After on 429) -->
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
+
+    <!-- Azure AI Vision (OCR via the Image Analysis "read" feature; SDK-native retry) -->
+    <PackageVersion Include="Azure.AI.Vision.ImageAnalysis" Version="1.0.0" />
 
     <!-- Database -->
     <PackageVersion Include="Dapper" Version="2.1.72" />
@@ -20,6 +27,9 @@
 
     <!-- Serialization -->
     <PackageVersion Include="FSharp.SystemTextJson" Version="1.4.36" />
+
+    <!-- Async sequences (IAsyncEnumerable production for LLM streaming) -->
+    <PackageVersion Include="FSharp.Control.TaskSeq" Version="1.1.1" />
 
     <!-- Observability -->
     <PackageVersion Include="OpenTelemetry.Exporter.Console" Version="1.15.3" />
@@ -43,12 +53,15 @@
 
     <!-- Testing -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <!-- MTProto user client driving the real-Telegram test harness (AlitaBot.RealTests) -->
+    <PackageVersion Include="WTelegramClient" Version="4.4.7" />
     <PackageVersion Include="Testcontainers" Version="4.10.0" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.10.0" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
     <PackageVersion Include="xunit.v3.extensibility.core" Version="3.2.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.10.0" />
   </ItemGroup>
 
 </Project>

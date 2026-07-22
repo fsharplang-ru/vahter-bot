@@ -40,7 +40,7 @@ type BotContainerBase(config: BotContainerConfig) =
     let dbAlias = config.MigrationsSubdir + "-db"
     let fakeAlias = "fake-tg-api"
     let fakeAzureAlias = "fake-azure-ocr"
-    let pgImage = "postgres:15.6"
+    let pgImage = "postgres:17.10"
 
     let internalConnectionString =
         $"Server={dbAlias};Database={config.DbName};Port=5432;User Id={config.DbUser};Password={config.DbPassword};Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
@@ -49,6 +49,7 @@ type BotContainerBase(config: BotContainerConfig) =
     let mutable fakeTgHttp: HttpClient = null
     let mutable fakeAzureHttp: HttpClient = null
     let mutable publicConnectionString: string = null
+    let mutable adminConnectionString: string = null
     let mutable testArtifactsDir: string = null
 
     let network = createNetwork()
@@ -57,27 +58,30 @@ type BotContainerBase(config: BotContainerConfig) =
     let flywayContainer = createFlywayContainer network migrationsPath dbAlias config.DbName dbContainer
 
     let fakeTgImage, fakeTgBuildLogger =
-        buildImageSpec solutionDir "./tests/Dockerfile.fake" $"{config.AppImageName}-fake-tg-api" true true ["FAKE_PROJECT", "FakeTgApi"; "FAKE_PORT", "8080"]
+        getOrCreateImageSpec $"{config.AppImageName}-fake-tg-api" (fun () ->
+            buildImageSpec solutionDir "./tests/Dockerfile.fake" $"{config.AppImageName}-fake-tg-api" true true ["FAKE_PROJECT", "FakeTgApi"; "FAKE_PORT", "8080"])
     let fakeTgContainer = createFakeTgApiContainer fakeTgImage network fakeAlias
 
     let fakeAzureImage, fakeAzureBuildLogger =
-        buildImageSpec solutionDir "./tests/Dockerfile.fake" $"{config.AppImageName}-fake-azure-ocr" true true ["FAKE_PROJECT", "FakeAzureOcrApi"; "FAKE_PORT", "8081"]
+        getOrCreateImageSpec $"{config.AppImageName}-fake-azure-ocr" (fun () ->
+            buildImageSpec solutionDir "./tests/Dockerfile.fake" $"{config.AppImageName}-fake-azure-ocr" true true ["FAKE_PROJECT", "FakeAzureOcrApi"; "FAKE_PORT", "8081"])
     let fakeAzureContainer = createFakeAzureOcrContainer fakeAzureImage network fakeAzureAlias
 
     let botImage, botBuildLogger =
-        let logger = StringLogger()
-        let img =
-            ImageFromDockerfileBuilder()
-                .WithDockerfileDirectory(solutionDir, String.Empty)
-                .WithDockerfile("./src/Dockerfile.bot")
-                .WithName(config.AppImageName)
-                .WithBuildArgument("BOT_PROJECT", config.BotProject)
-                .WithBuildArgument("RESOURCE_REAPER_SESSION_ID", ResourceReaper.DefaultSessionId.ToString("D"))
-                .WithDeleteIfExists(true)
-                .WithCleanUp(true)
-                .WithLogger(logger)
-                .Build()
-        (img, logger)
+        getOrCreateImageSpec config.AppImageName (fun () ->
+            let logger = StringLogger()
+            let img =
+                ImageFromDockerfileBuilder()
+                    .WithDockerfileDirectory(solutionDir, String.Empty)
+                    .WithDockerfile("./src/Dockerfile.bot")
+                    .WithName(config.AppImageName)
+                    .WithBuildArgument("BOT_PROJECT", config.BotProject)
+                    .WithBuildArgument("RESOURCE_REAPER_SESSION_ID", ResourceReaper.DefaultSessionId.ToString("D"))
+                    .WithDeleteIfExists(true)
+                    .WithCleanUp(true)
+                    .WithLogger(logger)
+                    .Build()
+            (img, logger))
 
     let botContainer =
         let mutable b =
@@ -110,8 +114,13 @@ type BotContainerBase(config: BotContainerConfig) =
                 testArtifactsDir <- Path.Combine(solutionDirPath, "test-artifacts", $"{config.BotProject}.Tests", this.GetType().Name)
                 do! dbContainer.StartAsync()
 
-                publicConnectionString <-
-                    $"Server=127.0.0.1;Database={config.DbName};Port={dbContainer.GetMappedPublicPort(5432)};User Id={config.DbUser};Password={config.DbPassword};Include Error Detail=true;Timeout=120;Command Timeout=120;Keepalive=30;"
+                let mappedPort = dbContainer.GetMappedPublicPort(5432)
+                let connStr (user: string) (password: string) =
+                    $"Server=127.0.0.1;Database={config.DbName};Port={mappedPort};User Id={user};Password={password};Include Error Detail=true;Timeout=120;Command Timeout=120;Keepalive=30;"
+                publicConnectionString <- connStr config.DbUser config.DbPassword
+                // `admin` owns the DB (see init.sql) and runs migrations (FLYWAY_USER) — use it for
+                // owner-only ops like TRUNCATE that the least-privilege bot role intentionally lacks.
+                adminConnectionString <- connStr "admin" "admin"
 
                 // init schema/user/db
                 let initSql = File.ReadAllText(Path.Combine(solutionDirPath, "src", config.MigrationsSubdir, "init.sql"))
@@ -120,15 +129,23 @@ type BotContainerBase(config: BotContainerConfig) =
 
                 // run migrations
                 do! flywayContainer.StartAsync()
+                // The wait strategy only waits for flyway to exit; without this check a failed
+                // migration run only surfaces later as a cryptic "relation does not exist"
+                // during seeding, with the actual cause hidden in the flyway container log.
+                let! flywayExitCode = flywayContainer.GetExitCodeAsync()
+                if flywayExitCode <> 0L then
+                    let! struct (stdout, stderr) = flywayContainer.GetLogsAsync()
+                    failwith $"Flyway migrations failed (exit code {flywayExitCode})\n=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}"
 
                 // seed database (subclass hook)
                 do! this.SeedDatabase(publicConnectionString)
 
-                // build images in parallel
-                let botBuildTask = buildImageWithLogs testArtifactsDir "bot" botImage botBuildLogger
-                let fakeTgBuildTask = buildImageWithLogs testArtifactsDir "fake-tg-api" fakeTgImage fakeTgBuildLogger
+                // build images in parallel (each image name at most once per process — the
+                // parallel-initializing fixtures share the same image names)
+                let botBuildTask = buildImageOncePerProcess config.AppImageName testArtifactsDir "bot" botImage botBuildLogger
+                let fakeTgBuildTask = buildImageOncePerProcess $"{config.AppImageName}-fake-tg-api" testArtifactsDir "fake-tg-api" fakeTgImage fakeTgBuildLogger
                 let fakeAzureBuildTask =
-                    if config.OcrEnabled then buildImageWithLogs testArtifactsDir "fake-azure-ocr" fakeAzureImage fakeAzureBuildLogger
+                    if config.OcrEnabled then buildImageOncePerProcess $"{config.AppImageName}-fake-azure-ocr" testArtifactsDir "fake-azure-ocr" fakeAzureImage fakeAzureBuildLogger
                     else Task.CompletedTask
                 do! Task.WhenAll([| botBuildTask; fakeTgBuildTask; fakeAzureBuildTask |])
 
@@ -177,7 +194,11 @@ type BotContainerBase(config: BotContainerConfig) =
     member _.BotHttp = botHttp
     member _.FakeTgHttp = fakeTgHttp
     member _.FakeAzureHttp = fakeAzureHttp
+    /// Connection string as the bot's least-privilege service role (`config.DbUser`).
     member _.DbConnectionString = publicConnectionString
+    /// Connection string as the table owner `admin` — for owner-only ops (DDL/TRUNCATE) the
+    /// service role intentionally can't perform.
+    member _.AdminDbConnectionString = adminConnectionString
     member _.OcrEnabled = config.OcrEnabled
 
     // ── Shared helpers ──────────────────────────────────────────────────
@@ -205,11 +226,9 @@ type BotContainerBase(config: BotContainerConfig) =
             return sb.ToString()
         }
 
-    member _.SendUpdate(update: Telegram.Bot.Types.Update) =
+    member _.SendUpdate(update: Funogram.Telegram.Types.Update) =
         task {
-            let jsonOptions = JsonSerializerOptions(JsonSerializerDefaults.Web)
-            Telegram.Bot.JsonBotAPI.Configure(jsonOptions)
-            let json = JsonSerializer.Serialize(update, jsonOptions)
+            let json = Encoding.UTF8.GetString(Funogram.Tools.toJson update)
             use content = new StringContent(json, Encoding.UTF8, "application/json")
             return! botHttp.PostAsync(config.WebhookRoute, content)
         }
@@ -233,6 +252,15 @@ type BotContainerBase(config: BotContainerConfig) =
             return ()
         }
 
+    /// Registers a username->chat mapping so the bot's getChat("@username") resolves
+    /// to the given id/title (used by /vahter addchat @username tests).
+    member _.SetMockChat(username: string, id: int64, title: string) =
+        task {
+            let payload: ChatMock = { username = username; id = id; title = title }
+            let! _ = fakeTgHttp.PostAsJsonAsync("/test/mock/chat", payload)
+            return ()
+        }
+
     member _.SetTelegramFile(fileId: string, bytes: byte[]) =
         task {
             let payload: FileMock =
@@ -246,6 +274,19 @@ type BotContainerBase(config: BotContainerConfig) =
         task {
             let payload: MethodErrorMock = { methodName = methodName; enabled = enabled }
             let! resp = fakeTgHttp.PostAsJsonAsync("/test/mock/methodError", payload)
+            resp.EnsureSuccessStatusCode() |> ignore
+        }
+
+    /// Forces FakeTgApi to artificially delay every call to `methodName` by
+    /// `delayMs` milliseconds. Used by concurrency-race tests to deterministically
+    /// reproduce timing-dependent bugs: by widening the window between a
+    /// transaction commit and the next network call, a second concurrent
+    /// webhook can be made to win the lock-acquisition race every single run.
+    /// Pass `delayMs = 0` to clear.
+    member _.SetFakeTgMethodDelay(methodName: string, delayMs: int) =
+        task {
+            let payload: MethodDelayMock = { methodName = methodName; delayMs = delayMs }
+            let! resp = fakeTgHttp.PostAsJsonAsync("/test/mock/methodDelay", payload)
             resp.EnsureSuccessStatusCode() |> ignore
         }
 
@@ -263,4 +304,158 @@ type BotContainerBase(config: BotContainerConfig) =
             let payload: AzureResponseMock = { status = status; body = body }
             let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/response", payload)
             return ()
+        }
+
+    /// Resets the fake OCR mock to its pristine baseline (default 200 response, no delay,
+    /// no error mode, empty script). The fake is shared across the whole test assembly, so
+    /// tests must reset it rather than inherit a previous test's custom response/error mode.
+    member _.ResetAzureOcr() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            use content = new StringContent("{}", Encoding.UTF8, "application/json")
+            let! _ = fakeAzureHttp.PostAsync("/test/mock/reset", content)
+            return ()
+        }
+
+    member _.SetAzureOcrDelay(delayMs: int) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureDelayMock = { delayMs = delayMs }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/delay", payload)
+            return ()
+        }
+
+    member _.SetAzureOcrErrorMode(mode: string) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureErrorModeMock = { mode = mode }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/errorMode", payload)
+            return ()
+        }
+
+    member _.SetAzureOcrScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/script", payload)
+            return ()
+        }
+
+    member _.ClearAzureOcrCalls() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let! _ = fakeAzureHttp.DeleteAsync("/test/calls")
+            return ()
+        }
+
+    member _.GetAzureOcrCalls() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let! resp = fakeAzureHttp.GetFromJsonAsync<FakeCall array>("/test/calls")
+            return resp
+        }
+
+    /// Scripts the Azure OpenAI chat-completions endpoint (e.g. a 429 then fall-through to a
+    /// keyword-routed 200) so tests can exercise the bot's retry/backoff and failure handling.
+    /// An empty array clears the script.
+    member _.SetAzureLlmScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/llm-script", payload)
+            return ()
+        }
+
+    /// Configures the fake chat-completions SSE streaming behavior: artificial delay before each
+    /// chunk, mid-stream connection reset once N data lines were written (pair it with a nonzero
+    /// chunkDelayMs so already-flushed chunks reach the client before the reset), and a Retry-After
+    /// header (seconds) on scripted 429 responses. All zeros resets to defaults.
+    member _.SetAzureLlmStreamOptions(chunkDelayMs: int, abortAfterChunks: int, retryAfterSeconds: int) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureLlmStreamOptionsMock =
+                { chunkDelayMs = chunkDelayMs
+                  abortAfterChunks = abortAfterChunks
+                  retryAfterSeconds = retryAfterSeconds }
+            let! resp = fakeAzureHttp.PostAsJsonAsync("/test/mock/azure-llm-stream-options", payload)
+            resp.EnsureSuccessStatusCode() |> ignore
+        }
+
+    /// Scripts the REACTION-triage chat-completions calls (separate queue from SetAzureLlmScript, so
+    /// it never collides with text triage). Used to inject a 429 and assert the reaction path fails
+    /// fast (one call, ERROR) instead of retrying into a storm. An empty array clears the script.
+    member _.SetAzureReactionLlmScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/reaction-llm-script", payload)
+            return ()
+        }
+
+    /// Scripts the Azure OpenAI audio/transcriptions (STT) endpoint (AlitaBot voice
+    /// transcription). An empty array clears the script (calls fall back to an empty transcript).
+    member _.SetAzureSttScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/stt-script", payload)
+            return ()
+        }
+
+    /// Scripts the images/generations + images/edits endpoints (AlitaBot image generation, S3)
+    /// — one shared queue for both, dequeued per call. An empty array clears the script (calls
+    /// fall back to the fake's default scripted tiny PNG).
+    member _.SetAzureImageScript(responses: AzureScriptedResponse array) =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let payload: AzureScriptMock = { responses = responses }
+            let! _ = fakeAzureHttp.PostAsJsonAsync("/test/mock/image-script", payload)
+            return ()
+        }
+
+    /// Returns only the Azure OpenAI chat-completions calls the fake recorded (filters out OCR).
+    /// Tests count these to assert dedup/single-flight (e.g. "exactly 1 call for this content")
+    /// and retry (e.g. ">= 2 calls" after a scripted 429).
+    member _.GetAzureLlmCalls() =
+        task {
+            if not config.OcrEnabled then
+                invalidOp "This fixture has OCR disabled (no FakeAzureOcrApi container)."
+            let! resp = fakeAzureHttp.GetFromJsonAsync<FakeCall array>("/test/calls")
+            return resp |> Array.filter (fun c -> c.Url.Contains("/openai/"))
+        }
+
+    /// Advances the bot's FakeTimeProvider by `ms` milliseconds, deterministically
+    /// firing any pending TimeProvider-driven timers (notably BatchDebounce.Schedule).
+    /// Requires TEST_MODE=true on the bot. Returns once the bot has accepted the
+    /// advance — the timer callback work itself is async, so call should be followed
+    /// by polling the DB / GetFakeCalls for the expected post-finalize state.
+    member _.AdvanceBotClock(ms: int) =
+        task {
+            use content = new StringContent("", Encoding.UTF8, "application/json")
+            let! resp = botHttp.PostAsync($"/test/clock/advance?ms={ms}", content)
+            resp.EnsureSuccessStatusCode() |> ignore
+            return ()
+        }
+
+    /// Stops and re-starts the bot app container, preserving postgres + fakes so
+    /// DB state survives. Used for restart-recovery tests.
+    member this.RestartBotApp() =
+        task {
+            do! botContainer.StopAsync()
+            do! botContainer.StartAsync()
+            botHttp.Dispose()
+            botHttp <- new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{botContainer.GetMappedPublicPort(80)}"))
+            botHttp.Timeout <- TimeSpan.FromSeconds(15.0)
+            botHttp.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
         }
