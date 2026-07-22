@@ -49,7 +49,7 @@ type MLScoreDeterminismTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwai
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text)
         let! _ = fixture.SendMessage msgUpdate
 
-        let! score = fixture.GetMlScore msgUpdate.Message
+        let! score = fixture.GetMlScore msgUpdate.Message.Value
 
         match score with
         | Some actual ->
