@@ -2,12 +2,35 @@ namespace FakeTgApi
 
 open System
 open System.Collections.Concurrent
+open System.Threading
 
 module Store =
     let calls = ConcurrentQueue<ApiCallLog>()
     let chatMemberStatus = ConcurrentDictionary<int64, string>()
     let files = ConcurrentDictionary<string, byte[]>()
     let methodErrors = ConcurrentDictionary<string, bool>()
+
+    /// AlitaBot Slice 6: when true, sendMessage/editMessageText calls whose body carries
+    /// `"parse_mode":"MarkdownV2"` get a simulated 400 instead of the normal ok response —
+    /// see RejectMdv2Mock's doc comment.
+    let mutable rejectMdv2 = false
+
+    /// username (normalized: lowercase, no leading '@') -> (chatId, title).
+    /// Lets getChat("@username") resolve to a meaningful id/title in tests.
+    let chatByUsername = ConcurrentDictionary<string, int64 * string>()
+
+    /// Per-method artificial delay (ms) applied at the START of handleAuxMethod
+    /// so concurrency-race tests can force webhook A to be slow at e.g.
+    /// sendMessage, letting webhook C win the lock-acquisition race window
+    /// deterministically. Default 0 (no delay), per-method opt-in.
+    let methodDelays = ConcurrentDictionary<string, int>()
+
+    /// Monotonic counter for synthesizing message_ids on send-* responses. Real Telegram
+    /// returns a distinct message_id for every send; using a constant breaks any test that
+    /// relies on per-message cleanup (e.g. ExpireCallbacksByMessageId).
+    let private nextMessageId = ref 1000
+    let allocMessageId () =
+        Interlocked.Increment(nextMessageId)
 
     let logCall (methodName: string) (url: string) (body: string) =
         calls.Enqueue(
@@ -23,4 +46,6 @@ module Store =
         while calls.TryDequeue(&item) do
             ()
         methodErrors.Clear()
+        methodDelays.Clear()
+        rejectMdv2 <- false
 
