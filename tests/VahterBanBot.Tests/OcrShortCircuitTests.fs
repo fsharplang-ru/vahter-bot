@@ -3,7 +3,7 @@ module VahterBanBot.Tests.OcrShortCircuitTests
 open System.Net
 open Dapper
 open Npgsql
-open Telegram.Bot.Types
+open Funogram.Telegram.Types
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
@@ -25,13 +25,7 @@ type OcrShortCircuitTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFi
     /// Photo helper — each test uses a unique FileUniqueId to avoid colliding
     /// with the shared serial-test ocr_cache.
     let photo (uid: string) =
-        PhotoSize(
-            FileId = uid,
-            FileUniqueId = uid,
-            FileSize = 1024,
-            Width = 10,
-            Height = 10
-        )
+        PhotoSize.Create(uid, uid, 10L, 10L, fileSize = 1024L)
 
     let seedOcrCache (fileUniqueId: string) (extractedText: string) = task {
         use conn = new NpgsqlConnection(fixture.DbConnectionString)
@@ -58,7 +52,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", photos = [|p|])
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Spam caption should still trigger auto-delete")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
@@ -77,14 +71,14 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hi", photos = [|p|])
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Cache-hit OCR text should make the combined text trip the ML threshold")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
         Assert.Equal(before, after)
 
         // Sanity: the cache-hit text is what landed on the message
-        let! db = fixture.TryGetDbMessage msg.Message
+        let! db = fixture.TryGetDbMessage msg.Message.Value
         Assert.True(db.IsSome)
         Assert.Contains("2222222", db.Value.text)
     }
@@ -107,7 +101,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
             )
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Spammy inline keyboard text should trigger short-circuit")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
@@ -132,7 +126,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
             )
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "External-reply photo cache hit should trigger pre-OCR short-circuit")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
@@ -152,7 +146,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello world", photos = [|p|])
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Benign caption + spam OCR text should auto-delete via the deferred Azure path")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
@@ -171,7 +165,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, photos = [|p|])
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Photo-only spam message must still be classified despite null caption")
     }
 
@@ -189,11 +183,11 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
 
         // Benign text + failed OCR → no spam decision → not deleted, no exception escaped.
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.False(deleted, "Benign message should not be deleted when Azure fails")
 
         // Message should still be recorded in DB (classification reached the recording step).
-        let! db = fixture.TryGetDbMessage msg.Message
+        let! db = fixture.TryGetDbMessage msg.Message.Value
         Assert.True(db.IsSome, "Message should be recorded even when Azure OCR fails")
     }
 
@@ -216,7 +210,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
 
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
 
-        let! db = fixture.TryGetDbMessage msg.Message
+        let! db = fixture.TryGetDbMessage msg.Message.Value
         Assert.True(db.IsSome, "Message should be recorded")
         Assert.Contains("this-quote-must-survive", db.Value.text)
         Assert.Contains("hello", db.Value.text)
@@ -241,7 +235,7 @@ ON CONFLICT (file_unique_id) DO UPDATE SET extracted_text = EXCLUDED.extracted_t
             )
         let! _ = fixture.SendMessage msg
 
-        let! deleted = fixture.MessageIsAutoDeleted msg.Message
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
         Assert.True(deleted, "Spammy quote text should trigger pre-OCR short-circuit")
 
         let! after = fixture.GetAzureOcrAnalyzeCallCount()
