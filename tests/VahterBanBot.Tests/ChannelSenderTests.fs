@@ -21,7 +21,7 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         let! resp = fixture.SendMessage msgUpdate
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
         Assert.Equal(spamChannel.Id, dbMsg.Value.user_id)
     }
@@ -39,7 +39,7 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         let! resp = fixture.SendMessage msgUpdate
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
         // Linked channels use telegramUser (not Channel_Bot), so IsChannelSender = false
         // They keep the From.Id (777000)
@@ -60,10 +60,10 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False(autoDeleted, "Linked channel message should NOT be auto-deleted even with spam text")
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
     }
 
@@ -79,7 +79,7 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False(autoDeleted, "Monitored channel message should NOT be auto-deleted even with spam text")
     }
 
@@ -94,10 +94,10 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True(autoDeleted, "Unknown channel spam should be auto-deleted")
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
         Assert.Equal(unknownChannel.Id, dbMsg.Value.user_id)
     }
@@ -115,10 +115,10 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True(autoDeleted, "Unknown channel spam should be auto-deleted")
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
         Assert.Equal(spamChannel.Id, dbMsg.Value.user_id)
     }
@@ -134,10 +134,10 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
         )
         let! _ = fixture.SendMessage msgUpdate
 
-        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! autoDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False(autoDeleted, "Unknown channel ham should NOT be auto-deleted")
 
-        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message
+        let! dbMsg = fixture.TryGetDbMessage msgUpdate.Message.Value
         Assert.True(dbMsg.IsSome, "Message should be stored in DB")
         Assert.Equal(hamChannel.Id, dbMsg.Value.user_id)
     }
@@ -155,12 +155,12 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Vahter bans by replying
         let! banResp =
-            Tg.replyMsg(msgUpdate.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgUpdate.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
 
         // Assert ban targets the channel ID, not Channel_Bot
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message
+        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
         Assert.True(msgBanned, "Channel spam message should be banned")
 
         let! channelBanned = fixture.UserBanned spamChannel.Id
@@ -197,16 +197,16 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Ban Channel A
         let! banResp =
-            Tg.replyMsg(msgA.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msgA.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
 
         // Channel A's message is banned
-        let! msgABanned = fixture.MessageBanned msgA.Message
+        let! msgABanned = fixture.MessageBanned msgA.Message.Value
         Assert.True(msgABanned, "Channel A's message should be banned")
 
         // Channel B's message is still in DB (not affected)
-        let! dbMsgB = fixture.TryGetDbMessage msgB.Message
+        let! dbMsgB = fixture.TryGetDbMessage msgB.Message.Value
         Assert.True(dbMsgB.IsSome, "Channel B's message should still exist in DB")
 
         // Channel B is not banned
@@ -238,16 +238,16 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Ban channel
         let! banResp =
-            Tg.replyMsg(chMsg.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(chMsg.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
 
         // Channel message is banned
-        let! chMsgBanned = fixture.MessageBanned chMsg.Message
+        let! chMsgBanned = fixture.MessageBanned chMsg.Message.Value
         Assert.True(chMsgBanned, "Channel message should be banned")
 
         // Regular user's message is still in DB
-        let! dbUserMsg = fixture.TryGetDbMessage userMsg.Message
+        let! dbUserMsg = fixture.TryGetDbMessage userMsg.Message.Value
         Assert.True(dbUserMsg.IsSome, "Regular user's message should still exist in DB")
 
         // Regular user is not banned
@@ -279,16 +279,16 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Ban regular user
         let! banResp =
-            Tg.replyMsg(userMsg.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(userMsg.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
 
         // User message is banned
-        let! userMsgBanned = fixture.MessageBanned userMsg.Message
+        let! userMsgBanned = fixture.MessageBanned userMsg.Message.Value
         Assert.True(userMsgBanned, "User's message should be banned")
 
         // Channel's message is still in DB
-        let! dbChMsg = fixture.TryGetDbMessage chMsg.Message
+        let! dbChMsg = fixture.TryGetDbMessage chMsg.Message.Value
         Assert.True(dbChMsg.IsSome, "Channel's message should still exist in DB")
 
         // Channel is not banned
@@ -319,17 +319,17 @@ type ChannelSenderTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Ban channel via first message
         let! banResp =
-            Tg.replyMsg(msg1.Message, "/ban", fixture.Vahters[0])
+            Tg.replyMsg(msg1.Message.Value, "/ban", fixture.Vahters[0])
             |> fixture.SendMessage
         Assert.Equal(HttpStatusCode.OK, banResp.StatusCode)
 
         // First message is banned
-        let! msg1Banned = fixture.MessageBanned msg1.Message
+        let! msg1Banned = fixture.MessageBanned msg1.Message.Value
         Assert.True(msg1Banned, "First message should be banned")
 
         // Both messages were stored with the same channel ID
-        let! dbMsg1 = fixture.TryGetDbMessage msg1.Message
-        let! dbMsg2 = fixture.TryGetDbMessage msg2.Message
+        let! dbMsg1 = fixture.TryGetDbMessage msg1.Message.Value
+        let! dbMsg2 = fixture.TryGetDbMessage msg2.Message.Value
         Assert.True(dbMsg1.IsSome, "First message should be in DB")
         Assert.True(dbMsg2.IsSome, "Second message should be in DB")
         Assert.Equal(spamChannel.Id, dbMsg1.Value.user_id)
