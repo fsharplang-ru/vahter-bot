@@ -1,5 +1,22 @@
 name: Build
 
+# CI for the fsharplang-ru/vahter-bot mirror. NOT used by the monorepo:
+# `vahter-upstream-sync.yml` copies this file verbatim to the mirror's
+# `.github/workflows/build.yml`.
+#
+# It lives here as a real, tracked file — not a heredoc inside the sync
+# workflow — for two reasons:
+#   1. actionlint gates it (see lint-workflows.yml), same as any other workflow.
+#   2. Its YAML indentation can't be mangled in transit. The previous heredoc
+#      version was dedented by the enclosing `run: |` block scalar AND by a
+#      trailing `sed -i 's/^        //'`, which stripped 8 spaces twice from the
+#      most-indented lines. That pushed the `test-command` block-scalar
+#      continuation lines to column 0, making the generated file invalid YAML —
+#      so every mirror CI run since died at load time as a jobless
+#      `startup_failure` with no error surfaced anywhere.
+#
+# The mirror builds and tests only; deploy happens exclusively from the monorepo.
+
 on:
   pull_request:
     branches: [ "main" ]
@@ -11,7 +28,10 @@ jobs:
   build:
     uses: ./.github/workflows/_bot-build.yml
     with:
-      test-command: >-
-dotnet test tests/VahterBanBot.Tests/VahterBanBot.Tests.fsproj
--c Release --logger "trx;LogFileName=test-results.trx"
---logger "console;verbosity=detailed"
+      # One `dotnet test` per project — MSBuild rejects multiple project
+      # arguments in a single invocation (MSB1008). Default shell is `bash -e`,
+      # so the first failing line fails the job.
+      test-command: |
+        dotnet test tests/VahterBanBot.Unit.Tests/VahterBanBot.Unit.Tests.fsproj -c Release --logger "trx;LogFileName=unit-test-results.trx" --logger "console;verbosity=detailed"
+        dotnet test tests/SerializationCompat.Tests/SerializationCompat.Tests.fsproj -c Release --logger "trx;LogFileName=compat-test-results.trx" --logger "console;verbosity=detailed"
+        dotnet test tests/VahterBanBot.Tests/VahterBanBot.Tests.fsproj -c Release --logger "trx;LogFileName=test-results.trx" --logger "console;verbosity=detailed"
