@@ -1,33 +1,31 @@
 module VahterBanBot.Tests.EntitiesScanTests
 
-open Telegram.Bot.Types
-open Telegram.Bot.Types.Enums
+open Funogram.Telegram.Types
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
 
 type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
 
-    let buildMentionMessage text =
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text)
-        msgUpdate.Message.Entities <- [| MessageEntity(Type = MessageEntityType.Mention, Offset = 0, Length = text.Length) |]
-        msgUpdate
+    let buildMentionMessage (text: string) =
+        Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = text,
+            entities = [| MessageEntity.Create("mention", 0L, int64 text.Length) |])
 
-    let buildTextMentionMessage text =
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text)
-        msgUpdate.Message.Entities <-
-            [| MessageEntity(Type = MessageEntityType.TextMention,
-                             Offset = 0,
-                             Length = text.Length,
-                             User = fixture.Admins[0]) |]
-        msgUpdate
+    let buildTextMentionMessage (text: string) =
+        Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = text,
+            entities =
+                [| MessageEntity.Create("text_mention", 0L, int64 text.Length, user = fixture.Admins[0]) |])
 
     [<Fact>]
     let ``Invisible mentions are auto deleted when ML is disabled`` () = task {
         let msgUpdate = buildMentionMessage "@\u200Buser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -36,7 +34,7 @@ type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
         let msgUpdate = buildTextMentionMessage "\u200Buser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -45,7 +43,7 @@ type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
         let msgUpdate = buildMentionMessage "@normaluser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -54,33 +52,32 @@ type EntitiesScanTestsWithoutMl(fixture: MlDisabledVahterTestContainers) =
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "Just a message")
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
 
 type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
 
-    let buildMentionMessage text =
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text)
-        msgUpdate.Message.Entities <- [| MessageEntity(Type = MessageEntityType.Mention, Offset = 0, Length = text.Length) |]
-        msgUpdate
+    let buildMentionMessage (text: string) =
+        Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = text,
+            entities = [| MessageEntity.Create("mention", 0L, int64 text.Length) |])
 
-    let buildTextMentionMessage text =
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text)
-        msgUpdate.Message.Entities <-
-            [| MessageEntity(Type = MessageEntityType.TextMention,
-                             Offset = 0,
-                             Length = text.Length,
-                             User = fixture.Admins[0]) |]
-        msgUpdate
+    let buildTextMentionMessage (text: string) =
+        Tg.quickMsg(
+            chat = fixture.ChatsToMonitor[0],
+            text = text,
+            entities =
+                [| MessageEntity.Create("text_mention", 0L, int64 text.Length, user = fixture.Admins[0]) |])
 
     [<Fact>]
     let ``Invisible mentions are auto deleted when ML is enabled`` () = task {
         let msgUpdate = buildMentionMessage "@\u200Buser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -89,7 +86,7 @@ type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: Ml
         let msgUpdate = buildTextMentionMessage "\u200Buser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.True msgBanned
     }
 
@@ -98,7 +95,7 @@ type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: Ml
         let msgUpdate = buildMentionMessage "@normaluser"
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 
@@ -107,7 +104,7 @@ type EntitiesScanTestsWithMl(fixture: MlEnabledVahterTestContainers, _unused: Ml
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "Just a message", from = fixture.Vahters[0])
         let! _ = fixture.SendMessage msgUpdate
 
-        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message
+        let! msgBanned = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
         Assert.False msgBanned
     }
 

@@ -1,0 +1,46 @@
+{
+  "update_id": 380220043,
+  "message": {
+    "message_id": 24870,
+    "from": {
+      "id": 432506904,
+      "is_bot": false,
+      "first_name": "Ayrat",
+      "last_name": "Hudaygulov",
+      "username": "omgszer",
+      "language_code": "en",
+      "is_premium": true
+    },
+    "chat": {
+      "id": -1001170325774,
+      "title": ".NET Vahter Talks",
+      "type": "supergroup"
+    },
+    "date": 1784244586,
+    "forward_origin": {
+      "type": "user",
+      "sender_user": {
+        "id": 8741848377,
+        "is_bot": true,
+        "first_name": "Rich TeX bot",
+        "username": "richtexbot"
+      },
+      "date": 1783969143
+    },
+    "forward_from": {
+      "id": 8741848377,
+      "is_bot": true,
+      "first_name": "Rich TeX bot",
+      "username": "richtexbot"
+    },
+    "forward_date": 1783969143,
+    "rich_message": {
+      "blocks": [
+        {
+          "type": "mathematical_expression",
+          "expression": "\\[ \\int_{a}^{b} x^2 \\,dx \\]"
+        }
+      ]
+    }
+  }
+}

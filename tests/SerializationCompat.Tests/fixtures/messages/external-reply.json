@@ -1,0 +1,258 @@
+{
+  "chat": {
+    "id": -1001000000001,
+    "type": "supergroup",
+    "title": "Test Group 1",
+    "is_forum": false,
+    "username": "test_group_1",
+    "is_direct_messages": false
+  },
+  "date": 1784047199,
+  "from": {
+    "id": 100000001,
+    "is_bot": false,
+    "first_name": "Anna",
+    "is_premium": true,
+    "can_join_groups": false,
+    "can_manage_bots": false,
+    "has_main_web_app": false,
+    "has_topics_enabled": false,
+    "supports_guest_queries": false,
+    "can_connect_to_business": false,
+    "supports_inline_queries": false,
+    "added_to_attachment_menu": false,
+    "can_read_all_group_messages": false,
+    "allows_users_to_create_topics": false
+  },
+  "text": "Lorem ipsum dolor ",
+  "quote": {
+    "text": "Lorem ipsum dolor sit amet, consect\n\netur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Lorem ipsum dolor\n\n sit amet, consectetu\nr adipiscing elit, sed do\n eiusmod tempor incidid\nunt ut labore et dolore magna\n aliqua. Lorem ipsum dolor \nsit amet, consectetur \nadipiscing elit, sed do eiusmo\n\n\nd tempor incididunt ut labore et dolore magna aliqua. Lorem ipsum dolor sit amet, consectetu",
+    "entities": [
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 0
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 0,
+        "custom_emoji_id": "2384154653530064138"
+      },
+      {
+        "type": "bold",
+        "length": 35,
+        "offset": 2
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 37
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 37,
+        "custom_emoji_id": "7227211574902906650"
+      },
+      {
+        "type": "bold",
+        "length": 106,
+        "offset": 39
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 145
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 145,
+        "custom_emoji_id": "5006697337216981330"
+      },
+      {
+        "type": "bold",
+        "length": 20,
+        "offset": 147
+      },
+      {
+        "type": "bold",
+        "length": 1,
+        "offset": 167
+      },
+      {
+        "type": "custom_emoji",
+        "length": 1,
+        "offset": 167,
+        "custom_emoji_id": "5446745673064660338"
+      },
+      {
+        "type": "bold",
+        "length": 25,
+        "offset": 168
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 193
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 193,
+        "custom_emoji_id": "3253313144126004353"
+      },
+      {
+        "type": "bold",
+        "length": 22,
+        "offset": 195
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 217
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 217,
+        "custom_emoji_id": "8395080154559670267"
+      },
+      {
+        "type": "bold",
+        "length": 28,
+        "offset": 219
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 247
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 247,
+        "custom_emoji_id": "2461678664184319179"
+      },
+      {
+        "type": "bold",
+        "length": 26,
+        "offset": 249
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 275
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 275,
+        "custom_emoji_id": "8395080154559670267"
+      },
+      {
+        "type": "bold",
+        "length": 21,
+        "offset": 277
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 298
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 298,
+        "custom_emoji_id": "3604524406475478639"
+      },
+      {
+        "type": "bold",
+        "length": 31,
+        "offset": 300
+      },
+      {
+        "type": "bold",
+        "length": 2,
+        "offset": 331
+      },
+      {
+        "type": "custom_emoji",
+        "length": 2,
+        "offset": 331,
+        "custom_emoji_id": "1544427681360347708"
+      },
+      {
+        "type": "bold",
+        "length": 90,
+        "offset": 333
+      }
+    ],
+    "position": 0,
+    "is_manual": false
+  },
+  "message_id": 233309,
+  "is_paid_post": false,
+  "external_reply": {
+    "chat": {
+      "id": -1001000000002,
+      "type": "channel",
+      "title": "Test Channel 2",
+      "is_forum": false,
+      "username": "test_channel_1",
+      "is_direct_messages": false
+    },
+    "photo": [
+      {
+        "width": 90,
+        "height": 44,
+        "file_id": "LbNHJmBEMp3GWgUDplLSTbTogeTvFEss8X8IdXUXXnxntOd58LiSLaMTpwqUggHGdSYPV_3dW_WWKRFJAOUqHFD3QI",
+        "file_size": 1010,
+        "file_unique_id": "IGBEhH9gP4TxAKG2"
+      },
+      {
+        "width": 320,
+        "height": 157,
+        "file_id": "UhSCCnTUDo8AZoFRioBAWsHmntWvOAbe8E0CxZHQZajmgMt22WgCVfKRxqoSlvOZeGFMK_5yI_FZMRWJBTFrCRF7AZ",
+        "file_size": 12182,
+        "file_unique_id": "WCXUlP7zV4AjRXMw"
+      },
+      {
+        "width": 800,
+        "height": 392,
+        "file_id": "TyKIXsKAAk8MCrKVefGAPjBztdTeDPna6V3RjHVWEpdroMp42TlWDuBPfvoAgiWWbVVVD_5pR_VBOETGQSL1LDW5GT",
+        "file_size": 46889,
+        "file_unique_id": "TMAZnL0vZ2GfBPT0"
+      },
+      {
+        "width": 1280,
+        "height": 628,
+        "file_id": "VnUCGfWOIl1FOtXDcmWFPbFzynZsZWcs5A5TeCOLOvrfyNw79RvAVdIAeebSosQTvCRCJ_6rI_EDIPZVFHM9SFU7CX",
+        "file_size": 81636,
+        "file_unique_id": "DICCjM0aF3GgFPQ-"
+      }
+    ],
+    "origin": {
+      "chat": {
+        "id": -1001000000002,
+        "type": "channel",
+        "title": "Test Channel 2",
+        "is_forum": false,
+        "username": "test_channel_1",
+        "is_direct_messages": false
+      },
+      "date": 1783870230,
+      "type": "channel",
+      "message_id": 4
+    },
+    "message_id": 4,
+    "has_media_spoiler": false
+  },
+  "is_from_offline": false,
+  "is_topic_message": false,
+  "has_media_spoiler": false,
+  "is_automatic_forward": false,
+  "has_protected_content": false,
+  "show_caption_above_media": false
+}

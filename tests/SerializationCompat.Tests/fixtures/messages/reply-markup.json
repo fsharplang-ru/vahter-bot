@@ -1,0 +1,191 @@
+{
+  "chat": {
+    "id": -1001000000001,
+    "type": "supergroup",
+    "title": "Test Group 1",
+    "is_forum": false,
+    "username": "test_group_1",
+    "is_direct_messages": false
+  },
+  "date": 1784051315,
+  "from": {
+    "id": 100000099,
+    "is_bot": true,
+    "username": "test_bot_1",
+    "first_name": "TestBot",
+    "is_premium": false,
+    "can_join_groups": false,
+    "can_manage_bots": false,
+    "has_main_web_app": false,
+    "has_topics_enabled": false,
+    "supports_guest_queries": false,
+    "can_connect_to_business": false,
+    "supports_inline_queries": false,
+    "added_to_attachment_menu": false,
+    "can_read_all_group_messages": false,
+    "allows_users_to_create_topics": false
+  },
+  "photo": [
+    {
+      "width": 90,
+      "height": 67,
+      "file_id": "IkMIKtWFNm1Hy74zThVQIsWkCzUx3K2PSCRXTlnXsfBio8rJ-tUU9PwzH3F-jPwM3h1dpo-JCrWVKcEBX2ZETk2Y",
+      "file_size": 1559,
+      "file_unique_id": "FGYZ5FwhK1J-iYU2"
+    },
+    {
+      "width": 320,
+      "height": 240,
+      "file_id": "ImVXNvLUWj9Ga63aWoYUVgYzMaHq9U2KLICNBjxFdoLxq0oB-lFR3QcuF0F-yXcJ0s8rna-TUqEFDwEKN53NHf1O",
+      "file_size": 20361,
+      "file_unique_id": "XUHV4RqiQ5A-zTXd"
+    },
+    {
+      "width": 800,
+      "height": 600,
+      "file_id": "IkEQHePGEc0Bs08iGqXIWfKcRsWh6V8BUJBCFbpUybOmf3iG-vJW3FzsD7K-sBlY9u4kpj-XXmVOQhFZA0jUOz5X",
+      "file_size": 91001,
+      "file_unique_id": "NZEI6AbeV1V-nXE0"
+    },
+    {
+      "width": 1280,
+      "height": 960,
+      "file_id": "ArUUAeKBTz5Kx85fIxCMDuNcIlHj5B9EMNVUDcvYssTdk1zR-lJV0VuaT9J-vJsI1q1jub-TWbBOMqDUT1oNNt8J",
+      "file_size": 184460,
+      "file_unique_id": "FURV7KgmR8S-uHU-"
+    }
+  ],
+  "caption": "Lorem ipsum dolor sit amet, con\nsectetur adipiscing elit, sed do eiusmod tempor incididunt ut la\nbore et dolore magna aliqua. \nLorem ipsum dolor sit amet, consectetur adipiscing elit, sed do \neiusmod tempor incididunt ut l\nabore et dolore magna aliqua. Lorem ipsum dolor sit amet, consec",
+  "message_id": 6626,
+  "is_paid_post": false,
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        {
+          "pay": false,
+          "url": "https://example.com/link-1",
+          "text": "Lorem ipsum ",
+          "style": "danger"
+        }
+      ],
+      [
+        {
+          "pay": false,
+          "url": "https://example.com/link-1",
+          "text": "Lorem ipsum ",
+          "style": "success"
+        }
+      ]
+    ]
+  },
+  "is_from_offline": false,
+  "caption_entities": [
+    {
+      "type": "bold",
+      "length": 18,
+      "offset": 5
+    },
+    {
+      "type": "bold",
+      "length": 3,
+      "offset": 31
+    },
+    {
+      "type": "url",
+      "length": 61,
+      "offset": 35
+    },
+    {
+      "type": "bold",
+      "length": 34,
+      "offset": 96
+    },
+    {
+      "type": "url",
+      "length": 61,
+      "offset": 130
+    },
+    {
+      "type": "bold",
+      "length": 29,
+      "offset": 196
+    },
+    {
+      "type": "url",
+      "length": 61,
+      "offset": 226
+    }
+  ],
+  "is_topic_message": false,
+  "reply_to_message": {
+    "chat": {
+      "id": -1001000000001,
+      "type": "supergroup",
+      "title": "Test Group 1",
+      "is_forum": false,
+      "username": "test_group_1",
+      "is_direct_messages": false
+    },
+    "date": 1784051315,
+    "from": {
+      "id": 100000001,
+      "is_bot": false,
+      "username": "test_user_1",
+      "last_name": "Ivanova",
+      "first_name": "Anna",
+      "is_premium": true,
+      "language_code": "en",
+      "can_join_groups": false,
+      "can_manage_bots": false,
+      "has_main_web_app": false,
+      "has_topics_enabled": false,
+      "supports_guest_queries": false,
+      "can_connect_to_business": false,
+      "supports_inline_queries": false,
+      "added_to_attachment_menu": false,
+      "can_read_all_group_messages": false,
+      "allows_users_to_create_topics": false
+    },
+    "text": "Lore",
+    "entities": [
+      {
+        "type": "bot_command",
+        "length": 4,
+        "offset": 0
+      }
+    ],
+    "message_id": 6625,
+    "is_paid_post": false,
+    "is_from_offline": false,
+    "is_topic_message": false,
+    "has_media_spoiler": false,
+    "message_thread_id": 6599,
+    "is_automatic_forward": false,
+    "has_protected_content": false,
+    "show_caption_above_media": false
+  },
+  "has_media_spoiler": false,
+  "message_thread_id": 6599,
+  "is_automatic_forward": false,
+  "guest_bot_caller_user": {
+    "id": 100000001,
+    "is_bot": false,
+    "username": "test_user_1",
+    "last_name": "Ivanova",
+    "first_name": "Anna",
+    "is_premium": true,
+    "language_code": "en",
+    "can_join_groups": false,
+    "can_manage_bots": false,
+    "has_main_web_app": false,
+    "has_topics_enabled": false,
+    "supports_guest_queries": false,
+    "can_connect_to_business": false,
+    "supports_inline_queries": false,
+    "added_to_attachment_menu": false,
+    "can_read_all_group_messages": false,
+    "allows_users_to_create_topics": false
+  },
+  "has_protected_content": false,
+  "show_caption_above_media": false
+}

@@ -31,8 +31,8 @@ type MLTrainingPipelineTests(fixture: MlTrainingFromScratchTestContainers) =
         let! _ = fixture.SendMessage spamMsg
         let! _ = fixture.SendMessage hamMsg
 
-        let! spamScore = fixture.GetMlScore spamMsg.Message
-        let! hamScore = fixture.GetMlScore hamMsg.Message
+        let! spamScore = fixture.GetMlScore spamMsg.Message.Value
+        let! hamScore = fixture.GetMlScore hamMsg.Message.Value
 
         Assert.True(spamScore.IsSome, "spam message should have an ML score recorded")
         Assert.True(hamScore.IsSome, "ham message should have an ML score recorded")

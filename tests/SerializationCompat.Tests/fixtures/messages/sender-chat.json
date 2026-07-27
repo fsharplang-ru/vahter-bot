@@ -1,0 +1,86 @@
+{
+  "chat": {
+    "id": -1001000000001,
+    "type": "supergroup",
+    "title": "Test Group 1",
+    "is_forum": false,
+    "username": "test_group_1",
+    "is_direct_messages": false
+  },
+  "date": 1784062262,
+  "from": {
+    "id": 100000001,
+    "is_bot": false,
+    "first_name": "Anna",
+    "is_premium": false,
+    "can_join_groups": false,
+    "can_manage_bots": false,
+    "has_main_web_app": false,
+    "has_topics_enabled": false,
+    "supports_guest_queries": false,
+    "can_connect_to_business": false,
+    "supports_inline_queries": false,
+    "added_to_attachment_menu": false,
+    "can_read_all_group_messages": false,
+    "allows_users_to_create_topics": false
+  },
+  "photo": [
+    {
+      "width": 90,
+      "height": 79,
+      "file_id": "MgMBWfTCSk8Znl7GaDEPPKhgBkM9VSkvICjIEVLymlnWS6XqEKNGpSDdQ9FQqMm4qQXuPMwgqTGSJoIOG3RFMs8A",
+      "file_size": 1643,
+      "file_unique_id": "XZRYhAEbP9UVzHn7"
+    },
+    {
+      "width": 320,
+      "height": 280,
+      "file_id": "XkKHToCIAs7Jzv5TgQUSFPrjHkF1FRupFSfGRREvbplVG2NhWNFXkYEmU0XNjCg9nQOcCHfesLHJGvYBV80VEl4D",
+      "file_size": 30134,
+      "file_unique_id": "GRNDbIUiR4GLjQrw"
+    },
+    {
+      "width": 1170,
+      "height": 1025,
+      "file_id": "OxLCHsMSOq0Jxg5ZySTXFTbzDrD0MZtyFPxCUHLkemhUY4RmATSYwASeA4OUgJs0fDPkNRxlfVRYYwNSU1wJBd3B",
+      "file_size": 97171,
+      "file_unique_id": "ILXFtKBeN6ZHtQj-"
+    },
+    {
+      "width": 800,
+      "height": 701,
+      "file_id": "SjAOHxYVJn1Uva3CuGKUFAunXgI2AVejYXeXPLYqqxxMQ6CvZYTCgYTgT1INhPf9zHSmPJdszCBOGrTJE9qQJa9G",
+      "file_size": 106064,
+      "file_unique_id": "QHXSwWHlW0IOzBn2"
+    }
+  ],
+  "message_id": 10635,
+  "sender_chat": {
+    "id": -1001000000002,
+    "type": "channel",
+    "title": "Test Channel 2",
+    "is_forum": false,
+    "username": "test_channel_1",
+    "is_direct_messages": false
+  },
+  "is_paid_post": false,
+  "forward_origin": {
+    "chat": {
+      "id": -1001000000002,
+      "type": "channel",
+      "title": "Test Channel 2",
+      "is_forum": false,
+      "username": "test_channel_1",
+      "is_direct_messages": false
+    },
+    "date": 1784062259,
+    "type": "channel",
+    "message_id": 8159
+  },
+  "is_from_offline": false,
+  "is_topic_message": false,
+  "has_media_spoiler": false,
+  "is_automatic_forward": true,
+  "has_protected_content": false,
+  "show_caption_above_media": false
+}

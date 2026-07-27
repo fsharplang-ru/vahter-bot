@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="Types.fs" />
+    <Compile Include="Embedding.fs" />
     <Compile Include="Store.fs" />
     <Compile Include="Handlers.fs" />
     <Compile Include="Program.fs" />

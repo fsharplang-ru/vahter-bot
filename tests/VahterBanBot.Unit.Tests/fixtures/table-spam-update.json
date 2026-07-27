@@ -1,0 +1,123 @@
+{
+    "update_id": 380220042,
+    "message": {
+        "message_id": 24869,
+        "from": {
+            "id": 432506904,
+            "is_bot": false,
+            "first_name": "Ayrat",
+            "last_name": "Hudaygulov",
+            "username": "omgszer",
+            "language_code": "en",
+            "is_premium": true
+        },
+        "chat": {
+            "id": -1001170325774,
+            "title": ".NET Vahter Talks",
+            "type": "supergroup"
+        },
+        "date": 1784244586,
+        "forward_origin": {
+            "type": "hidden_user",
+            "sender_user_name": "Deleted Account",
+            "date": 1784059310
+        },
+        "forward_sender_name": "Deleted Account",
+        "forward_date": 1784059310,
+        "rich_message": {
+            "blocks": [
+                {
+                    "type": "table",
+                    "cells": [
+                        [
+                            {
+                                "text": [
+                                    {
+                                        "type": "bold",
+                                        "text": "Лучший бесплатный ВПН!"
+                                    },
+                                    " ",
+                                    {
+                                        "type": "custom_emoji",
+                                        "custom_emoji_id": "5330405154250326808",
+                                        "alternative_text": "😊"
+                                    }
+                                ],
+                                "is_header": true,
+                                "align": "left",
+                                "valign": "top"
+                            }
+                        ],
+                        [
+                            {
+                                "text": [
+                                    {
+                                        "type": "url",
+                                        "text": {
+                                            "type": "bold",
+                                            "text": "Обход белых списков"
+                                        },
+                                        "url": "tg://resolve?domain=Some_VPN_bot&amp;amp;start=ref_00000000-0000-0000-0000-000000000000"
+                                    },
+                                    " ",
+                                    {
+                                        "type": "custom_emoji",
+                                        "custom_emoji_id": "5330405154250326808",
+                                        "alternative_text": "😊"
+                                    }
+                                ],
+                                "align": "left",
+                                "valign": "top"
+                            }
+                        ],
+                        [
+                            {
+                                "text": [
+                                    {
+                                        "type": "url",
+                                        "text": {
+                                            "type": "bold",
+                                            "text": "Первые 3 дня бесплатно"
+                                        },
+                                        "url": "tg://resolve?domain=Some_VPN_bot&amp;amp;start=ref_00000000-0000-0000-0000-000000000000"
+                                    },
+                                    " ",
+                                    {
+                                        "type": "custom_emoji",
+                                        "custom_emoji_id": "5330060195362017443",
+                                        "alternative_text": "👌"
+                                    }
+                                ],
+                                "align": "left",
+                                "valign": "top"
+                            }
+                        ],
+                        [
+                            {
+                                "text": [
+                                    {
+                                        "type": "url",
+                                        "text": {
+                                            "type": "bold",
+                                            "text": "Стабильный доступ в интернет"
+                                        },
+                                        "url": "tg://resolve?domain=Some_VPN_bot&amp;start=ref_00000000-0000-0000-0000-000000000000"
+                                    },
+                                    " ",
+                                    {
+                                        "type": "custom_emoji",
+                                        "custom_emoji_id": "5328280751756575769",
+                                        "alternative_text": "😁"
+                                    }
+                                ],
+                                "align": "left",
+                                "valign": "top"
+                            }
+                        ]
+                    ],
+                    "is_bordered": true
+                }
+            ]
+        }
+    }
+}
