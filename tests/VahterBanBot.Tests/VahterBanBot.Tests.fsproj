@@ -25,6 +25,7 @@
         <Compile Include="EventSerializationTests.fs" />
         <Compile Include="LlmTriageTests.fs" />
         <Compile Include="LlmTriageResilienceTests.fs" />
+        <Compile Include="LlmVerdictCacheGlobalFlagTests.fs" />
         <Compile Include="OcrCacheTests.fs" />
         <Compile Include="OcrShortCircuitTests.fs" />
         <Compile Include="CleanupTests.fs" />

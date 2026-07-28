@@ -131,6 +131,9 @@ let buildBotConf () =
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
       LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
+      // Env fallback (not bot_setting) so this can never be silently wrong from a missing DB row —
+      // see the Settings configuration section of AGENTS.md. Default enabled.
+      LlmVerdictCacheGlobalEnabled = getEnvOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
       // Reaction-spam triage (vision LLM)
       LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
       LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse

@@ -21,9 +21,42 @@ open VahterBanBot.LlmVerdictCache
 open BotInfra
 
 // ── Dedup helpers ─────────────────────────────────────────────────────────────
+//
+// Verdict cache scoping (LLM_VERDICT_CACHE_GLOBAL_ENABLED, default ON — see BotConfiguration):
+// SPAM/SKIP are cached GLOBALLY, keyed on the text hash alone (`text:global:{md5}`) — if a given
+// text is spam (or triage-worthy) from one account, it is from another, so any sender's classified
+// result is safe to serve to every subsequent sender with the same text. NOT_SPAM stays PER-SENDER
+// (`text:{senderId}:{md5}`, the original key format) — this is the exonerating verdict, and sharing
+// it across senders would let a spammer inherit an innocent user's clean verdict by simply reposting
+// their text; that asymmetry is the entire safety argument, do not "simplify" it away. Error is
+// never cached (transient failures must be retried, not pinned) — unchanged from before this split.
+//
+// Lookup precedence (see `Classify` below): the per-sender key is always checked FIRST. Since only
+// NOT_SPAM is ever written there once the flag is on, a hit is always this sender's own prior
+// exoneration and always wins — even if a DIFFERENT sender has since made the same text SPAM/SKIP
+// globally. Only when the per-sender key misses do we fall through to the global key. This favors
+// "don't re-punish a user we already cleared" over "a newer global verdict might supersede an older
+// personal one" — a stale personal NOT_SPAM naturally falls out of consideration once its own TTL
+// expires, same as any other cache entry, so the exposure window is bounded by
+// LLM_VERDICT_CACHE_TTL_MINUTES either way. With the flag OFF, only the per-sender key exists for
+// any verdict (the pre-PR behavior).
 
 let private md5Hex (s: string) =
     MD5.HashData(Encoding.UTF8.GetBytes s) |> Convert.ToHexString |> _.ToLower()
+
+/// How (and whether) `classifyUncached` should persist the verdict it produces.
+///   - NoCache            : no stable key exists (e.g. empty-text/photo-only messages) — never persisted.
+///   - SingleKey key      : LLM_VERDICT_CACHE_GLOBAL_ENABLED=false (legacy behavior) — every verdict,
+///                          including SPAM/SKIP, is written to one sender-scoped key, exactly as before
+///                          this split existed.
+///   - SplitByVerdict     : flag on — SPAM/SKIP are written to the global (cross-sender) key so any
+///     (globalKey,          other sender posting the same text is deduped from now on; NOT_SPAM is
+///      senderKey)          written to the sender-scoped key only, so it is never inherited by a
+///                          different sender (see the module doc comment above for the safety argument).
+type private CacheRouting =
+    | NoCache
+    | SingleKey of key: string
+    | SplitByVerdict of globalKey: string * senderKey: string
 
 /// Coalesces concurrent calls with the same key onto a single in-flight Task, so a burst of
 /// identical spam delivered across channels at once triggers only one Azure call (the rest
@@ -140,9 +173,10 @@ Respond with exactly: {"verdict":"SPAM"} or {"verdict":"SKIP"} or {"verdict":"NO
         |> _.ToLower()
 
     // Performs the actual Azure call (no dedup/cache). On a successful verdict it records the
-    // classification and, when `cacheKey` is provided, stores the verdict for reuse. Errors are
-    // never cached, so a transient 429 is retried next time rather than pinned.
-    let classifyUncached (msg: TgMessage) (userMsgCount: int64) (cacheKey: string option) (ct: CancellationToken) = task {
+    // classification and, per `cacheRouting`, stores the verdict for reuse (routed by verdict when
+    // `SplitByVerdict` — see that type's doc comment). Errors are never cached, so a transient 429
+    // is retried next time rather than pinned.
+    let classifyUncached (msg: TgMessage) (userMsgCount: int64) (cacheRouting: CacheRouting) (ct: CancellationToken) = task {
         use activity = botActivity.StartActivity("llmTriage")
 
         // endpoint/key/deployment are hot-reloadable — read live for this call.
@@ -198,9 +232,15 @@ Message:
                         msg.ChatId, msg.MessageId, verdictStr,
                         promptTokens, completionTokens, int sw.ElapsedMilliseconds,
                         Some modelName, Some promptHash)
-                match cacheKey with
-                | Some k -> do! cache.Save(k, verdictStr, None, Some modelName)
-                | None   -> ()
+                match cacheRouting with
+                | NoCache -> ()
+                | SingleKey k -> do! cache.Save(k, verdictStr, None, Some modelName)
+                | SplitByVerdict (globalKey, senderKey) ->
+                    // SPAM/SKIP are safe to share cross-sender (no exoneration to leak) → global key.
+                    // NOT_SPAM (and any unexpected value — schema enforces the 3 verdicts, so this is
+                    // defensive only) stays sender-scoped, never shared.
+                    let key = match verdictStr with "SPAM" | "SKIP" -> globalKey | _ -> senderKey
+                    do! cache.Save(key, verdictStr, None, Some modelName)
                 return LlmVerdict.FromString verdictStr
             | None ->
                 // warning already logged in parseVerdict
@@ -232,19 +272,44 @@ Message:
             if not botConf.Value.LlmTriageEnabled then return LlmVerdict.Skip
             else
 
-            // Same spammer + same text ⇒ same key (the "duplicate across N channels" case). The
-            // verdict depends on the user (username / display name / message count), so the key is
-            // scoped by sender id — different users posting identical text are NOT deduped.
-            // Concurrent duplicates share one in-flight call (single-flight); temporal repeats hit
-            // the DB verdict cache. Photo-only / empty-text messages have no stable key → classify directly.
-            match (if String.IsNullOrEmpty msg.Text then None else Some (sprintf "text:%d:%s" msg.SenderId (md5Hex msg.Text))) with
-            | None -> return! classifyUncached msg userMsgCount None ct
-            | Some key ->
-                return! singleFlight inflight key (fun () -> task {
+            // Photo-only / empty-text messages have no stable text key → classify directly, no cache.
+            match (if String.IsNullOrEmpty msg.Text then None else Some (md5Hex msg.Text)) with
+            | None -> return! classifyUncached msg userMsgCount NoCache ct
+            | Some hash ->
+                let senderKey = sprintf "text:%d:%s" msg.SenderId hash
+
+                // In-process single-flight coalescing stays scoped to (sender, text) — NOT widened to
+                // the global text-only key — even though the persisted cache below now has a global
+                // tier. Until classifyUncached returns we don't know the verdict, and a NOT_SPAM
+                // result is only valid for the sender whose specific prompt (username/display
+                // name/message count) actually produced it. Widening the in-flight key would let a
+                // concurrently-racing DIFFERENT sender receive that NOT_SPAM straight out of memory,
+                // before it ever reaches the DB — the exact cross-sender leak the split cache exists
+                // to prevent, just one step earlier. So single-flight only ever coalesces true
+                // duplicate delivery of the SAME sender's own message (unchanged from before this
+                // PR); cross-sender dedup for SPAM/SKIP happens through the persisted global cache
+                // tier, which is safe to share because it never carries an exonerating verdict. (A
+                // consequence: a genuinely concurrent millisecond-scale burst of the same text from
+                // MANY different senders still makes one Azure call per distinct sender until the
+                // first classification is persisted — only sequential/TTL-window dedup is global.)
+                return! singleFlight inflight senderKey (fun () -> task {
                     let ttl = TimeSpan.FromMinutes(float botConf.Value.LlmVerdictCacheTtlMinutes)
-                    match! cache.TryGet(key, ttl) with
+
+                    // Tier 1, always checked first (see module doc comment for the full precedence
+                    // rationale): this sender's own prior verdict for this exact text always wins.
+                    match! cache.TryGet(senderKey, ttl) with
                     | Some cv -> return LlmVerdict.FromString cv.Verdict
-                    | None    -> return! classifyUncached msg userMsgCount (Some key) ct
+                    | None ->
+                        if botConf.Value.LlmVerdictCacheGlobalEnabled then
+                            // Tier 2: any sender's prior SPAM/SKIP for this exact text.
+                            let globalKey = sprintf "text:global:%s" hash
+                            match! cache.TryGet(globalKey, ttl) with
+                            | Some cv -> return LlmVerdict.FromString cv.Verdict
+                            | None -> return! classifyUncached msg userMsgCount (SplitByVerdict(globalKey, senderKey)) ct
+                        else
+                            // Feature flag OFF: revert to the pre-PR behavior — one key, one tier,
+                            // scoped to (sender, text), for every verdict including SPAM/SKIP.
+                            return! classifyUncached msg userMsgCount (SingleKey senderKey) ct
                 })
         }
 

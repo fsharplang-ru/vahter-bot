@@ -17,6 +17,9 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage SPAM verdict deletes message and reduces karma without banning`` () = task {
+        // SPAM/SKIP are now cached globally by text hash (see LlmTriage.fs) — clear the cache so an
+        // earlier test's cached "77" verdict can't leak in as a false hit and skip this classification.
+        do! fixture.ClearLlmVerdictCache()
         // Display name contains "kill" → fake LLM handler returns SPAM → message deleted, karma reduced, no instant ban
         let spammer = Tg.user(firstName = "kill advertiser")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
@@ -37,6 +40,8 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage SKIP verdict routes to human triage without banning`` () = task {
+        // Global SPAM/SKIP cache — see the SPAM test above for why this must be cleared first.
+        do! fixture.ClearLlmVerdictCache()
         // Display name contains "spam" (but not "kill") → fake LLM handler returns SKIP → human triage
         let spammer = Tg.user(firstName = "spam advertiser")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
@@ -55,6 +60,11 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage NOT_SPAM verdict takes no action`` () = task {
+        // Global SPAM/SKIP cache — see the SPAM test above. This sender is always fresh (random
+        // Guid firstName), so the risk here isn't cross-sender NOT_SPAM leakage (impossible — NOT_SPAM
+        // stays per-sender) but a STALE SPAM/SKIP entry from an earlier test's "77" leaking in via the
+        // global tier and pre-empting this message's own (correct) NOT_SPAM classification.
+        do! fixture.ClearLlmVerdictCache()
         // Default user firstName is a Guid — no keywords → NOT_SPAM
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77")
         let! _ = fixture.SendMessage msgUpdate
@@ -83,6 +93,10 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage SPAM verdict stores message in DB before deleting`` () = task {
+        // Global SPAM/SKIP cache — see the SPAM test above. A stale cache hit would still resolve to
+        // SPAM-driven deletion here, but clear anyway so this test doesn't depend on file-internal
+        // test ordering to get the verdict it expects.
+        do! fixture.ClearLlmVerdictCache()
         // Regression: DB.insertMessage was called after processMessage, so deleteSpam → getUserMessages
         // found 0 messages even though the spam message had just been received.
         let spammer = Tg.user(firstName = "kill message-count regression")
@@ -100,6 +114,9 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage SPAM event contains modelName and promptHash`` () = task {
+        // Needs a FRESH classification (a cache hit records no LlmClassified event for this
+        // message) — global SPAM/SKIP cache, see the SPAM test above.
+        do! fixture.ClearLlmVerdictCache()
         let spammer = Tg.user(firstName = "kill spammer with metadata")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
         let! _ = fixture.SendMessage msgUpdate

@@ -216,7 +216,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Potential spam card carries no ref token but its AllLogs mirror does`` () = task {
-        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        // SPAM/SKIP LLM verdicts are now cached globally by text hash (LlmTriage.fs) — clear so an
+        // earlier test's cached "77" verdict (possibly SPAM, from a "kill"-named test elsewhere)
+        // can't leak in and change this test's expected SKIP-routed outcome.
+        do! fixture.ClearLlmVerdictCache()
+        // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
         let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
@@ -234,8 +238,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
 
     [<Fact>]
     let ``Potential spam NOT SPAM button does not ban user`` () = task {
+        // Global SPAM/SKIP verdict cache — see the test above for why this must be cleared first.
+        do! fixture.ClearLlmVerdictCache()
         // For potential spam, we need a text that gives score >= 0 but < 1.0 (ML_SPAM_THRESHOLD)
-        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
         // This tests the fix for the bug where NOT SPAM button was calling vahterMarkedAsSpam
         let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
@@ -509,9 +515,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     
     [<Fact>]
     let ``MarkAsSpam (soft spam) button does NOT ban user`` () = task {
+        // Global SPAM/SKIP verdict cache — see the "Potential spam card..." test above for why.
+        do! fixture.ClearLlmVerdictCache()
         // This test verifies the critical behavior that MarkAsSpam (soft spam)
         // deletes the message and marks it as spam for ML, but does NOT ban the user
-        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
         let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
@@ -537,9 +545,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     
     [<Fact>]
     let ``Only vahter can click MarkAsSpam button`` () = task {
+        // Global SPAM/SKIP verdict cache — see the "Potential spam card..." test above for why.
+        do! fixture.ClearLlmVerdictCache()
         // Similar to "Only vahter can press THE BUTTON(s)" test
         // Verifies non-vahter clicking MarkAsSpam has no effect
-        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
         let user = Tg.user(firstName = "spam test user")
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = user)
         let! _ = fixture.SendMessage msgUpdate
@@ -569,9 +579,12 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // from the "Potential spam NOT SPAM button does not ban user" test which inserts "77"
         // into false_positive_messages. The "3" family is in the training set as false negatives
         // so "33" triggers ML detection as potential spam just like "77" does.
-        // firstName contains "spam" so the fake LLM returns SPAM → routes to human triage (potential spam channel)
+        // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
+        // Global SPAM/SKIP verdict cache (keyed on text "33" here) — see the "Potential spam card..."
+        // test above for why this must be cleared first.
+        do! fixture.ClearLlmVerdictCache()
         let user = Tg.user(firstName = "spam test user")
-        
+
         // First 3 messages should NOT trigger ban
         for i in 1..3 do
             let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "33", from = user)

@@ -94,6 +94,36 @@ ON CONFLICT DO NOTHING
     }
 
     [<Fact>]
+    let ``MlData returns rows in a stable, deterministic order across repeated calls`` () = task {
+        // Two distinct texts sharing the exact same created_at (both rows inserted in
+        // the same statement, so now() resolves identically for both) exercise the
+        // case an ORDER BY on MAX(created_at) alone cannot resolve deterministically.
+        use conn = new Npgsql.NpgsqlConnection(fixture.DbConnectionString)
+        //language=postgresql
+        let seedSql =
+            """
+INSERT INTO event(stream_id, stream_version, data, created_at)
+VALUES
+    ('message:-667:1001', 1,
+     jsonb_build_object('Case', 'MessageReceived', 'chatId', -667, 'messageId', 1001,
+                        'userId', 43, 'text', 'tie candidate one', 'rawMessage', '{}'),
+     now()),
+    ('message:-667:1002', 1,
+     jsonb_build_object('Case', 'MessageReceived', 'chatId', -667, 'messageId', 1002,
+                        'userId', 43, 'text', 'tie candidate two', 'rawMessage', '{}'),
+     now())
+ON CONFLICT DO NOTHING
+            """
+        let! _ = Dapper.SqlMapper.ExecuteAsync(conn, seedSql)
+
+        let db = VahterBanBot.DbService(fixture.DbConnectionString, TimeProvider.System)
+        let! mlData1 = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
+        let! mlData2 = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
+
+        Assert.Equal<VahterBanBot.SpamOrHamDb[]>(mlData1, mlData2)
+    }
+
+    [<Fact>]
     let ``Photo messages are processed without OCR when disabled`` () = task {
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "hello-from-photo", photos = [|Tg.hamPhoto|])
 

@@ -1024,7 +1024,14 @@ FROM final_messages m
 LEFT JOIN last_verdict v ON v.chat_id = m.chat_id AND v.message_id = m.message_id
 LEFT JOIN user_msg_counts u ON u.user_id = m.user_id
 GROUP BY m.text, v.is_spam, u.less_than_n_messages, m.entities
-ORDER BY MAX(m.created_at);
+-- MAX(created_at) alone is not a total order: two distinct groups (different
+-- text/spam/less_than_n_messages/entities) can share the same max created_at,
+-- leaving their relative order undefined and non-reproducible across runs.
+-- MIN(m.stream_id) breaks every tie: final_messages is DISTINCT ON (stream_id),
+-- so stream_id is unique per input row, and each input row belongs to exactly
+-- one output group here (the joins to last_verdict/user_msg_counts are 1:0-1,
+-- no fan-out) — so MIN(stream_id) per group is guaranteed unique across groups.
+ORDER BY MAX(m.created_at), MIN(m.stream_id);
 """
 
             let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})
