@@ -41,6 +41,12 @@ type SpamOrHamDb =
       spam: bool
       less_than_n_messages: bool
       custom_emoji_count: int
+      /// Repetition weight: how many source messages (post-GROUP BY) share this exact
+      /// (text, spam, less_than_n_messages, entities) group, capped at @repeatWeightCap.
+      /// A spam campaign posting identical text N times collapses to one training row
+      /// via the GROUP BY below — this restores that lost signal as an example weight
+      /// instead of letting every row count equally. See ML.fs's combineWeight.
+      weight: single
       created_at: DateTime }
 
 type DbService(connString: string, timeProvider: TimeProvider) =
@@ -957,7 +963,7 @@ ORDER BY va_stats."KillsTotal" + va_stats."NotSpamTotal" DESC;
     // Public members — ML operations
     // -----------------------------------------------------------------------
 
-    member _.MlData(criticalMsgCount: int, criticalDate: DateTime) : Task<SpamOrHamDb array> =
+    member _.MlData(criticalMsgCount: int, criticalDate: DateTime, repeatWeightCap: int) : Task<SpamOrHamDb array> =
         task {
             use conn = new NpgsqlConnection(connString)
 
@@ -1019,6 +1025,7 @@ SELECT m.text,
        COALESCE(u.less_than_n_messages, TRUE)                              AS less_than_n_messages,
        (SELECT COUNT(*) FROM jsonb_array_elements(m.entities) ent
         WHERE ent->>'type' = 'custom_emoji')::INT                          AS custom_emoji_count,
+       LEAST(COUNT(*), @repeatWeightCap)::real                             AS weight,
        MAX(m.created_at)                                                   AS created_at
 FROM final_messages m
 LEFT JOIN last_verdict v ON v.chat_id = m.chat_id AND v.message_id = m.message_id
@@ -1034,7 +1041,7 @@ GROUP BY m.text, v.is_spam, u.less_than_n_messages, m.entities
 ORDER BY MAX(m.created_at), MIN(m.stream_id);
 """
 
-            let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount |})
+            let! data = conn.QueryAsync<SpamOrHamDb>(sql, {| criticalDate = criticalDate; criticalMsgCount = criticalMsgCount; repeatWeightCap = repeatWeightCap |})
             return Array.ofSeq data
         }
 

@@ -17,6 +17,7 @@
         <Compile Include="MLBanTests.fs" />
         <Compile Include="MLScoreDeterminismTests.fs" />
         <Compile Include="MLTrainingPipelineTests.fs" />
+        <Compile Include="MlRepeatWeightTests.fs" />
         <Compile Include="BanTests.fs" />
         <Compile Include="EphemeralTests.fs" />
         <Compile Include="ChannelSenderTests.fs" />

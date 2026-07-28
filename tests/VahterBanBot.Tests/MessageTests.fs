@@ -86,7 +86,7 @@ ON CONFLICT DO NOTHING
         let! _ = Dapper.SqlMapper.ExecuteAsync(conn, seedSql)
 
         let db = VahterBanBot.DbService(fixture.DbConnectionString, TimeProvider.System)
-        let! mlData = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
+        let! mlData = db.MlData(100, DateTime.UtcNow.AddDays -1.0, 100)
 
         let byText t = mlData |> Array.find (fun x -> x.text = t)
         Assert.Equal(2, (byText "emoji spam candidate").custom_emoji_count)
@@ -117,8 +117,8 @@ ON CONFLICT DO NOTHING
         let! _ = Dapper.SqlMapper.ExecuteAsync(conn, seedSql)
 
         let db = VahterBanBot.DbService(fixture.DbConnectionString, TimeProvider.System)
-        let! mlData1 = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
-        let! mlData2 = db.MlData(100, DateTime.UtcNow.AddDays -1.0)
+        let! mlData1 = db.MlData(100, DateTime.UtcNow.AddDays -1.0, 100)
+        let! mlData2 = db.MlData(100, DateTime.UtcNow.AddDays -1.0, 100)
 
         Assert.Equal<VahterBanBot.SpamOrHamDb[]>(mlData1, mlData2)
     }

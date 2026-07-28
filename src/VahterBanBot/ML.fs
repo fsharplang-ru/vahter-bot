@@ -32,6 +32,40 @@ type Prediction =
       text: string
       spam: bool }
 
+/// Combines the repeat-count weight (spam campaigns posting identical text, see DB.fs's
+/// MlData/SpamOrHamDb.weight) with the time-decay weight into the single per-example weight
+/// passed to SDCA's ExampleWeightColumnName. Pure so the composition can be unit tested
+/// directly (MlRepeatWeightTests) without spinning up the full training pipeline.
+///   repeatWeight = repeatCount (already capped by MlData's SQL) when enabled, else 1.0
+///   decayWeight  = exp(-k * ageDays) when k > 0, else 1.0
+///   result       = repeatWeight * decayWeight
+let combineWeight (repeatWeightEnabled: bool) (repeatCount: single) (decayK: float) (ageDays: float) : single =
+    let repeatWeight = if repeatWeightEnabled then repeatCount else 1.0f
+    let decayWeight = if decayK > 0.0 then single (Math.Exp(-decayK * ageDays)) else 1.0f
+    repeatWeight * decayWeight
+
+/// Builds the SDCA feature/training pipeline shared by production training
+/// (MachineLearning.trainAndSaveModel) and MlRepeatWeightTests's weight-reaches-the-trainer
+/// probe — keeps trainer configuration (ExampleWeightColumnName, feature concatenation) as a
+/// single source of truth instead of two independently-drifting copies.
+let buildTrainingPipeline (mlContext: MLContext) (maxIterations: int) (seed: Nullable<int>) (useWeightColumn: bool) =
+    let featurePipeline =
+        mlContext.Transforms.Text
+            .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
+            .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF"; "moreThanNEmojisF"|]))
+    let options = SdcaLogisticRegressionBinaryTrainer.Options(
+        LabelColumnName = "spam",
+        FeatureColumnName = "Features",
+        MaximumNumberOfIterations = maxIterations
+    )
+    if useWeightColumn then
+        options.ExampleWeightColumnName <- "weight"
+    // When ML_SEED is set, use single thread for deterministic training.
+    // SDCA's parallel coordinate updates cause non-deterministic weight convergence.
+    if seed.HasValue then
+        options.NumberOfThreads <- Nullable 1
+    featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(options))
+
 type MachineLearning(
     logger: ILogger<MachineLearning>,
     tg: ITelegramApi,
@@ -87,7 +121,8 @@ type MachineLearning(
         
         let now = timeProvider.GetUtcNow().UtcDateTime
         let trainDate = now - botConf.Value.MlTrainInterval
-        let! rawData = db.MlData(botConf.Value.MlTrainCriticalMsgCount, trainDate)
+        let repeatWeightEnabled = botConf.Value.MlRepeatWeightEnabled
+        let! rawData = db.MlData(botConf.Value.MlTrainCriticalMsgCount, trainDate, botConf.Value.MlRepeatWeightCap)
 
         logger.LogInformation $"Training data count: {rawData.Length}"
 
@@ -95,11 +130,7 @@ type MachineLearning(
         let data =
             rawData
             |> Array.map (fun x ->
-                let w =
-                    if k > 0.0 then
-                        single (Math.Exp(-k * (now - x.created_at).TotalDays))
-                    else
-                        1.0f
+                let w = combineWeight repeatWeightEnabled x.weight k (now - x.created_at).TotalDays
                 { text = x.text
                   spam = x.spam
                   createdAt = x.created_at
@@ -116,26 +147,12 @@ type MachineLearning(
         let trainTestSplit = mlContext.Data.TrainTestSplit(dataView, testFraction = botConf.Value.MlTrainingSetFraction, seed = botConf.Value.MlSeed)
         let trainingData = trainTestSplit.TrainSet
         let testData = trainTestSplit.TestSet
-        
-        let featurePipeline =
-            mlContext.Transforms.Text
-                .FeaturizeText(outputColumnName = "TextFeaturized", inputColumnName = "text")
-                .Append(mlContext.Transforms.Concatenate(outputColumnName = "Features", inputColumnNames = [|"TextFeaturized"; "lessThanNMessagesF"; "moreThanNEmojisF"|]))
 
+        // ExampleWeightColumnName only needs setting when at least one weighting mechanism is
+        // active — otherwise every row's weight is 1.0 and the column would be a no-op.
         let dataProcessPipeline =
-            let options = SdcaLogisticRegressionBinaryTrainer.Options(
-                LabelColumnName = "spam",
-                FeatureColumnName = "Features",
-                MaximumNumberOfIterations = botConf.Value.MlMaxNumberOfIterations
-            )
-            if k > 0.0 then
-                options.ExampleWeightColumnName <- "weight"
-            // When ML_SEED is set, use single thread for deterministic training.
-            // SDCA's parallel coordinate updates cause non-deterministic weight convergence.
-            if botConf.Value.MlSeed.HasValue then
-                options.NumberOfThreads <- Nullable 1
-            featurePipeline.Append(mlContext.BinaryClassification.Trainers.SdcaLogisticRegression(options))
-                
+            buildTrainingPipeline mlContext botConf.Value.MlMaxNumberOfIterations botConf.Value.MlSeed (k > 0.0 || repeatWeightEnabled)
+
         logger.LogInformation "Fitting model..."
 
         let trainedModel = dataProcessPipeline.Fit(trainingData)

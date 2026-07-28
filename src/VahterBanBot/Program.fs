@@ -113,6 +113,10 @@ let buildBotConf () =
       MlCustomEmojiThreshold = getSettingOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
       MlStopWordsInChats = getSettingOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
       MlWeightDecayK = getSettingOr "ML_WEIGHT_DECAY_K" "0" |> float
+      // Env fallback (not bot_setting) so these can never be silently wrong from a missing DB
+      // row — see the Settings configuration section of AGENTS.md. Default enabled, cap 100.
+      MlRepeatWeightEnabled = getEnvOr "ML_REPEAT_WEIGHT_ENABLED" "true" |> bool.Parse
+      MlRepeatWeightCap = getEnvOr "ML_REPEAT_WEIGHT_CAP" "100" |> int
       MlOldUserMsgCount = getSettingOr "ML_OLD_USER_MSG_COUNT" "50" |> int
       // Reaction spam detection
       ReactionSpamEnabled = getSettingOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
