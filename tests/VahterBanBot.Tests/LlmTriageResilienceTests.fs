@@ -1,5 +1,6 @@
 module VahterBanBot.Tests.LlmTriageResilienceTests
 
+open System
 open System.Threading.Tasks
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
@@ -22,12 +23,15 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
     let http429: AzureScriptedResponse =
         { status = 429; body = """{"error":{"code":"429","message":"rate limited"}}"""; delayMs = 0; errorMode = "" }
 
-    // Resets recorded fake calls (Azure + Telegram) and clears any leftover LLM 429 script, so each
-    // test starts clean and call-count assertions only observe this test's traffic.
+    // Resets recorded fake calls (Azure + Telegram), clears any leftover LLM 429 script, and wipes
+    // the persisted verdict cache, so each test starts clean and call-count / cache-hit assertions
+    // only observe this test's traffic (the global SPAM/SKIP tier means a stale entry from an
+    // earlier test using the same literal text would otherwise leak in as a false cache hit).
     let resetFakes () = task {
-        do! fixture.ClearAzureOcrCalls()   // clears ALL recorded fake-Azure calls (OCR + LLM)
-        do! fixture.ClearFakeCalls()       // clears recorded fake-Telegram calls
-        do! fixture.SetAzureLlmScript [||] // clears any queued LLM scripted responses
+        do! fixture.ClearAzureOcrCalls()     // clears ALL recorded fake-Azure calls (OCR + LLM)
+        do! fixture.ClearFakeCalls()         // clears recorded fake-Telegram calls
+        do! fixture.SetAzureLlmScript [||]   // clears any queued LLM scripted responses
+        do! fixture.ClearLlmVerdictCache()   // clears the persisted LLM verdict cache
     }
 
     let leaksToActionChannel (sends: FakeCall array) =
@@ -75,17 +79,102 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
     }
 
     [<Fact>]
-    let ``LLM triage does NOT dedup different users posting identical text`` () = task {
-        // Correctness guard: the cache key is per-user, so two different spammers with identical
-        // text must each be classified. Passes on both branches — protects against over-dedup.
+    let ``LLM triage caches SPAM verdict globally: two different senders with identical text make ONE Azure call`` () = task {
+        // The measured problem this cache split fixes: a spam campaign spraying identical text
+        // across many accounts used to cost one Azure call PER account (the cache key included
+        // senderId). SPAM is now cached by text hash alone, so sender B's identical text is served
+        // from the cache sender A's classification wrote — and still results in the spam action.
         do! resetFakes ()
-        let a = Tg.user(firstName = "kill userA")
-        let b = Tg.user(firstName = "kill userB")
-        let! _ = fixture.SendMessage (Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a))
-        let! _ = fixture.SendMessage (Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = b))
+        let a = Tg.user(firstName = "kill global-spam-a")
+        let b = Tg.user(firstName = "kill global-spam-b")
+
+        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
+        let! _ = fixture.SendMessage m1
+        let! v1 = fixture.TryGetLlmTriageVerdict m1.Message.Value
+        Assert.Equal(Some "SPAM", v1)
+        let! d1 = fixture.MessageIsAutoDeleted m1.Message.Value
+        Assert.True(d1, "first sender's spam should be deleted")
+
+        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = b)
+        let! _ = fixture.SendMessage m2
+        let! d2 = fixture.MessageIsAutoDeleted m2.Message.Value
+        Assert.True(d2, "second (different) sender's identical text is still deleted, from the cached global verdict")
 
         let! calls = fixture.GetAzureLlmCalls()
+        Assert.Equal(1, calls.Length)
+    }
+
+    [<Fact>]
+    let ``LLM triage caches SKIP verdict globally: two different senders with identical text make ONE Azure call`` () = task {
+        // Same global-dedup property as SPAM, for the SKIP verdict: worst case a message goes to
+        // human triage that would have gone to human triage anyway, so it's just as safe to share.
+        do! resetFakes ()
+        let a = Tg.user(firstName = "spam global-skip-a")
+        let b = Tg.user(firstName = "spam global-skip-b")
+
+        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
+        let! _ = fixture.SendMessage m1
+        let! v1 = fixture.TryGetLlmTriageVerdict m1.Message.Value
+        Assert.Equal(Some "SKIP", v1)
+
+        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = b)
+        let! _ = fixture.SendMessage m2
+        // SKIP never bans/deletes for either sender — that's the whole point, so assert both stayed
+        // untouched instead of re-deriving the verdict for the (uncached, event-less) second message.
+        let! d2 = fixture.MessageIsAutoDeleted m2.Message.Value
+        Assert.False(d2, "SKIP never auto-deletes")
+
+        let! calls = fixture.GetAzureLlmCalls()
+        Assert.Equal(1, calls.Length)
+    }
+
+    [<Fact>]
+    let ``LLM triage does NOT dedup different senders' NOT_SPAM: a second sender with identical text still gets its own Azure call`` () = task {
+        // The safety property the split cache depends on: NOT_SPAM stays per-sender, so sharing it
+        // across senders can never let a spammer inherit an innocent user's clean verdict just by
+        // reposting their exact text. Neither user's firstName contains "kill"/"spam" → NOT_SPAM.
+        do! resetFakes ()
+        let a = Tg.user()
+        let b = Tg.user()
+
+        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
+        let! _ = fixture.SendMessage m1
+        let! v1 = fixture.TryGetLlmTriageVerdict m1.Message.Value
+        Assert.Equal(Some "NOT_SPAM", v1)
+
+        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = b)
+        let! _ = fixture.SendMessage m2
+        let! v2 = fixture.TryGetLlmTriageVerdict m2.Message.Value
+        Assert.Equal(Some "NOT_SPAM", v2)
+
+        // The safety assertion: sender B's own LlmClassified event exists (i.e. it was actually
+        // classified, not silently served from sender A's cached exoneration) → two Azure calls.
+        let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(2, calls.Length)
+    }
+
+    [<Fact>]
+    let ``LLM triage global cache respects TTL: an aged-out SPAM entry is re-classified`` () = task {
+        do! resetFakes ()
+        let a = Tg.user(firstName = "kill ttl-a")
+        let b = Tg.user(firstName = "kill ttl-b")
+
+        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
+        let! _ = fixture.SendMessage m1
+        let! calls1 = fixture.GetAzureLlmCalls()
+        Assert.Equal(1, calls1.Length)
+
+        // Age the cache past LLM_VERDICT_CACHE_TTL_MINUTES (60, default/test value) — the global
+        // entry from sender A's classification must no longer be honored for sender B.
+        do! fixture.AgeLlmVerdictCache(TimeSpan.FromMinutes 61.0)
+
+        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = b)
+        let! _ = fixture.SendMessage m2
+        let! v2 = fixture.TryGetLlmTriageVerdict m2.Message.Value
+        Assert.Equal(Some "SPAM", v2)
+
+        let! calls2 = fixture.GetAzureLlmCalls()
+        Assert.Equal(2, calls2.Length)
     }
 
     // ── Concurrency (single-flight) ───────────────────────────────────────────

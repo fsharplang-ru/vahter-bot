@@ -69,7 +69,7 @@ module private VahterTestConfig =
     let secret = "OUR_SECRET"
     let fakeAzureAlias = "fake-azure-ocr"
 
-    let makeConfig (mlEnabled: bool) : BotContainerConfig =
+    let makeConfig (mlEnabled: bool) (extraEnvVars: (string * string) list) : BotContainerConfig =
         let envVars = [
             "BOT_TELEGRAM_TOKEN", "123:456"
             "BOT_AUTH_TOKEN", secret
@@ -84,6 +84,7 @@ module private VahterTestConfig =
                     "AZURE_OPENAI_KEY", "fake-llm-key"
                 ]
             else envVars
+        let envVars = envVars @ extraEnvVars
 
         { BotProject = "VahterBanBot"
           MigrationsSubdir = "vahter-bot"
@@ -109,8 +110,8 @@ let private isCi =
     && (v.Equals("true", StringComparison.OrdinalIgnoreCase) || v = "1")
 
 [<AbstractClass>]
-type VahterTestContainers(mlEnabled: bool) =
-    inherit BotContainerBase(VahterTestConfig.makeConfig mlEnabled)
+type VahterTestContainers(mlEnabled: bool, extraEnvVars: (string * string) list) =
+    inherit BotContainerBase(VahterTestConfig.makeConfig mlEnabled extraEnvVars)
 
     override this.SeedDatabase(connString: string) =
         task {
@@ -603,6 +604,29 @@ WHERE event_type = 'LlmClassified'
         return values |> Seq.tryHead
     }
 
+    /// Wipes the LLM verdict cache table. The cache is now GLOBAL for SPAM/SKIP (keyed on text
+    /// hash alone — see LlmTriage.fs), so tests reusing the same literal message text (e.g. "77")
+    /// with a SPAM/SKIP-routing sender name are no longer isolated from each other by sender id
+    /// the way the old per-sender-only cache made them. Tests that assert on a FRESH classification
+    /// (Azure call count, or a message's own LlmClassified event/modelName/promptHash) must call
+    /// this first so an earlier test's cached global verdict can't leak in as a false cache hit.
+    member this.ClearLlmVerdictCache() = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        let! _ = conn.ExecuteAsync("DELETE FROM llm_verdict_cache")
+        return ()
+    }
+
+    /// Backdates every row in the LLM verdict cache table by `age`, simulating TTL expiry without
+    /// waiting on the wall clock (same convention as the reaction-triage `created_at` time-travel
+    /// helpers in ReactionSpamTests.fs).
+    member this.AgeLlmVerdictCache(age: TimeSpan) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        let! _ = conn.ExecuteAsync(
+                    "UPDATE llm_verdict_cache SET created_at = created_at - make_interval(secs => @secs)",
+                    {| secs = age.TotalSeconds |})
+        return ()
+    }
+
     /// Gets the ML score recorded for a message via MlScoredMessage event.
     member this.GetMlScore(msg: TgMsg) = task {
         use conn = new NpgsqlConnection(this.DbConnectionString)
@@ -835,8 +859,12 @@ let private waitForReady (http: HttpClient) (timeout: TimeSpan) : Task<unit> = t
         failwithf "Bot /ready did not return 200 within %A — ML model failed to train or load" timeout
 }
 
-type MlEnabledVahterTestContainers() =
-    inherit VahterTestContainers(mlEnabled = true)
+/// Shared base for ML-enabled containers that preload the pinned model fixture (fast /ready) —
+/// factored out so a variant needing a different app env var (e.g. the LLM verdict cache global
+/// flag off) doesn't have to duplicate the preload/extract plumbing below.
+[<AbstractClass>]
+type MlPreloadedVahterTestContainers(extraEnvVars: (string * string) list) =
+    inherit VahterTestContainers(mlEnabled = true, extraEnvVars = extraEnvVars)
 
     override this.SeedDatabase(connString: string) =
         // F# disallows `base` references inside computation expressions, so kick off the base
@@ -896,11 +924,20 @@ type MlEnabledVahterTestContainers() =
                               Commit this file so CI can reuse it." mlModelFixturePath bytes.Length)
         } :> Task
 
+type MlEnabledVahterTestContainers() =
+    inherit MlPreloadedVahterTestContainers([])
+
+/// Same container/settings as MlEnabledVahterTestContainers, except LLM_VERDICT_CACHE_GLOBAL_ENABLED
+/// is forced off — used to assert the escape hatch reverts the verdict cache fully to its pre-PR
+/// per-sender-for-every-verdict behavior (LlmVerdictCacheGlobalFlagTests).
+type LlmVerdictCacheGlobalDisabledTestContainers() =
+    inherit MlPreloadedVahterTestContainers(["LLM_VERDICT_CACHE_GLOBAL_ENABLED", "false"])
+
 /// Variant that DELIBERATELY skips fixture preload to exercise the production training pipeline
 /// end-to-end. Used by MLTrainingPipelineTests as a smoke test that training still produces a
 /// usable model (the most important property of the bot — autonomous spam detection).
 type MlTrainingFromScratchTestContainers() =
-    inherit VahterTestContainers(mlEnabled = true)
+    inherit VahterTestContainers(mlEnabled = true, extraEnvVars = [])
 
     override this.AfterStart() =
         task {
@@ -910,7 +947,7 @@ type MlTrainingFromScratchTestContainers() =
         } :> Task
 
 type MlDisabledVahterTestContainers() =
-    inherit VahterTestContainers(mlEnabled = false)
+    inherit VahterTestContainers(mlEnabled = false, extraEnvVars = [])
 
 // Kept as a no-op so existing test classes can keep `IClassFixture<MlAwaitFixture>` unchanged.
 // The actual readiness wait now lives in MlEnabledVahterTestContainers.AfterStart, which runs
