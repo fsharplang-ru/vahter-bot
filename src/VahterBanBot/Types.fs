@@ -366,6 +366,16 @@ type BotConfiguration =
       MlStopWordsInChats: Dictionary<int64, string list>
       /// Time-decay weight parameter: w(t) = exp(-k * age_in_days). 0 = no decay (all weights 1.0).
       MlWeightDecayK: float
+      /// When true (default), training rows are weighted by how many repeated messages (post
+      /// GROUP BY dedup in MlData) share that exact text — restoring the spam-campaign-repetition
+      /// signal the GROUP BY otherwise erases (measured: it drops 70.6% of spam rows vs only 14.1%
+      /// of ham rows). Combines multiplicatively with MlWeightDecayK's time-decay weight — see
+      /// ML.fs's combineWeight. Env fallback (not DB-only) so it can never be silently wrong from
+      /// a missing bot_setting row — see AGENTS.md's Settings configuration section.
+      MlRepeatWeightEnabled: bool
+      /// Cap on the repeat-count weight multiplier from MlRepeatWeightEnabled (applied in the
+      /// MlData SQL's LEAST(COUNT(*), @repeatWeightCap)). Also env-fallback.
+      MlRepeatWeightCap: int
       /// Users with >= this many unique messages are immune from ML/LLM triage.
       MlOldUserMsgCount: int
       // Reaction spam detection
