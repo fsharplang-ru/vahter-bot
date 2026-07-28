@@ -387,6 +387,14 @@ type BotConfiguration =
       /// Minutes a cached LLM verdict (text or reaction triage) is reused before re-asking
       /// the model. Dedups identical spam across channels and absorbs rate-limit bursts.
       LlmVerdictCacheTtlMinutes: int
+      /// When true (default), SPAM/SKIP text-triage verdicts are cached GLOBALLY (by text hash
+      /// alone, across all senders) instead of per-sender — a spam campaign spraying identical
+      /// text across many accounts is deduped after the first classification instead of once per
+      /// account. NOT_SPAM always stays per-sender regardless of this flag (see LlmTriage.fs's
+      /// module doc comment for the safety argument). Escape hatch to revert to fully per-sender
+      /// caching for every verdict without a redeploy; env-only (not DB-only) so it can never be
+      /// silently wrong from a missing `bot_setting` row — see Program.fs's buildBotConf.
+      LlmVerdictCacheGlobalEnabled: bool
       // Reaction-spam triage (vision LLM)
       /// When true, LLM verdict acts autonomously (UNSURE falls through to vahter).
       /// When false (default — shadow mode), LLM runs but verdict is recorded only; vahter always decides.
