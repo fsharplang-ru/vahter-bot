@@ -19,6 +19,7 @@ open VahterBanBot.Utils
 open BotInfra
 open VahterBanBot.UpdateChatAdmins
 open VahterBanBot.Metrics
+open VahterBanBot.SpamTextCache
 
 module Req = Funogram.Telegram.Req
 
@@ -248,6 +249,7 @@ module private BotHelpers =
         | AutoDeleteReason.MlSpam r           -> $"{prefix}score: {r.score}"
         | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
         | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
+        | AutoDeleteReason.SpamTextCacheHit r  -> $"{prefix}spam-text cache hit, seeded by ban of {r.seedChatId}/{r.seedMessageId}"
 
     let selectLargestPhoto (photos: PhotoSize array) =
         let withSize = photos |> Array.filter (fun p -> p.FileSize.IsSome)
@@ -264,6 +266,7 @@ type BotService(
     ml: MachineLearning,
     computerVision: IComputerVision,
     ocrCache: VahterBanBot.OcrCache.IOcrCache,
+    spamTextCache: ISpamTextCache,
     llmTriage: ILlmTriage,
     reactionTriage: IReactionTriageClassifier,
     profileFetcher: IUserProfileFetcher,
@@ -359,6 +362,24 @@ type BotService(
             %banOnReplyActivity
                 .SetTag("modelName", l.modelName)
                 .SetTag("promptHash", l.promptHash)
+        | _ -> ()
+
+        // Ban-seeded spam-text cache: seed ONLY on a genuinely manual ban (Actor.User — i.e.
+        // this is the /ban and BanOnReply path). This is a deliberate exhaustive-by-actor-shape
+        // decision, not a catch-all — ML/LLM/Bot auto-bans (which also flow through TotalBan,
+        // e.g. via CheckAndAutoBan) must never seed here (design item 4). Synchronous/in-process,
+        // so no `do!` needed.
+        match actor with
+        | Actor.User _ when botConfig.Value.SpamTextCacheMode <> SpamTextCacheMode.Off ->
+            let seeded =
+                spamTextCache.Seed(
+                    msg.Text, botConfig.Value.SpamTextCacheMinLength, botConfig.Value.SpamTextCacheTtl,
+                    msg.ChatId, msg.MessageId, utcNow())
+            if seeded then
+                spamTextCacheSeedsCounter.Add(1L)
+                logger.LogInformation(
+                    "Spam-text cache seeded from manual ban of message {ChatId}/{MessageId} (mode={Mode})",
+                    msg.ChatId, msg.MessageId, caseName botConfig.Value.SpamTextCacheMode)
         | _ -> ()
 
         // delete message
@@ -1101,6 +1122,35 @@ type BotService(
                 return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.ML))
     }
 
+    /// Ban-seeded spam-text cache hit action. `enforce` mirrors ML's own MlSpamDeletionEnabled
+    /// branch (DeleteSpam when enabled, ReportPotentialSpam otherwise) — literally "the same
+    /// action an ML spam verdict takes". `shadow` always reports without deleting, so a human
+    /// can review the would-be kills before flipping the mode to enforce. Reuses DeleteSpam /
+    /// ReportPotentialSpam rather than a parallel action path, per the design.
+    member private this.SpamTextCacheAct(msg: TgMessage, mode: SpamTextCacheMode, hit: SpamCacheHit) = task {
+        use activity = botActivity.StartActivity("spamTextCacheHit")
+        %activity
+            .SetTag("spammerId", msg.SenderId)
+            .SetTag("mode", caseName mode)
+            .SetTag("seedChatId", hit.SeedChatId)
+            .SetTag("seedMessageId", hit.SeedMessageId)
+        spamTextCacheHitsCounter.Add(1L, tagsForSpamTextCacheMode mode)
+        logger.LogInformation(
+            "Spam-text cache hit: message {ChatId}/{MessageId} matches ban seed {SeedChatId}/{SeedMessageId} (mode={Mode})",
+            msg.ChatId, msg.MessageId, hit.SeedChatId, hit.SeedMessageId, caseName mode)
+        let reason = AutoDeleteReason.SpamTextCacheHit {| seedChatId = hit.SeedChatId; seedMessageId = hit.SeedMessageId |}
+        match mode with
+        | SpamTextCacheMode.Enforce ->
+            if botConfig.Value.MlSpamDeletionEnabled then
+                do! this.DeleteSpam(msg, botConfig.Value.BotActor, reason)
+            else
+                do! this.ReportPotentialSpam(msg, reason)
+        | SpamTextCacheMode.Shadow ->
+            do! this.ReportPotentialSpam(msg, reason)
+        | SpamTextCacheMode.Off ->
+            ()  // unreachable — ProcessMessage never computes a hit in Off mode
+    }
+
     member private this.ProcessMessage(msg: TgMessage) = task {
         // Records the message exactly once, with whatever enrichment finished
         // by the time we call it. Each branch below calls this at the right
@@ -1201,51 +1251,71 @@ type BotService(
                 %mlActivity.SetTag("ownPhotoOcrAppliedBeforeCheck", msg.OwnPhotoOcrApplied)
                 %mlActivity.SetTag("externalReplyPhotoOcrAppliedBeforeCheck", msg.ExternalReplyPhotoOcrApplied)
 
-                let! confidentSpam = this.PreOcrMlCheck(msg, usrMsgCount)
-                match confidentSpam with
-                | Some score ->
-                    %mlActivity.SetTag("spamScoreMl", score)
-                    %mlActivity.SetTag("preOcrShortCircuit", true)
-                    %mlActivity.SetTag("autoVerdict", "spam")
-                    logger.LogInformation(
-                        "Pre-OCR short-circuit: classified message {MessageId} as spam from text alone (score={Score:F3}); skipping Azure OCR",
-                        msg.MessageId, score)
-                    do! recordMsg()
-                    let reason = MlSpam {| score = score |}
-                    if botConfig.Value.MlSpamDeletionEnabled then
-                        do! this.DeleteSpam(msg, Actor.ML, reason)
+                // Ban-seeded spam-text cache: sits after all the eligibility pre-filters above
+                // (chat allowlist, vahter/admin skip, stop-words — already-banned users are
+                // filtered even earlier, in JustMessage) and BEFORE any ML/LLM/OCR cost, so a hit
+                // short-circuits the model entirely. Old-user immunity reuses the same
+                // usrMsgCount threshold ML uses (design item 5). See SpamTextCache.fs.
+                let spamCacheMode = botConfig.Value.SpamTextCacheMode
+                let spamCacheHit =
+                    if spamCacheMode = SpamTextCacheMode.Off
+                       || isNull msg.Text
+                       || usrMsgCount >= botConfig.Value.MlOldUserMsgCount then
+                        None
                     else
-                        do! this.ReportPotentialSpam(msg, reason)
-                | None ->
-                    %mlActivity.SetTag("preOcrShortCircuit", false)
-                    // Text alone wasn't enough — pay for Azure OCR on the
-                    // cache misses, then re-classify with ML+LLM. Both
-                    // enrichment calls are no-ops when their flag is set
-                    // and they swallow their own exceptions, so OCR
-                    // failures never block the ML classifier from running.
-                    do! this.TryEnrichWithForwardedPhotoOcr(msg)
-                    do! this.TryEnrichWithOcr(msg)
-                    %mlActivity.SetTag("postOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
+                        spamTextCache.TryGet(msg.Text, utcNow())
+                %mlActivity.SetTag("spamTextCacheHit", spamCacheHit.IsSome)
+
+                match spamCacheHit with
+                | Some hit ->
                     do! recordMsg()
-                    let! autoVerdict = this.GetAutoVerdict(msg, usrMsgCount)
-                    match autoVerdict with
-                    | Some (AutoVerdict.Spam (score, actor)) ->
+                    do! this.SpamTextCacheAct(msg, spamCacheMode, hit)
+                | None ->
+                    let! confidentSpam = this.PreOcrMlCheck(msg, usrMsgCount)
+                    match confidentSpam with
+                    | Some score ->
                         %mlActivity.SetTag("spamScoreMl", score)
+                        %mlActivity.SetTag("preOcrShortCircuit", true)
                         %mlActivity.SetTag("autoVerdict", "spam")
+                        logger.LogInformation(
+                            "Pre-OCR short-circuit: classified message {MessageId} as spam from text alone (score={Score:F3}); skipping Azure OCR",
+                            msg.MessageId, score)
+                        do! recordMsg()
                         let reason = MlSpam {| score = score |}
                         if botConfig.Value.MlSpamDeletionEnabled then
-                            do! this.DeleteSpam(msg, actor, reason)
+                            do! this.DeleteSpam(msg, Actor.ML, reason)
                         else
                             do! this.ReportPotentialSpam(msg, reason)
-                    | Some (AutoVerdict.Uncertain score) ->
-                        %mlActivity.SetTag("spamScoreMl", score)
-                        %mlActivity.SetTag("autoVerdict", "uncertain")
-                        do! this.ReportPotentialSpam(msg, MlSpam {| score = score |})
-                    | Some (AutoVerdict.NotSpam (score, _)) ->
-                        %mlActivity.SetTag("spamScoreMl", score)
-                        %mlActivity.SetTag("autoVerdict", "notSpam")
                     | None ->
-                        %mlActivity.SetTag("autoVerdict", "noPrediction")
+                        %mlActivity.SetTag("preOcrShortCircuit", false)
+                        // Text alone wasn't enough — pay for Azure OCR on the
+                        // cache misses, then re-classify with ML+LLM. Both
+                        // enrichment calls are no-ops when their flag is set
+                        // and they swallow their own exceptions, so OCR
+                        // failures never block the ML classifier from running.
+                        do! this.TryEnrichWithForwardedPhotoOcr(msg)
+                        do! this.TryEnrichWithOcr(msg)
+                        %mlActivity.SetTag("postOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
+                        do! recordMsg()
+                        let! autoVerdict = this.GetAutoVerdict(msg, usrMsgCount)
+                        match autoVerdict with
+                        | Some (AutoVerdict.Spam (score, actor)) ->
+                            %mlActivity.SetTag("spamScoreMl", score)
+                            %mlActivity.SetTag("autoVerdict", "spam")
+                            let reason = MlSpam {| score = score |}
+                            if botConfig.Value.MlSpamDeletionEnabled then
+                                do! this.DeleteSpam(msg, actor, reason)
+                            else
+                                do! this.ReportPotentialSpam(msg, reason)
+                        | Some (AutoVerdict.Uncertain score) ->
+                            %mlActivity.SetTag("spamScoreMl", score)
+                            %mlActivity.SetTag("autoVerdict", "uncertain")
+                            do! this.ReportPotentialSpam(msg, MlSpam {| score = score |})
+                        | Some (AutoVerdict.NotSpam (score, _)) ->
+                            %mlActivity.SetTag("spamScoreMl", score)
+                            %mlActivity.SetTag("autoVerdict", "notSpam")
+                        | None ->
+                            %mlActivity.SetTag("autoVerdict", "noPrediction")
 
         // Catch-all: every message that reached ProcessMessage must be recorded.
         // Idempotent — already-recorded branches above no-op here.

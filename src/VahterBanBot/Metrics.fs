@@ -4,6 +4,7 @@ open System
 open System.Collections.Generic
 open System.Diagnostics.Metrics
 open VahterBanBot.Types
+open VahterBanBot.Utils
 
 // Custom metrics
 let meter = new Meter("VahterBanBot.Metrics", "1.0.0")
@@ -28,6 +29,23 @@ let bannedUsersCounter =
         "users",
         "Total number of users banned by vahters"
     )
+
+let spamTextCacheSeedsCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_text_cache_seeds_total",
+        "seeds",
+        "Total number of ban-seeded spam-text cache entries added from manual /ban"
+    )
+
+let spamTextCacheHitsCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_text_cache_hits_total",
+        "hits",
+        "Total number of ban-seeded spam-text cache hits, tagged by mode"
+    )
+
+let tagsForSpamTextCacheMode (mode: SpamTextCacheMode) =
+    [| KeyValuePair("mode", box (caseName mode)) |]
 
 let tagsForChat (chatId: int64) (chatUsername: string) =
     [|

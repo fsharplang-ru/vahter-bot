@@ -200,6 +200,29 @@ type AutoDeleteReason =
     | MlSpam of {| score: float |}
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
+    /// Ban-seeded spam-text cache hit (see SpamTextCache.fs) — the normalized text exactly
+    /// matches a message a vahter manually /banned within the last TTL window. Carries the
+    /// (chatId, messageId) of the seeding ban so a hit can be traced back to its cause.
+    | SpamTextCacheHit of {| seedChatId: int64; seedMessageId: int64 |}
+
+/// Mode for the ban-seeded spam-text cache (SPAM_TEXT_CACHE_MODE) — see SpamTextCache.fs.
+///   Off     — no seeding, no lookup (default).
+///   Shadow  — seed and match, but do NOT delete; report the would-be kill instead.
+///   Enforce — seed and match; a hit takes the same action an ML spam verdict takes.
+/// Qualified access: these are generic English words used as match arms in several files
+/// (Bot.fs, Program.fs) — spelling out SpamTextCacheMode.Enforce etc. keeps call sites
+/// unambiguous even though (unlike LlmVerdict/LlmReactionVerdict) none of the three cases
+/// collides with Error/Ok/None/Some.
+[<RequireQualifiedAccess>]
+type SpamTextCacheMode =
+    | Off
+    | Shadow
+    | Enforce
+    static member FromString(s: string) =
+        match (if isNull s then "" else s.Trim().ToLowerInvariant()) with
+        | "shadow"  -> SpamTextCacheMode.Shadow
+        | "enforce" -> SpamTextCacheMode.Enforce
+        | _         -> SpamTextCacheMode.Off
 
 /// Result of automated spam triage (ML + optional LLM).
 [<RequireQualifiedAccess>]
@@ -424,7 +447,14 @@ type BotConfiguration =
       EphemeralCommandsEnabled: bool
       /// When true, the issuing vahter gets a short self-dismissing ephemeral confirmation
       /// in the chat after /ban, /sban, /unban. Visible only to the issuer.
-      EphemeralConfirmationEnabled: bool }
+      EphemeralConfirmationEnabled: bool
+      // Ban-seeded spam-text cache (SPAM_TEXT_CACHE_MODE / _TTL_HOURS / _MIN_LENGTH) — see
+      // SpamTextCache.fs. All three are env fallbacks (not bot_setting), same rationale as
+      // MlRepeatWeightEnabled / LlmVerdictCacheGlobalEnabled above: silently missing from
+      // `bot_setting` must never mean "wrong config" — see AGENTS.md's Settings configuration.
+      SpamTextCacheMode: SpamTextCacheMode
+      SpamTextCacheTtl: TimeSpan
+      SpamTextCacheMinLength: int }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 

@@ -35,6 +35,15 @@ type CachedUserProfile =
       bio: string
       fetched_at: DateTime }
 
+/// A manual-ban seed for the ban-seeded spam-text cache's startup rehydration
+/// (see SpamTextCache.fs / GetRecentManualBansWithText).
+[<CLIMutable>]
+type ManualBanSeed =
+    { chat_id: int64
+      message_id: int64
+      message_text: string
+      banned_at: DateTime }
+
 [<CLIMutable>]
 type SpamOrHamDb =
     { text: string
@@ -313,6 +322,36 @@ ON CONFLICT DO NOTHING
             else
                 let state = (User.Zero, events) ||> Array.fold (fun s e -> User.Fold(s, e))
                 return Some { state with Id = userId }
+        }
+
+    /// Manual-ban events (Actor.User — vahter-issued /ban or BanOnReply, never ML/LLM/Bot
+    /// auto-bans) with a non-null message text, recorded after `since`. Used ONLY to rehydrate
+    /// the ban-seeded spam-text cache on startup (see SpamTextCache.fs / Program.fs) so a
+    /// deploy/restart doesn't blank it. Not scoped to `stream_id` — a fresh process has no
+    /// per-user starting point, so this scans the `event` table's (event_type, created_at)
+    /// index (idx_event_type) directly.
+    member _.GetRecentManualBansWithText(since: DateTime) : Task<ManualBanSeed array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+
+            //language=postgresql
+            let sql =
+                """
+SELECT (data->>'chatId')::BIGINT    AS chat_id,
+       (data->>'messageId')::BIGINT AS message_id,
+       data->>'messageText'         AS message_text,
+       created_at                   AS banned_at
+FROM event
+WHERE event_type = 'UserBanned'
+  AND data->'actor'->>'Case' = 'User'
+  AND data->>'messageText' IS NOT NULL
+  AND data->>'chatId' IS NOT NULL
+  AND data->>'messageId' IS NOT NULL
+  AND created_at > @since
+                """
+
+            let! rows = conn.QueryAsync<ManualBanSeed>(sql, {| since = since |})
+            return Array.ofSeq rows
         }
 
     // -----------------------------------------------------------------------

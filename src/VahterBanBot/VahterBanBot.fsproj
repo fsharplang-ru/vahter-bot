@@ -10,6 +10,7 @@
     <Compile Include="TgMessage.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="Metrics.fs" />
+    <Compile Include="SpamTextCache.fs" />
     <Compile Include="Telemetry.fs" />
     <Compile Include="DB.fs" />
     <Compile Include="OcrCache.fs" />
