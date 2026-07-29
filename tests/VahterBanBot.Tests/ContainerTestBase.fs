@@ -824,6 +824,15 @@ WHERE chat_id = @chatId AND message_id = @messageId
         return ()
     }
 
+    /// Runs the production `DbService.GetRecentManualBansWithText` query directly against the
+    /// test DB (same construction pattern as RebuildSnapshots above) — used to cover ban-seeded
+    /// spam-text cache startup rehydration without restarting the shared container (see
+    /// SpamTextCacheTests.fs's "Startup rehydration" tests).
+    member this.GetRecentManualBansWithText(since: DateTime) = task {
+        let db = VahterBanBot.DbService(this.DbConnectionString, TimeProvider.System)
+        return! db.GetRecentManualBansWithText(since)
+    }
+
     /// Inserts one event with a controlled created_at, serializing the typed event via eventJsonOpts
     /// (so the 'Case' discriminator / shape match production). For snapshot status-timeline tests.
     member this.InsertRawEvent<'e>(streamId: string, version: int, evt: 'e, createdAt: DateTime) = task {
@@ -932,6 +941,18 @@ type MlEnabledVahterTestContainers() =
 /// per-sender-for-every-verdict behavior (LlmVerdictCacheGlobalFlagTests).
 type LlmVerdictCacheGlobalDisabledTestContainers() =
     inherit MlPreloadedVahterTestContainers(["LLM_VERDICT_CACHE_GLOBAL_ENABLED", "false"])
+
+/// Ban-seeded spam-text cache in `enforce` mode (SPAM_TEXT_CACHE_MODE is env-only — see
+/// AGENTS.md's Settings configuration — so, like LLM_VERDICT_CACHE_GLOBAL_ENABLED above, it can
+/// only be exercised via a dedicated container, not a mid-suite bot_setting write + reload).
+/// ML_SPAM_DELETION_ENABLED is already "true" in the shared ML settings, so a cache hit deletes.
+type SpamTextCacheEnforceTestContainers() =
+    inherit MlPreloadedVahterTestContainers(["SPAM_TEXT_CACHE_MODE", "enforce"])
+
+/// Same as SpamTextCacheEnforceTestContainers but in `shadow` mode — a cache hit is reported to
+/// the Potential Spam channel and NOT deleted.
+type SpamTextCacheShadowTestContainers() =
+    inherit MlPreloadedVahterTestContainers(["SPAM_TEXT_CACHE_MODE", "shadow"])
 
 /// Variant that DELIBERATELY skips fixture preload to exercise the production training pipeline
 /// end-to-end. Used by MLTrainingPipelineTests as a smoke test that training still produces a

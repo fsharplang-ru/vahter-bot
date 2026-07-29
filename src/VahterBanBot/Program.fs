@@ -14,6 +14,7 @@ open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.OcrCache
 open VahterBanBot.LlmVerdictCache
+open VahterBanBot.SpamTextCache
 open VahterBanBot.LlmTriage
 open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
@@ -146,7 +147,13 @@ let buildBotConf () =
       BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int
       // Ephemeral commands & confirmations (Bot API 10.2)
       EphemeralCommandsEnabled     = getSettingOr "EPHEMERAL_COMMANDS_ENABLED" "false" |> bool.Parse
-      EphemeralConfirmationEnabled = getSettingOr "EPHEMERAL_CONFIRMATION_ENABLED" "false" |> bool.Parse }
+      EphemeralConfirmationEnabled = getSettingOr "EPHEMERAL_CONFIRMATION_ENABLED" "false" |> bool.Parse
+      // Ban-seeded spam-text cache. Env fallbacks (not bot_setting) — see AGENTS.md's Settings
+      // configuration section and SpamTextCache.fs. Default "off": inert until explicitly turned
+      // on; recommended rollout is shadow first, review the reported would-be kills, then enforce.
+      SpamTextCacheMode = getEnvOr "SPAM_TEXT_CACHE_MODE" "off" |> SpamTextCacheMode.FromString
+      SpamTextCacheTtl = getEnvOr "SPAM_TEXT_CACHE_TTL_HOURS" "24" |> float |> TimeSpan.FromHours
+      SpamTextCacheMinLength = getEnvOr "SPAM_TEXT_CACHE_MIN_LENGTH" "40" |> int }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled
@@ -182,6 +189,9 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<DbService>(fun sp ->
         DbService(connString, sp.GetRequiredService<TimeProvider>()))
     .AddSingleton<IOcrCache>(fun _ -> OcrCacheRepository(connString) :> IOcrCache)
+    // In-process (no table, no migration — see SpamTextCache.fs); one instance for the process
+    // lifetime, rehydrated from recent manual bans below once the host is built.
+    .AddSingleton<ISpamTextCache>(fun _ -> SpamTextCache() :> ISpamTextCache)
     // Reload hook: lets admin commands publish bot_setting changes without a restart
     .AddSingleton<ISettingsReloader>({ new ISettingsReloader with
         member _.Reload() = task { reloadSettings() } :> Task })
@@ -224,6 +234,31 @@ let startupBotConf = botConfOptions.Value
 // NOTE(project-agent): intentional blocking call. One-time startup seeding after the host is
 // built but before it runs; ASP.NET Core has no SynchronizationContext so this cannot deadlock.
 (app.Services.GetRequiredService<DbService>().UpsertUser(startupBotConf.BotUserId, Some startupBotConf.BotUserName)).Result |> ignore
+
+// Rehydrate the ban-seeded spam-text cache from the last TTL window's worth of manual-ban
+// events so a deploy/restart doesn't start it blank (see SpamTextCache.fs). Skipped entirely in
+// Off mode. Uses the same TimeProvider as the rest of the app (not DateTime.UtcNow) so a fixed
+// clock (BOT_FIXED_UTC_NOW, test-only) is honored consistently.
+if startupBotConf.SpamTextCacheMode <> SpamTextCacheMode.Off then
+    let spamTextCacheLogger = app.Services.GetRequiredService<ILogger<Root>>()
+    // NOTE: intentional blocking call — same justification as the UpsertUser call above.
+    let seededCount, candidateCount =
+        (task {
+            let spamTextCache = app.Services.GetRequiredService<ISpamTextCache>()
+            let db = app.Services.GetRequiredService<DbService>()
+            let now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime
+            let! seeds = db.GetRecentManualBansWithText(now - startupBotConf.SpamTextCacheTtl)
+            let mutable count = 0
+            for seed in seeds do
+                if spamTextCache.Seed(
+                        seed.message_text, startupBotConf.SpamTextCacheMinLength, startupBotConf.SpamTextCacheTtl,
+                        seed.chat_id, seed.message_id, seed.banned_at) then
+                    count <- count + 1
+            return count, seeds.Length
+        }).GetAwaiter().GetResult()
+    spamTextCacheLogger.LogInformation(
+        "Spam-text cache rehydrated {SeededCount}/{CandidateCount} seeds (>= min length) from manual bans in the last {TtlHours}h",
+        seededCount, candidateCount, startupBotConf.SpamTextCacheTtl.TotalHours)
 
 // Readiness check for ML model (used by startupProbe)
 %app.MapGet("/ready", Func<HttpContext, IResult>(fun ctx ->

@@ -33,6 +33,7 @@
         <Compile Include="AdminCommandTests.fs" />
         <Compile Include="AdminChannelMessageTests.fs" />
         <Compile Include="SnapshotTests.fs" />
+        <Compile Include="SpamTextCacheTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 
