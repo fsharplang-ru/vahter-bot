@@ -4,10 +4,11 @@ open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
 
-/// Exercises the LLM_VERDICT_CACHE_GLOBAL_ENABLED=false escape hatch (env-only — see
-/// Program.fs's buildBotConf doc comment) against a SEPARATE container
-/// (LlmVerdictCacheGlobalDisabledTestContainers), since the flag is an app env var fixed at
-/// container startup, not a hot-reloadable bot_setting.
+/// Exercises the LLM_VERDICT_CACHE_GLOBAL_ENABLED=false escape hatch against a SEPARATE
+/// container (LlmVerdictCacheGlobalDisabledTestContainers), since the flag is fixed for the
+/// whole container's lifetime via a seeded bot_setting row rather than being flipped mid-run.
+/// (The flag itself is a hot-reloadable bot_setting in production — see Program.fs's
+/// buildBotConf — this test just avoids racing it against other tests sharing a container.)
 ///
 /// With the flag off, the verdict cache reverts fully to its pre-PR behavior: every verdict,
 /// including SPAM/SKIP, is scoped per-sender only — two different senders with identical text
