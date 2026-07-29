@@ -393,11 +393,12 @@ type BotConfiguration =
       /// GROUP BY dedup in MlData) share that exact text — restoring the spam-campaign-repetition
       /// signal the GROUP BY otherwise erases (measured: it drops 70.6% of spam rows vs only 14.1%
       /// of ham rows). Combines multiplicatively with MlWeightDecayK's time-decay weight — see
-      /// ML.fs's combineWeight. Env fallback (not DB-only) so it can never be silently wrong from
-      /// a missing bot_setting row — see AGENTS.md's Settings configuration section.
+      /// ML.fs's combineWeight. bot_setting-backed with a code default, so it is tunable by SQL
+      /// and hot-reloadable via POST /reload-settings, and a missing row falls back to the default
+      /// rather than being silently wrong — see AGENTS.md's Settings configuration section.
       MlRepeatWeightEnabled: bool
       /// Cap on the repeat-count weight multiplier from MlRepeatWeightEnabled (applied in the
-      /// MlData SQL's LEAST(COUNT(*), @repeatWeightCap)). Also env-fallback.
+      /// MlData SQL's LEAST(COUNT(*), @repeatWeightCap)). Also bot_setting-backed with a default.
       MlRepeatWeightCap: int
       /// Users with >= this many unique messages are immune from ML/LLM triage.
       MlOldUserMsgCount: int
@@ -425,8 +426,9 @@ type BotConfiguration =
       /// text across many accounts is deduped after the first classification instead of once per
       /// account. NOT_SPAM always stays per-sender regardless of this flag (see LlmTriage.fs's
       /// module doc comment for the safety argument). Escape hatch to revert to fully per-sender
-      /// caching for every verdict without a redeploy; env-only (not DB-only) so it can never be
-      /// silently wrong from a missing `bot_setting` row — see Program.fs's buildBotConf.
+      /// caching for every verdict without a redeploy; bot_setting-backed with a code default, so
+      /// it is tunable by SQL and hot-reloadable, and a missing row falls back to the default
+      /// rather than being silently wrong — see Program.fs's buildBotConf.
       LlmVerdictCacheGlobalEnabled: bool
       // Reaction-spam triage (vision LLM)
       /// When true, LLM verdict acts autonomously (UNSURE falls through to vahter).
@@ -449,9 +451,9 @@ type BotConfiguration =
       /// in the chat after /ban, /sban, /unban. Visible only to the issuer.
       EphemeralConfirmationEnabled: bool
       // Ban-seeded spam-text cache (SPAM_TEXT_CACHE_MODE / _TTL_HOURS / _MIN_LENGTH) — see
-      // SpamTextCache.fs. All three are env fallbacks (not bot_setting), same rationale as
-      // MlRepeatWeightEnabled / LlmVerdictCacheGlobalEnabled above: silently missing from
-      // `bot_setting` must never mean "wrong config" — see AGENTS.md's Settings configuration.
+      // SpamTextCache.fs. All three are bot_setting-backed, tunable by SQL and hot-reloadable
+      // via POST /reload-settings, so the intended rollout (off -> shadow -> enforce) doesn't
+      // require a redeploy — see AGENTS.md's Settings configuration section.
       SpamTextCacheMode: SpamTextCacheMode
       SpamTextCacheTtl: TimeSpan
       SpamTextCacheMinLength: int }

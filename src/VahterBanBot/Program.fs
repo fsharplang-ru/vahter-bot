@@ -114,10 +114,8 @@ let buildBotConf () =
       MlCustomEmojiThreshold = getSettingOr "ML_CUSTOM_EMOJI_THRESHOLD" "20" |> int
       MlStopWordsInChats = getSettingOr "ML_STOP_WORDS_IN_CHATS" "{}" |> fromJson
       MlWeightDecayK = getSettingOr "ML_WEIGHT_DECAY_K" "0" |> float
-      // Env fallback (not bot_setting) so these can never be silently wrong from a missing DB
-      // row — see the Settings configuration section of AGENTS.md. Default enabled, cap 100.
-      MlRepeatWeightEnabled = getEnvOr "ML_REPEAT_WEIGHT_ENABLED" "true" |> bool.Parse
-      MlRepeatWeightCap = getEnvOr "ML_REPEAT_WEIGHT_CAP" "100" |> int
+      MlRepeatWeightEnabled = getSettingOr "ML_REPEAT_WEIGHT_ENABLED" "true" |> bool.Parse
+      MlRepeatWeightCap = getSettingOr "ML_REPEAT_WEIGHT_CAP" "100" |> int
       MlOldUserMsgCount = getSettingOr "ML_OLD_USER_MSG_COUNT" "50" |> int
       // Reaction spam detection
       ReactionSpamEnabled = getSettingOr "REACTION_SPAM_ENABLED" "false" |> bool.Parse
@@ -136,9 +134,7 @@ let buildBotConf () =
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
       LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
-      // Env fallback (not bot_setting) so this can never be silently wrong from a missing DB row —
-      // see the Settings configuration section of AGENTS.md. Default enabled.
-      LlmVerdictCacheGlobalEnabled = getEnvOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
+      LlmVerdictCacheGlobalEnabled = getSettingOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
       // Reaction-spam triage (vision LLM)
       LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
       LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse
@@ -148,12 +144,12 @@ let buildBotConf () =
       // Ephemeral commands & confirmations (Bot API 10.2)
       EphemeralCommandsEnabled     = getSettingOr "EPHEMERAL_COMMANDS_ENABLED" "false" |> bool.Parse
       EphemeralConfirmationEnabled = getSettingOr "EPHEMERAL_CONFIRMATION_ENABLED" "false" |> bool.Parse
-      // Ban-seeded spam-text cache. Env fallbacks (not bot_setting) — see AGENTS.md's Settings
-      // configuration section and SpamTextCache.fs. Default "off": inert until explicitly turned
-      // on; recommended rollout is shadow first, review the reported would-be kills, then enforce.
-      SpamTextCacheMode = getEnvOr "SPAM_TEXT_CACHE_MODE" "off" |> SpamTextCacheMode.FromString
-      SpamTextCacheTtl = getEnvOr "SPAM_TEXT_CACHE_TTL_HOURS" "24" |> float |> TimeSpan.FromHours
-      SpamTextCacheMinLength = getEnvOr "SPAM_TEXT_CACHE_MIN_LENGTH" "40" |> int }
+      // Ban-seeded spam-text cache. Default "off": inert until explicitly turned on; recommended
+      // rollout is off -> shadow -> enforce, tuned live via bot_setting (no redeploy needed) —
+      // see AGENTS.md's Settings configuration section and SpamTextCache.fs.
+      SpamTextCacheMode = getSettingOr "SPAM_TEXT_CACHE_MODE" "off" |> SpamTextCacheMode.FromString
+      SpamTextCacheTtl = getSettingOr "SPAM_TEXT_CACHE_TTL_HOURS" "24" |> float |> TimeSpan.FromHours
+      SpamTextCacheMinLength = getSettingOr "SPAM_TEXT_CACHE_MIN_LENGTH" "40" |> int }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled
