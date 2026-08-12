@@ -12,6 +12,7 @@
     <Compile Include="RawJsonDestructuringTests.fs" />
     <Compile Include="ParseUpdateTests.fs" />
     <Compile Include="RichMessageFlattenTests.fs" />
+    <Compile Include="ContentFilterDetectionTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

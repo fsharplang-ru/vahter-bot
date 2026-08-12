@@ -975,6 +975,14 @@ type MlEnabledVahterTestContainers() =
 type LlmVerdictCacheGlobalDisabledTestContainers() =
     inherit MlPreloadedVahterTestContainers([], ["LLM_VERDICT_CACHE_GLOBAL_ENABLED", "false", "FEATURE_FLAG", "LLM"])
 
+/// Same container/settings as MlEnabledVahterTestContainers, except LLM_CONTENT_FILTER_IS_SPAM is
+/// forced off — used to assert the escape hatch reverts an Azure content_filter rejection to the
+/// pre-fix Uncertain/human-review fallback instead of SPAM (LlmContentFilterTests). Dedicated
+/// container per the same rationale as LlmVerdictCacheGlobalDisabledTestContainers above: the flag
+/// is fixed for this container's whole lifetime via a seeded bot_setting row, not flipped mid-run.
+type LlmContentFilterDisabledTestContainers() =
+    inherit MlPreloadedVahterTestContainers([], ["LLM_CONTENT_FILTER_IS_SPAM", "false", "FEATURE_FLAG", "LLM"])
+
 /// Ban-seeded spam-text cache in `enforce` mode. SPAM_TEXT_CACHE_MODE is a bot_setting (fixed
 /// for this container's whole lifetime via a seeded row, not flipped mid-suite, to avoid racing
 /// it against other tests sharing a container) — like LLM_VERDICT_CACHE_GLOBAL_ENABLED above, it

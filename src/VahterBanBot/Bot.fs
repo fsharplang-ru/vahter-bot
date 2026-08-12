@@ -258,6 +258,7 @@ module private BotHelpers =
         | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
         | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
         | AutoDeleteReason.SpamTextCacheHit r  -> $"{prefix}spam-text cache hit, seeded by ban of {r.seedChatId}/{r.seedMessageId}"
+        | AutoDeleteReason.ContentFilterSpam r -> $"{prefix}Azure content policy filter, score: {r.score}, triggers: {r.triggers}"
 
     let selectLargestPhoto (photos: PhotoSize array) =
         let withSize = photos |> Array.filter (fun p -> p.FileSize.IsSome)
@@ -1124,7 +1125,17 @@ type BotService(
                     return Some (AutoVerdict.Spam (float prediction.Score, actor))
                 | LlmVerdict.NotSpam ->
                     return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}))
-                | LlmVerdict.Skip | LlmVerdict.Error ->
+                | LlmVerdict.ContentFiltered triggers when botConfig.Value.LlmContentFilterIsSpam ->
+                    // Azure's RAI policy rejected the prompt as severely harmful, on a message the
+                    // ML model already flagged as suspicious — treat it as a high-confidence SPAM
+                    // signal, but as the DISTINCT ContentFilterSpam case (not Spam) so every
+                    // human-facing rendering says "Azure content filter" + which category fired,
+                    // instead of looking like an ordinary LLM SPAM verdict. Escape hatch:
+                    // LLM_CONTENT_FILTER_IS_SPAM=false falls through to the Skip/Error/
+                    // ContentFiltered branch below instead.
+                    let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
+                    return Some (AutoVerdict.ContentFilterSpam (float prediction.Score, actor, triggers))
+                | LlmVerdict.Skip | LlmVerdict.Error | LlmVerdict.ContentFiltered _ ->
                     return Some (AutoVerdict.Uncertain (float prediction.Score))
             else
                 return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.ML))
@@ -1306,15 +1317,25 @@ type BotService(
                         %mlActivity.SetTag("postOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
                         do! recordMsg()
                         let! autoVerdict = this.GetAutoVerdict(msg, usrMsgCount)
-                        match autoVerdict with
-                        | Some (AutoVerdict.Spam (score, actor)) ->
-                            %mlActivity.SetTag("spamScoreMl", score)
-                            %mlActivity.SetTag("autoVerdict", "spam")
-                            let reason = MlSpam {| score = score |}
+                        // Shared by AutoVerdict.Spam and AutoVerdict.ContentFilterSpam below — both
+                        // take the EXACT SAME delete/report enforcement gating; only the `reason`
+                        // (and hence formatReasonStr's rendering) differs between the two arms.
+                        let enforceSpam (actor: Actor) (reason: AutoDeleteReason) = task {
                             if botConfig.Value.MlSpamDeletionEnabled then
                                 do! this.DeleteSpam(msg, actor, reason)
                             else
                                 do! this.ReportPotentialSpam(msg, reason)
+                        }
+                        match autoVerdict with
+                        | Some (AutoVerdict.Spam (score, actor)) ->
+                            %mlActivity.SetTag("spamScoreMl", score)
+                            %mlActivity.SetTag("autoVerdict", "spam")
+                            do! enforceSpam actor (MlSpam {| score = score |})
+                        | Some (AutoVerdict.ContentFilterSpam (score, actor, triggers)) ->
+                            %mlActivity.SetTag("spamScoreMl", score)
+                            %mlActivity.SetTag("autoVerdict", "contentFilterSpam")
+                            %mlActivity.SetTag("contentFilterTriggers", triggers)
+                            do! enforceSpam actor (AutoDeleteReason.ContentFilterSpam {| score = score; triggers = triggers |})
                         | Some (AutoVerdict.Uncertain score) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "uncertain")
