@@ -133,6 +133,110 @@ let private parseVerdictAndReason (logger: ILogger) (content: string) =
         logger.LogWarning(ex, "Failed to parse reaction-triage content. Raw: {Body}", content)
         None
 
+// ── content_filter detection (shared by both triage paths) ────────────────────
+//
+// Azure's RAI (Responsible AI) policy can reject a chat-completion request outright with HTTP
+// 400, error code "content_filter", when it judges the PROMPT itself severely harmful — e.g.
+// incident aea4d561848519ad948d5d54eaea1b38 (2026-08-12): a spam photo whose OCR-appended text
+// advertised CSAM categories. The response's `error.innererror` carries `content_filter_result`
+// (per-category severity) and jailbreak/protected-material flags — none of which survive into
+// `ClientResultException.Message`, so callers must go through `ex.GetRawResponse()` to recover
+// them for logging.
+
+/// Raw Azure error-response body for a `ClientResultException`, when the SDK still has it
+/// buffered (it always does for a synchronously-thrown HTTP failure — `None` only guards
+/// against a future SDK version that frees the response before throwing).
+let private tryGetRawResponseBody (ex: ClientResultException) : string option =
+    try
+        match ex.GetRawResponse() with
+        | null -> None
+        | resp ->
+            match resp.Content with
+            | null -> None
+            | content -> Some (content.ToString())
+    with _ -> None
+
+/// Best-effort extraction of `error.code` from a raw Azure error-response body.
+let private tryParseErrorCode (body: string) =
+    try
+        use doc = JsonDocument.Parse(body)
+        match doc.RootElement.TryGetProperty("error") with
+        | true, err ->
+            match err.TryGetProperty("code") with
+            | true, c when c.ValueKind = JsonValueKind.String -> Some (c.GetString())
+            | _ -> None
+        | _ -> None
+    with _ -> None
+
+/// Detects Azure's "content_filter" rejection: HTTP 400 with `error.code = "content_filter"`.
+/// Prefers parsing `rawBody` (from `tryGetRawResponseBody`) over substring-matching the
+/// exception message, since the raw body is where `innererror`/`content_filter_result` live;
+/// falls back to matching `exMessage` only when `rawBody` itself could not be recovered. Pulled
+/// out as a pure function (status/body/message in, bool out) so it is unit-testable without
+/// constructing a real `ClientResultException`.
+let isContentFilterRejection (status: int) (rawBody: string option) (exMessage: string) : bool =
+    status = 400 &&
+    match rawBody with
+    | Some body -> tryParseErrorCode body = Some "content_filter"
+    | None      -> exMessage.Contains("content_filter")
+
+/// Compact human-readable summary of which category (per `error.innererror.content_filter_result`)
+/// actually fired, e.g. `"sexual=high, jailbreak"`. Only entries with `filtered=true` or
+/// `detected=true` are included — a category present with `filtered=false` is not a trigger.
+/// Entries carrying a `severity` (the four content categories: hate/self_harm/sexual/violence)
+/// render as `"{category}={severity}"`; entries that only carry `detected` (jailbreak,
+/// protected_material_text/code) render as bare `"{category}"`. Never throws — a missing/
+/// unparsable body or `innererror`/`content_filter_result` falls back to a fixed placeholder
+/// string, since a parse hiccup here must never break the (already-handled) content_filter flow.
+let extractContentFilterTriggers (rawBody: string option) : string =
+    let fallback = "unknown (no content_filter_result in response)"
+    try
+        match rawBody with
+        | None -> fallback
+        | Some body ->
+            use doc = JsonDocument.Parse(body)
+            match doc.RootElement.TryGetProperty("error") with
+            | false, _ -> fallback
+            | true, err ->
+                match err.TryGetProperty("innererror") with
+                | false, _ -> fallback
+                | true, inner ->
+                    match inner.TryGetProperty("content_filter_result") with
+                    | false, _ -> fallback
+                    | true, result when result.ValueKind = JsonValueKind.Object ->
+                        let triggers =
+                            result.EnumerateObject()
+                            |> Seq.choose (fun prop ->
+                                let obj = prop.Value
+                                let isFiltered =
+                                    match obj.TryGetProperty("filtered") with
+                                    | true, f when f.ValueKind = JsonValueKind.True -> true
+                                    | _ -> false
+                                let isDetected =
+                                    match obj.TryGetProperty("detected") with
+                                    | true, d when d.ValueKind = JsonValueKind.True -> true
+                                    | _ -> false
+                                if not (isFiltered || isDetected) then None
+                                else
+                                    match obj.TryGetProperty("severity") with
+                                    | true, s when s.ValueKind = JsonValueKind.String -> Some $"{prop.Name}={s.GetString()}"
+                                    | _ -> Some prop.Name)
+                            |> String.concat ", "
+                        if triggers = "" then fallback else triggers
+                    | true, _ -> fallback
+    with _ -> fallback
+
+/// Logs the raw Azure error-response body once, at Warning (this is now a handled signal, not
+/// an unexpected fault) — joined to the rest of the request's logs by TraceId, per the "log the
+/// payload once" house pattern. `pathLabel` distinguishes text triage from reaction triage in
+/// the log line/Loki without needing two near-identical call sites. `triggers` is the
+/// `extractContentFilterTriggers` summary — carried as its own structured property so it's
+/// grep/filterable in Loki without parsing the raw body every time.
+let private logContentFilterRejection (logger: ILogger) (pathLabel: string) (triggers: string) (rawBody: string option) =
+    logger.LogWarning(
+        "{TriagePath} content_filter rejection (HTTP 400): Azure RAI policy flagged the prompt as harmful. Triggers: {ContentFilterTriggers}. Raw response: {RawResponseBody}",
+        pathLabel, triggers, defaultArg rawBody "(raw response body unavailable)")
+
 // ── Interface + implementation ────────────────────────────────────────────────
 
 type ILlmTriage =
@@ -247,17 +351,35 @@ Message:
                 return LlmVerdict.Error
         with
         | :? ClientResultException as ex ->
-            // Retries are exhausted by the time the SDK throws. Either way we fail safe:
-            // Error routes the message to human review rather than letting it through.
+            // Retries are exhausted by the time the SDK throws (429s aside). Three outcomes:
+            //  - 429: expected sustained throttling — Error routes the message to human review.
+            //  - 400 content_filter: a HANDLED signal (see below), not a fault — ContentFiltered,
+            //    which Bot.fs's GetAutoVerdict turns into SPAM (or, with LLM_CONTENT_FILTER_IS_SPAM
+            //    off, the same human-review fallback as Error).
+            //  - anything else (other 400s, 401, 5xx, …): a real fault — Error routes the message
+            //    to human review, same as before.
             sw.Stop()
+            let rawBody = tryGetRawResponseBody ex
             if ex.Status = 429 then
                 // Expected: sustained throttling after the retry budget. Not actionable on its own.
                 logger.LogWarning(ex, "LLM triage throttled (429) after retries; routing to human review")
+                return LlmVerdict.Error
+            elif isContentFilterRejection ex.Status rawBody ex.Message then
+                // Azure's RAI policy rejected the PROMPT itself as severely harmful. LLM triage
+                // only runs when the ML score is already in the warning band, so this is
+                // corroboration, not noise — treat it as a high-confidence SPAM signal. Log once
+                // at Warning with the raw Azure response body verbatim (that's where
+                // content_filter_result/innererror — per-category severity, jailbreak/
+                // protected-material flags — live; the exception Message alone omits them).
+                let triggers = extractContentFilterTriggers rawBody
+                logContentFilterRejection logger "LLM triage" triggers rawBody
+                return LlmVerdict.ContentFiltered triggers
             else
-                // Unexpected: 400 content_filter, 401, 5xx, … — a real fault that needs attention,
-                // not a routine throttle. Surface it at Error so it isn't lost in warning noise.
+                // Unexpected: other 400s, 401, 5xx, … — a real fault that needs attention, not a
+                // routine throttle or a handled content-filter case. Surface it at Error so it
+                // isn't lost in warning noise.
                 logger.LogError(ex, "LLM triage UNEXPECTED ERROR: HTTP {Status}", ex.Status)
-            return LlmVerdict.Error
+                return LlmVerdict.Error
         | ex ->
             sw.Stop()
             logger.LogWarning(ex, "LLM triage call failed")
@@ -481,11 +603,18 @@ Respond with strict JSON: {"verdict":"BAN"|"SPAM"|"NOT_SPAM"|"UNSURE", "reason":
             | :? ClientResultException as ex ->
                 // Record the real status, not a generic "exception".
                 sw.Stop()
+                let rawBody = tryGetRawResponseBody ex
                 if ex.Status = 429 then
                     // Expected: fail-fast throttle (this classifier runs with 0 retries by design).
                     logger.LogWarning(ex, "Reaction triage throttled (429) after {LatencyMs}ms", sw.ElapsedMilliseconds)
+                elif isContentFilterRejection ex.Status rawBody ex.Message then
+                    // 400 content_filter (e.g. a flagged profile photo) — verdict behavior is
+                    // UNCHANGED here (still falls through to LlmReactionVerdict.Error below, same
+                    // as any other failure); only the logging improves, so a future incident shows
+                    // which category/severity/jailbreak flag fired instead of a bare "HTTP 400".
+                    logContentFilterRejection logger "Reaction triage" (extractContentFilterTriggers rawBody) rawBody
                 else
-                    // Unexpected: 400 content_filter (e.g. a flagged profile photo), 401, 5xx, … — needs attention.
+                    // Unexpected: other 400s, 401, 5xx, … — needs attention.
                     logger.LogError(ex, "Reaction triage UNEXPECTED ERROR: HTTP {Status} after {LatencyMs}ms", ex.Status, sw.ElapsedMilliseconds)
                 let reason = sprintf "HTTP %d" ex.Status
                 do! db.RecordLlmReactionTriageClassified(
