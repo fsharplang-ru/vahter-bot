@@ -60,10 +60,19 @@ type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, 
                 | Some (have, c) when have = want -> c
                 | _ ->
                     let opts = ImageAnalysisClientOptions()
-                    // Bounded retry to fit a webhook handler: 1 retry, 2s per-attempt (NetworkTimeout).
-                    // Honors Retry-After on 429. ~2s + backoff + 2s well under Telegram's webhook timeout.
+                    // Bounded retry to fit a webhook handler: 1 retry, 3s per-attempt (NetworkTimeout).
+                    // Honors Retry-After on 429. ~3s + backoff + 3s well under Telegram's webhook timeout.
+                    // Raised from 2s after a 2026-08-12 prod incident: a single "Failed to reach Azure
+                    // OCR" TaskCanceledException hit exactly the 2s NetworkTimeout boundary (TLS-read
+                    // stall, not slow OCR — direct calls to the same endpoint with the same production
+                    // key measured 130-230ms end-to-end, well under even the old 2s). 2s left almost no
+                    // margin above observed latency to absorb a brief network hiccup; 3s keeps the same
+                    // shape (still a small multiple of real-world latency) with 50% more slack, and
+                    // stays well clear of the 10s Azure-stall constant CouponHubBot.Tests' OCR-timeout
+                    // fixtures (FakeAzureOcrApi "timeout" error mode) rely on to force both attempts to
+                    // time out.
                     opts.Retry.MaxRetries <- 1
-                    opts.Retry.NetworkTimeout <- TimeSpan.FromSeconds 2.
+                    opts.Retry.NetworkTimeout <- TimeSpan.FromSeconds 3.
                     if not (isNull (box transport)) then
                         opts.Transport <- transport
                     let c = ImageAnalysisClient(endpointBase endpoint, AzureKeyCredential(key), opts)
