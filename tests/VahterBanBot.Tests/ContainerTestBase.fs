@@ -744,6 +744,21 @@ WHERE event_type = 'MessageMarkedHam'
         return count > 0
     }
 
+    /// The `markedBy` moderator id recorded on the MessageMarkedHam event for (chatId, messageId), if any.
+    member this.MessageMarkedHamBy(chatId: int64, messageId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT (data->>'markedBy')::BIGINT FROM event
+WHERE event_type = 'MessageMarkedHam'
+  AND (data->>'chatId')::BIGINT = @chatId
+  AND (data->>'messageId')::INT  = @messageId
+            """
+        let! values = conn.QueryAsync<Nullable<int64>>(sql, {| chatId = chatId; messageId = messageId |})
+        return values |> Seq.tryHead |> Option.bind Option.ofNullable
+    }
+
     /// True if a MessageMarkedSpam event exists for the given (chatId, messageId).
     member this.MessageMarkedSpam(chatId: int64, messageId: int64) = task {
         use conn = new NpgsqlConnection(this.DbConnectionString)
