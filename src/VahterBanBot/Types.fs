@@ -460,40 +460,6 @@ type BotConfiguration =
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 
-[<CLIMutable>]
-type VahterStat =
-    { Vahter: string
-      KillCountTotal: int
-      KillCountInterval: int }
-
-type VahterStats =
-    { stats: VahterStat array
-      interval: TimeSpan option }
-    override this.ToString() =
-        let sb = StringBuilder()
-        if this.stats.Length > 0 then
-            if this.interval.IsSome then
-                let intervalKills =
-                    this.stats
-                    |> Array.filter (fun x -> x.KillCountInterval > 0)
-                    
-                if intervalKills.Length > 0 then
-                    %sb.AppendLine $"Vahter stats for the last {timeSpanAsHumanReadable this.interval.Value}:"
-                    
-                    intervalKills
-                    |> Array.sortByDescending (fun x -> x.KillCountInterval)
-                    |> Array.iteri (fun i stat ->
-                        %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountInterval}")
-                else
-                    %sb.AppendLine $"No one was killed in the last {timeSpanAsHumanReadable this.interval.Value}"
-                
-            %sb.AppendLine "Vahter stats all time:"
-            this.stats
-            |> Array.sortByDescending (fun x -> x.KillCountTotal)
-            |> Array.iteri (fun i stat ->
-                %sb.AppendLine $"%d{i+1} {prependUsername stat.Vahter} - {stat.KillCountTotal}")
-        sb.ToString()
-
 // used as aux type to possibly extend in future without breaking changes
 type MessageWrapper= { message: Funogram.Telegram.Types.Message }
 

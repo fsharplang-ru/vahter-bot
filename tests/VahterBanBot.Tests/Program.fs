@@ -9,9 +9,9 @@ open VahterBanBot.Tests.ContainerTestBase
 ///
 /// WHY THIS IS NEEDED:
 /// Tests share a single database instance (via Testcontainers) and some tests mutate
-/// global state — specifically the `false_positive_messages` and `false_negative_messages`
-/// tables. The karma calculation query in DB.getUserStatsByLastNMessages joins against
-/// these tables, so rows inserted by one test can change the spam/ham classification
+/// global state — specifically the `event` table's `MessageMarkedSpam`/`MessageMarkedHam`
+/// events. The karma calculation query in DB.getUserStatsByLastNMessages reads these
+/// events, so rows inserted by one test can change the spam/ham classification
 /// for messages in a completely different test.
 ///
 /// xUnit v3's DefaultTestCaseOrderer uses a hash-based "unpredictable but stable" order

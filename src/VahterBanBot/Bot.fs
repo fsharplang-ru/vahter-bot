@@ -227,7 +227,15 @@ module private BotHelpers =
                 | Ok (chatUsername, chatId) ->
                     sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - OK")
                 | Error (chatUsername, chatId, e) ->
-                    logger.LogError($"Failed to {resultType} user {sanitizedUsername} ({targetUserId}) in chat {prependUsername chatUsername} ({chatId})", e)
+                    let failMsg = $"Failed to {resultType} user {sanitizedUsername} ({targetUserId}) in chat {prependUsername chatUsername} ({chatId})"
+                    // Telegram's own antispam can hard-delete a spammer's account before we get to ban
+                    // them in this chat, surfacing as 400 PARTICIPANT_ID_INVALID — that's an expected
+                    // outcome, not a bot bug, so it must not trip error-rate alerts.
+                    match e with
+                    | TelegramApiException err when err.ErrorCode = 400 && err.Description.Contains "PARTICIPANT_ID_INVALID" ->
+                        logger.LogWarning(failMsg, e)
+                    | _ ->
+                        logger.LogError(failMsg, e)
                     sb.AppendLine($"{prependUsername chatUsername} ({chatId}) - FAILED. {e.Message}")
             ) |> ignore
         string logMsgBuilder
@@ -1900,6 +1908,9 @@ type BotService(
     // Private members — Callback handling
     // -----------------------------------------------------------------------
 
+    /// Deliberately reverses only the spam *classification* (records ham for ML retraining) —
+    /// it does not unban the user. Unbans are rare and intentionally stay manual via /unban
+    /// (owner decision 2026-08-12, issue #356).
     member private this.VahterMarkedAsNotSpam(vahter: User, tgMsg: TgMessage) = task {
         let msgId = tgMsg.MessageId
         let chatId = tgMsg.ChatId
@@ -1909,7 +1920,7 @@ type BotService(
                 .StartActivity("vahterMarkedAsNotSpam")
                 .SetTag("messageId", msgId)
                 .SetTag("chatId", chatId)
-        do! db.RecordMessageMarkedHam(chatId, msgId, (if isNull tgMsg.Text then "" else tgMsg.Text), None)
+        do! db.RecordMessageMarkedHam(chatId, msgId, (if isNull tgMsg.Text then "" else tgMsg.Text), Some vahter.Id)
 
         let vahterUsername = vahter.Username |> Option.defaultValue null
 

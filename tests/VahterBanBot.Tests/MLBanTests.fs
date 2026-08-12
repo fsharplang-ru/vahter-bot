@@ -153,6 +153,11 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // CRITICAL: assert user is still NOT banned after NOT SPAM button
         let! userBanned = fixture.UserBanned msgUpdate.Message.Value.From.Value.Id
         Assert.False userBanned
+        // the clicking vahter must be attributed as the moderator (issue #356)
+        let chatId = msgUpdate.Message.Value.Chat.Id
+        let messageId = msgUpdate.Message.Value.MessageId
+        let! markedBy = fixture.MessageMarkedHamBy(chatId, messageId)
+        Assert.Equal(Some fixture.Vahters[0].Id, markedBy)
     }
     
     [<Fact>]

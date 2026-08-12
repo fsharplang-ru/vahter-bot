@@ -1,9 +1,26 @@
-INSERT INTO public."user"(id, username, banned_by, banned_at, ban_reason)
+-- NOTE: user/message/banned/false_positive_*/false_negative_* were the pre-event-sourcing
+-- tables deprecated (renamed to deprecated_*) by
+-- V41__deprecate_dead_pre_event_sourcing_tables.sql (issue #330). This seed no longer writes
+-- into any deprecated_* table — the issue #330 audit found nothing reads them back under
+-- their old OR deprecated names, so persisting scratch rows there was pure noise. The same
+-- scratch data is instead staged in session-local TEMP tables (seed_*, dropped by the end of
+-- this script) and inserted directly into `event` below, mirroring the exact event_type/data
+-- shapes V23's one-time prod backfill produced from the (now deprecated) tables.
+CREATE TEMP TABLE seed_user (
+    id         BIGINT      NOT NULL PRIMARY KEY,
+    username   TEXT        NULL,
+    banned_by  BIGINT      NULL,
+    banned_at  TIMESTAMPTZ NULL,
+    ban_reason TEXT        NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO seed_user(id, username, banned_by, banned_at, ban_reason)
 VALUES (34, 'vahter_1', NULL, NULL, NULL),
        (69, 'vahter_2', NULL, NULL, NULL);
 
 -- insert some fake data for ML training
-INSERT INTO public."user"(id, username, banned_by, banned_at, ban_reason)
+INSERT INTO seed_user(id, username, banned_by, banned_at, ban_reason)
 VALUES (1001, 'a', NULL, NULL, NULL),
        (1002, 'b', NULL, NULL, NULL),
        (1003, 'c', NULL, NULL, NULL),
@@ -15,15 +32,25 @@ VALUES (1001, 'a', NULL, NULL, NULL),
        (1009, 'i', NULL, NULL, NULL),
        (1010, 'j', NULL, NULL, NULL);
 
-INSERT INTO public.message(chat_id, message_id, user_id, created_at, text, raw_message)
-VALUES (-666, 10001, 1001, now() - '1 day'::INTERVAL + '1 seconds'::INTERVAL, 'a', '{}'), -- false positive user banned
+CREATE TEMP TABLE seed_message (
+    chat_id     BIGINT      NOT NULL,
+    message_id  BIGINT      NOT NULL,
+    user_id     BIGINT      NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL,
+    text        TEXT        NULL,
+    raw_message TEXT        NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+INSERT INTO seed_message(chat_id, message_id, user_id, created_at, text, raw_message)
+VALUES (-666, 10001, 1001, now() - '1 day'::INTERVAL + '1 seconds'::INTERVAL, 'a', '{}'), -- false positive user
        (-666, 10002, 1001, now() - '1 day'::INTERVAL + '2 seconds'::INTERVAL, 'aa', '{}'),
        (-666, 10003, 1001, now() - '1 day'::INTERVAL + '3 seconds'::INTERVAL, 'aaa', '{}'),
        (-666, 10004, 1002, now() - '1 day'::INTERVAL + '4 seconds'::INTERVAL, 'aaaa', '{}'),
        (-666, 10005, 1002, now() - '1 day'::INTERVAL + '5 seconds'::INTERVAL, 'aaaaa', '{}'),
        (-666, 10006, 1003, now() - '1 day'::INTERVAL + '6 seconds'::INTERVAL, 'aaaaaa', '{}'),
        (-666, 10007, 1003, now() - '1 day'::INTERVAL + '7 seconds'::INTERVAL, 'aaaaaaa', '{}'),
-       (-666, 10008, 1004, now() - '1 day'::INTERVAL + '8 seconds'::INTERVAL, 'a', '{}'), -- false positive message banned
+       (-666, 10008, 1004, now() - '1 day'::INTERVAL + '8 seconds'::INTERVAL, 'a', '{}'), -- false positive message
        (-666, 10009, 1005, now() - '1 day'::INTERVAL + '9 seconds'::INTERVAL, '1', '{}'),
        (-666, 10010, 1005, now() - '1 day'::INTERVAL + '10 seconds'::INTERVAL, '1', '{}'),
        (-42, 10001, 1001, now() - '1 day'::INTERVAL + '11 seconds'::INTERVAL, 'a', '{}'),
@@ -536,19 +563,23 @@ VALUES (-666, 10001, 1001, now() - '1 day'::INTERVAL + '1 seconds'::INTERVAL, 'a
        (-666, 10498, 1001, now() - '1 day'::INTERVAL + '508 seconds'::INTERVAL, '7', '{}'),
        (-666, 10499, 1001, now() - '1 day'::INTERVAL + '509 seconds'::INTERVAL, '7', '{}');
 
-INSERT INTO public.banned(id, message_id, message_text, banned_user_id, banned_at, banned_in_chat_id, banned_in_chat_username, banned_by)
-VALUES (100001, 10001, 'a', 1001, now() - '1 day'::INTERVAL + '510 seconds'::INTERVAL, -666, 'pro.hell', 34),
-       (100002, 10008, 'a', 1004, now() - '1 day'::INTERVAL + '511 seconds'::INTERVAL, -666, 'pro.hell', 69),
-       (100003, 10009, '1', 1005, now() - '1 day'::INTERVAL + '512 seconds'::INTERVAL, -666, 'pro.hell', 34),
-       (100004, 10010, '2', 1006, now() - '1 day'::INTERVAL + '513 seconds'::INTERVAL, -42, 'dotnetru', 69);
+-- deprecated_false_positive_users had no reader anywhere (not even in the backfill below) --
+-- deleted outright rather than staged, per issue #330's audit.
 
-INSERT INTO public.false_positive_users(user_id)
-VALUES (1001);
+CREATE TEMP TABLE seed_false_positive_messages (
+    text TEXT NOT NULL PRIMARY KEY
+);
 
-INSERT INTO public.false_positive_messages(text)
+INSERT INTO seed_false_positive_messages(text)
 VALUES ('a');
 
-INSERT INTO public.false_negative_messages(chat_id, message_id)
+CREATE TEMP TABLE seed_false_negative_messages (
+    chat_id    BIGINT NOT NULL,
+    message_id BIGINT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+INSERT INTO seed_false_negative_messages(chat_id, message_id)
 VALUES (-42, 10008),
        (-42, 10011),
        (-42, 10012),
@@ -897,22 +928,23 @@ VALUES (-42, 10008),
        (-666, 10499);
 
 -- ---------------------------------------------------------------------------
--- Backfill event table from the seeded legacy data (mirrors V23 migration).
+-- Backfill event table straight from the seed_* TEMP tables above (mirrors what
+-- V23's one-time prod backfill did from the now-deprecated tables).
 -- The event table was created empty by V23; this populates it with test data.
 -- ON CONFLICT DO NOTHING makes this idempotent.
 -- ---------------------------------------------------------------------------
 
--- 1. UsernameChanged — from user table
+-- 1. UsernameChanged — from seed_user
 INSERT INTO event(stream_id, stream_version, data, created_at)
 SELECT
     'user:' || id,
     ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at),
     jsonb_build_object('Case', 'UsernameChanged', 'userId', id, 'username', username),
     created_at
-FROM "user"
+FROM seed_user
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
--- 2. MessageReceived — from message table.
+-- 2. MessageReceived — from seed_message.
 -- rawMessage is a JSON *string* — the single canonical shape since V40 normalized the
 -- old object-form backfill rows (issue #166). to_jsonb(raw_message::text) produces the
 -- exact shape the live app writes and V40 leaves behind.
@@ -923,7 +955,7 @@ SELECT
     jsonb_build_object('Case', 'MessageReceived', 'chatId', chat_id, 'messageId', message_id,
                        'userId', user_id, 'text', text, 'rawMessage', to_jsonb(raw_message::text)),
     created_at
-FROM message
+FROM seed_message
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
 -- 2b. One hand-written string-shaped MessageReceived kept for fold/rebuild coverage.
@@ -936,53 +968,20 @@ VALUES
      now() - '2 days'::INTERVAL)
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
--- 3. UserBanned — union manual bans + (no bot bans in seed), offset by 1 for UsernameChanged
-WITH all_bans AS (
-    SELECT banned_user_id AS user_id,
-           banned_at,
-           banned_by,
-           false          AS is_bot_ban,
-           banned_in_chat_id,
-           message_id,
-           message_text
-    FROM banned
-),
-numbered AS (
-    SELECT *,
-           1 + ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY banned_at) AS stream_ver
-    FROM all_bans
-)
-INSERT INTO event(stream_id, stream_version, data, created_at)
-SELECT
-    'user:' || user_id,
-    stream_ver,
-    jsonb_build_object(
-        'Case', 'UserBanned',
-        'userId', user_id,
-        'bannedBy', CASE
-            WHEN is_bot_ban THEN jsonb_build_object('Case', 'BannedByAutoBan', 'chatId', banned_in_chat_id, 'messageText', message_text)
-            ELSE jsonb_build_object('Case', 'BannedByVahter', 'vahterId', banned_by, 'chatId', COALESCE(banned_in_chat_id, 0), 'messageId', COALESCE(message_id, 0), 'messageText', message_text)
-        END,
-        'bannedAt', to_char(banned_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-    ),
-    banned_at
-FROM numbered
-ON CONFLICT (stream_id, stream_version) DO NOTHING;
-
--- 4. MessageMarkedSpam — from false_negative_messages (version 2)
+-- 3. MessageMarkedSpam — from seed_false_negative_messages (version 2)
 INSERT INTO event(stream_id, stream_version, data, created_at)
 SELECT
     'message:' || chat_id || ':' || message_id,
     2,
     jsonb_build_object('Case', 'MessageMarkedSpam', 'chatId', chat_id, 'messageId', message_id, 'markedBy', NULL),
     NOW()
-FROM false_negative_messages
+FROM seed_false_negative_messages
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
--- 5. MessageMarkedHam — from false_positive_messages matched to message table
+-- 4. MessageMarkedHam — from seed_false_positive_messages matched to seed_message
 CREATE TEMP TABLE seed_msg_hash_lookup AS
     SELECT chat_id, message_id, md5(text)::uuid AS text_hash
-    FROM message
+    FROM seed_message
     WHERE text IS NOT NULL;
 CREATE INDEX ON seed_msg_hash_lookup(text_hash);
 
@@ -992,8 +991,12 @@ SELECT
     2,
     jsonb_build_object('Case', 'MessageMarkedHam', 'chatId', m.chat_id, 'messageId', m.message_id, 'text', fp.text, 'markedBy', NULL),
     NOW()
-FROM false_positive_messages fp
-JOIN seed_msg_hash_lookup m ON m.text_hash = fp.text_hash
+FROM seed_false_positive_messages fp
+JOIN seed_msg_hash_lookup m ON m.text_hash = md5(fp.text)::uuid
 ON CONFLICT (stream_id, stream_version) DO NOTHING;
 
 DROP TABLE seed_msg_hash_lookup;
+DROP TABLE seed_user;
+DROP TABLE seed_message;
+DROP TABLE seed_false_positive_messages;
+DROP TABLE seed_false_negative_messages;

@@ -933,35 +933,6 @@ WHERE event_type = 'CallbackCreated'
     // Public members — Stats / Queries
     // -----------------------------------------------------------------------
 
-    member _.GetVahterStats(banInterval: TimeSpan option) : Task<VahterStats> =
-        task {
-            use conn = new NpgsqlConnection(connString)
-
-            //language=postgresql
-            let sql =
-                """
-SELECT * FROM (
-    SELECT vahter.username                                                      AS "Vahter"
-          , COUNT(*)                                                             AS "KillCountTotal"
-          , COUNT(*) FILTER (WHERE b.banned_at > @now - @banInterval::INTERVAL) AS "KillCountInterval"
-     FROM banned b
-              JOIN "user" vahter ON vahter.id = b.banned_by
-     GROUP BY b.banned_by, vahter.username
-     UNION
-     SELECT 'bot'                                                          AS "Vahter",
-            COUNT(*)                                                       AS "KillCountTotal",
-            COUNT(*) FILTER (WHERE bbb.banned_at > @now - @banInterval::INTERVAL) AS "KillCountInterval"
-     FROM (SELECT banned_user_id, MIN(banned_at) AS banned_at
-           FROM banned_by_bot
-           GROUP BY banned_user_id) bbb
-) stats
-ORDER BY "KillCountTotal" DESC;
-                """
-
-            let! stats = conn.QueryAsync<VahterStat>(sql, {| banInterval = banInterval; now = utcNow() |})
-            return { VahterStats.interval = banInterval; stats = Array.ofSeq stats }
-        }
-
     /// Gets vahter action stats from event table
     member _.GetVahterActionStats(interval: TimeSpan option) : Task<VahterActionStats> =
         task {
