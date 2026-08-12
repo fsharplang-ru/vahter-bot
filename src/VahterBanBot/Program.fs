@@ -135,6 +135,7 @@ let buildBotConf () =
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
       LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
       LlmVerdictCacheGlobalEnabled = getSettingOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
+      LlmContentFilterIsSpam = getSettingOr "LLM_CONTENT_FILTER_IS_SPAM" "true" |> bool.Parse
       // Reaction-spam triage (vision LLM)
       LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse
       LlmReactionTriageShadowDisable = getSettingOr "LLM_REACTION_TRIAGE_SHADOW_DISABLE" "false" |> bool.Parse

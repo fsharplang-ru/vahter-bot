@@ -1,7 +1,9 @@
 namespace BotInfra
 
 open System
+open System.Diagnostics
 open System.Text
+open System.Text.Json
 open System.Threading.Tasks
 open Azure
 open Azure.AI.Vision.ImageAnalysis
@@ -79,6 +81,35 @@ type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, 
                     cached <- Some (want, c)
                     c)
 
+    /// Azure AI Vision's documented minimum: images below 50x50px are rejected outright with HTTP 400
+    /// InvalidRequest / innererror.code=InvalidImageSize (a hard platform limit, not something we can
+    /// configure around). Telegram legitimately sends tiny photos (e.g. a 60x42 sticker-like image), so
+    /// this is an expected input shape, not a broken OCR backend — detected from the raw response body
+    /// (the SDK only surfaces the outer "InvalidRequest" code via RequestFailedException.ErrorCode,
+    /// which also covers unrelated 400s, so we look at the documented inner code instead).
+    /// https://learn.microsoft.com/en-us/azure/ai-services/computer-vision/concept-describing-images#input-requirements
+    let isImageTooSmallError (rfe: RequestFailedException) : bool =
+        if rfe.Status <> 400 then false
+        else
+            try
+                match rfe.GetRawResponse() with
+                | null -> false
+                | response ->
+                    use doc = JsonDocument.Parse(response.Content.ToMemory())
+                    match doc.RootElement.TryGetProperty("error") with
+                    | false, _ -> false
+                    | true, error ->
+                        match error.TryGetProperty("innererror") with
+                        | false, _ -> false
+                        | true, innererror ->
+                            match innererror.TryGetProperty("code") with
+                            | true, code -> code.GetString() = "InvalidImageSize"
+                            | false, _ -> false
+            with _ ->
+                // Malformed/unexpected body shape: fall through to the generic error-log path below
+                // rather than silently swallowing a real failure.
+                false
+
     /// Joins the read result's lines into a single text blob (null when there is no readable text).
     let extractText (result: ImageAnalysisResult) : string =
         if isNull (box result.Read) then null
@@ -114,6 +145,15 @@ type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, 
                         let rawJson = response.GetRawResponse().Content.ToString()
                         return { RawJson = rawJson; Text = text }
                     with
+                    | :? RequestFailedException as rfe when rfe.Status = 400 && isImageTooSmallError rfe ->
+                        // Image below Azure's hard 50x50px minimum (see isImageTooSmallError doc comment).
+                        // Expected input, not an OCR backend failure: degrade to "no usable OCR text"
+                        // quietly (Debug, not Error) and tag the ambient span so skips stay observable.
+                        match Activity.Current with
+                        | null -> ()
+                        | activity -> activity.SetTag("ocr.skipped", true).SetTag("ocr.skipReason", "image-too-small") |> ignore
+                        logger.LogDebug("Skipping OCR: image is below Azure's minimum dimensions (50x50px)")
+                        return (null: OcrAnalysis | null)
                     | :? RequestFailedException as rfe when rfe.Status > 0 ->
                         // The service responded with an HTTP error (e.g. 404 misconfigured endpoint,
                         // 403 VNet block, 500), already retried by the SDK where applicable. Logged at
