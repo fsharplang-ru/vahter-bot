@@ -405,3 +405,56 @@ type Tg() =
 
     static member bigPhoto =
         PhotoSize.Create("big-ham", "big-ham-uid", 30L, 30L, fileSize = 25L * 1024L * 1024L)
+
+    // ── Sticker fixtures ─────────────────────────────────────────────────────
+
+    /// Static sticker modeled verbatim on the 2026-08-12 prod spam sticker (width/height/
+    /// file_size match; no set_name/emoji fields either — code must not assume them).
+    /// Distinct fileId/fileUniqueId per call by default so parallel-unsafe cache tests
+    /// (assembly runs serially, but callers still want cheap uniqueness) can override both.
+    static member staticSticker(?fileId: string, ?fileUniqueId: string) =
+        let fid = fileId |> Option.defaultWith (fun () -> $"static-sticker-{next()}")
+        let fuid = fileUniqueId |> Option.defaultValue (fid + "-uid")
+        Sticker.Create(
+            fileId = fid,
+            fileUniqueId = fuid,
+            ``type`` = "regular",
+            width = 512L,
+            height = 512L,
+            isAnimated = false,
+            isVideo = false,
+            fileSize = 34084L
+        )
+
+    /// Animated (TGS) sticker with a static Thumbnail — OCR must fall back to the thumbnail.
+    static member animatedStickerWithThumbnail(?fileId: string, ?fileUniqueId: string, ?thumbFileId: string, ?thumbFileUniqueId: string) =
+        let fid = fileId |> Option.defaultWith (fun () -> $"animated-sticker-{next()}")
+        let fuid = fileUniqueId |> Option.defaultValue (fid + "-uid")
+        let thumbFid = thumbFileId |> Option.defaultValue (fid + "-thumb")
+        let thumbFuid = thumbFileUniqueId |> Option.defaultValue (thumbFid + "-uid")
+        Sticker.Create(
+            fileId = fid,
+            fileUniqueId = fuid,
+            ``type`` = "regular",
+            width = 512L,
+            height = 512L,
+            isAnimated = true,
+            isVideo = false,
+            thumbnail = PhotoSize.Create(thumbFid, thumbFuid, 320L, 320L, fileSize = 15810L),
+            fileSize = 34084L
+        )
+
+    /// Animated (TGS) sticker with no thumbnail at all — no static representation to OCR.
+    static member animatedStickerNoThumbnail(?fileId: string, ?fileUniqueId: string) =
+        let fid = fileId |> Option.defaultWith (fun () -> $"animated-sticker-no-thumb-{next()}")
+        let fuid = fileUniqueId |> Option.defaultValue (fid + "-uid")
+        Sticker.Create(
+            fileId = fid,
+            fileUniqueId = fuid,
+            ``type`` = "regular",
+            width = 512L,
+            height = 512L,
+            isAnimated = true,
+            isVideo = false,
+            fileSize = 34084L
+        )

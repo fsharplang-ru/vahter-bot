@@ -12,6 +12,8 @@ type TgMessage private (raw: Message, isEdit: bool) =
     let mutable suffixText: string = null
     let mutable ownPhotoOcrApplied: bool = false
     let mutable externalReplyPhotoOcrApplied: bool = false
+    let mutable ownStickerOcrApplied: bool = false
+    let mutable externalReplyStickerOcrApplied: bool = false
 
     /// Whether this message is an edit of a previously sent message.
     member _.IsEdit = isEdit
@@ -27,6 +29,16 @@ type TgMessage private (raw: Message, isEdit: bool) =
     member _.ExternalReplyPhotoOcrApplied
         with get () = externalReplyPhotoOcrApplied
         and  set v  = externalReplyPhotoOcrApplied <- v
+
+    /// Same as OwnPhotoOcrApplied, but for the message's own sticker.
+    member _.OwnStickerOcrApplied
+        with get () = ownStickerOcrApplied
+        and  set v  = ownStickerOcrApplied <- v
+
+    /// Same as ExternalReplyPhotoOcrApplied, but for the external-reply quote sticker.
+    member _.ExternalReplyStickerOcrApplied
+        with get () = externalReplyStickerOcrApplied
+        and  set v  = externalReplyStickerOcrApplied <- v
 
     // ── Sender resolution ──────────────────────────────────────────
 
@@ -115,6 +127,11 @@ type TgMessage private (raw: Message, isEdit: bool) =
     /// Photos of the external-reply quote (empty when there is no external reply or no photo).
     member _.ExternalReplyPhotos : PhotoSize[] =
         raw.ExternalReply |> Option.bind _.Photo |> Option.defaultValue [||]
+    /// The message's own sticker, if any (static/animated/video, any Type).
+    member _.Sticker : Sticker option = raw.Sticker
+    /// Sticker of the external-reply quote (None when there is no external reply or no sticker).
+    member _.ExternalReplySticker : Sticker option =
+        raw.ExternalReply |> Option.bind _.Sticker
     member _.ReplyMarkup  = raw.ReplyMarkup
     member _.RichMessage  = raw.RichMessage
 
