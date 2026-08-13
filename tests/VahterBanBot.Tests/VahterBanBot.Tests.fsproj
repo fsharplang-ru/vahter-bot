@@ -23,6 +23,8 @@
         <Compile Include="ChannelSenderTests.fs" />
         <Compile Include="ReactionSpamTests.fs" />
         <Compile Include="PingTests.fs" />
+        <Compile Include="ReportCommandTests.fs" />
+        <Compile Include="ReportCommandRegistrationTests.fs" />
         <Compile Include="EventSerializationTests.fs" />
         <Compile Include="LlmTriageTests.fs" />
         <Compile Include="LlmTriageResilienceTests.fs" />

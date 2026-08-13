@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="Utils.fs" />
+    <Compile Include="TtlCache.fs" />
     <Compile Include="RichMessageText.fs" />
     <Compile Include="StickerOcr.fs" />
     <Compile Include="TgMessage.fs" />

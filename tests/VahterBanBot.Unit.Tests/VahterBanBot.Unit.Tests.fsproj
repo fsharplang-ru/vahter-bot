@@ -14,6 +14,8 @@
     <Compile Include="RichMessageFlattenTests.fs" />
     <Compile Include="ContentFilterDetectionTests.fs" />
     <Compile Include="StickerOcrTests.fs" />
+    <Compile Include="ReportCommandTests.fs" />
+    <Compile Include="TtlCacheTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

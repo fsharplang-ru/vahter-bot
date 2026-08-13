@@ -477,13 +477,25 @@ type BotConfiguration =
       ReactionTriageDebounce: TimeSpan
       /// Bans older than this many days are considered expired. Default: 7.
       BanExpiryDays: int
-      // Ephemeral commands & confirmations (Bot API 10.2)
-      /// When true, public commands (/ban, /unban, /sban) are registered with is_ephemeral,
-      /// so clients send them invisibly to other chat members. Re-registration happens on restart.
-      EphemeralCommandsEnabled: bool
+      // Ephemeral confirmations (Bot API 10.2)
       /// When true, the issuing vahter gets a short self-dismissing ephemeral confirmation
       /// in the chat after /ban, /sban, /unban. Visible only to the issuer.
       EphemeralConfirmationEnabled: bool
+      // Public /vahter_report command — any chat member, no vahter check (see Bot.fs's
+      // isReportCommand / ReportCommand). Off by default: the bot has no rate limiting and
+      // this is its first public (non-vahter-gated) command, so REPORT_COMMAND_ENABLED
+      // defaults to "false" and is bot_setting-backed / hot-reloadable like every other flag
+      // here — see AGENTS.md's Settings configuration section. Flag rollout is a hand-run SQL
+      // seed (settings are never Flyway-seeded — see AGENTS.md). Also gates whether
+      // BotCommandsSetup registers /vahter_report as Telegram's group-scope command-menu entry
+      // — see that file's doc comment for why /ban, /sban, /unban are deliberately NEVER
+      // registered in any scope (is_ephemeral does not hide menu entries, only command bubbles).
+      ReportCommandEnabled: bool
+      /// TTL (seconds) for the in-process per-chat cache of /vahter_report stats — the abuse
+      /// bound for a command any chat member can trigger with no rate limiting of its own.
+      /// Single bot replica in prod, so a simple ConcurrentDictionary is enough; no distributed
+      /// cache or eviction loop needed at this bot's scale (~34 monitored chats).
+      ReportCacheTtlSeconds: int
       // Ban-seeded spam-text cache (SPAM_TEXT_CACHE_MODE / _TTL_HOURS / _MIN_LENGTH) — see
       // SpamTextCache.fs. All three are bot_setting-backed, tunable by SQL and hot-reloadable
       // via POST /reload-settings, so the intended rollout (off -> shadow -> enforce) doesn't
@@ -708,4 +720,45 @@ type VahterActionStats =
                 let total = stat.KillsTotal + stat.NotSpamTotal
                 %sb.AppendLine $"  %d{i+1}. {prependUsername stat.Vahter} - {total}")
         sb.ToString()
+
+/// /vahter_report stats — one row from DbService.GetReportStats' single-scan window query
+/// (chat + global, 24h + 7d). Field names match the SQL's column aliases 1:1 for Dapper.
+[<CLIMutable>]
+type ReportStats =
+    { Global24hTotalSeen: int
+      Global24hAutoDeletedSpam: int
+      Global24hFalsePositives: int
+      Global24hFalseNegatives: int
+      Global7dTotalSeen: int
+      Global7dAutoDeletedSpam: int
+      Global7dFalsePositives: int
+      Global7dFalseNegatives: int
+      Chat24hTotalSeen: int
+      Chat24hAutoDeletedSpam: int
+      Chat24hFalsePositives: int
+      Chat24hFalseNegatives: int
+      Chat7dTotalSeen: int
+      Chat7dAutoDeletedSpam: int
+      Chat7dFalsePositives: int
+      Chat7dFalseNegatives: int }
+    /// Renders the Russian, jargon-free report sent ephemerally to the invoking user.
+    /// AutoDeletedSpam already includes the FalsePositives subset — the wording below is
+    /// written to be honest about that without spelling out the overlap.
+    member this.ToReportMessage() : string =
+        String.concat "\n" [
+            "🛡 Отчёт вахтёра"
+            ""
+            "В этом чате:"
+            $"• За сутки: проверено {this.Chat24hTotalSeen} сообщений, удалено {this.Chat24hAutoDeletedSpam} спам-сообщений"
+            $"• За неделю: проверено {this.Chat7dTotalSeen}, удалено {this.Chat7dAutoDeletedSpam}"
+            $"• Ошибочные удаления за неделю: {this.Chat7dFalsePositives} (сообщения вернули после проверки)"
+            $"• Спам, который люди заметили раньше бота: {this.Chat7dFalseNegatives} за неделю"
+            ""
+            "Во всех чатах под защитой:"
+            $"• За сутки: проверено {this.Global24hTotalSeen} сообщений, удалено {this.Global24hAutoDeletedSpam} спам-сообщений"
+            $"• За неделю: проверено {this.Global7dTotalSeen}, удалено {this.Global7dAutoDeletedSpam}"
+            $"• Ошибочные удаления: {this.Global7dFalsePositives}, спам мимо бота: {this.Global7dFalseNegatives}"
+            ""
+            "Этот отчёт видите только вы 👀"
+        ]
 
