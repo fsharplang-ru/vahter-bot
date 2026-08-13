@@ -142,9 +142,14 @@ let buildBotConf () =
       ReactionNotSpamCooldownDays    = getSettingOr "REACTION_NOT_SPAM_COOLDOWN_DAYS" "30" |> int
       ReactionTriageDebounce         = getSettingOr "REACTION_TRIAGE_DEBOUNCE_SECONDS" "5" |> int64 |> TimeSpan.FromSeconds
       BanExpiryDays         = getSettingOr "BAN_EXPIRY_DAYS" "7" |> int
-      // Ephemeral commands & confirmations (Bot API 10.2)
-      EphemeralCommandsEnabled     = getSettingOr "EPHEMERAL_COMMANDS_ENABLED" "false" |> bool.Parse
+      // Ephemeral confirmations (Bot API 10.2)
       EphemeralConfirmationEnabled = getSettingOr "EPHEMERAL_CONFIRMATION_ENABLED" "false" |> bool.Parse
+      // Public /vahter_report command. Off by default — see BotConfiguration's doc comment.
+      // Also gates Telegram command-menu registration (BotCommandsSetup.fs); the old
+      // EPHEMERAL_COMMANDS_ENABLED / ban+sban+unban registration was removed — see that file's
+      // doc comment for why (is_ephemeral doesn't hide menu entries, only command bubbles).
+      ReportCommandEnabled  = getSettingOr "REPORT_COMMAND_ENABLED" "false" |> bool.Parse
+      ReportCacheTtlSeconds = getSettingOr "REPORT_CACHE_TTL_SECONDS" "300" |> int
       // Ban-seeded spam-text cache. Default "off": inert until explicitly turned on; recommended
       // rollout is off -> shadow -> enforce, tuned live via bot_setting (no redeploy needed) —
       // see AGENTS.md's Settings configuration section and SpamTextCache.fs.

@@ -20,6 +20,7 @@ open BotInfra
 open VahterBanBot.UpdateChatAdmins
 open VahterBanBot.Metrics
 open VahterBanBot.SpamTextCache
+open VahterBanBot.TtlCache
 
 module Req = Funogram.Telegram.Req
 
@@ -267,6 +268,16 @@ module private BotHelpers =
         else
             photos |> Array.maxBy (fun p -> p.Width * p.Height)
 
+/// True if the message's first token is the "/vahter_report" command (mention-tolerant,
+/// same tokenizing pattern as BotHelpers.isVahterCommand above — e.g. "/vahter_report@my_bot"
+/// matches). Deliberately public — unlike BotHelpers' predicates, which are private to this
+/// file — so it's directly unit-testable without a container: see
+/// VahterBanBot.Unit.Tests/ReportCommandTests.fs.
+let isReportCommand (msg: TgMessage) =
+    msg.Text <> null &&
+    (let trimmed = msg.Text.TrimStart()
+     let first = trimmed.Split([| ' '; '\n'; '\t' |]).[0]
+     stripBotMention first = "/vahter_report")
 
 type BotService(
     tg: ITelegramApi,
@@ -285,6 +296,11 @@ type BotService(
     timeProvider: TimeProvider
 ) =
     let utcNow () = timeProvider.GetUtcNow().UtcDateTime
+
+    // Per-chat /vahter_report stats cache — the abuse bound for a public command with no
+    // rate limiting of its own. TTL is read from botConfig.Value.ReportCacheTtlSeconds on
+    // every call (see ReportCommand below), so a hot-reloaded TTL takes effect immediately.
+    let reportStatsCache = TtlCache<int64, ReportStats>(fun () -> timeProvider.GetUtcNow())
 
     // -----------------------------------------------------------------------
     // Private members — Telegram chat operations
@@ -1469,6 +1485,33 @@ type BotService(
             do! deleteCmdTask
         }
 
+    /// Public /vahter_report: any chat member, no authorization checks (unlike AdminCommand,
+    /// which this is modeled on). Sends a chat + global, 24h + 7d stats report visible only to
+    /// the invoking user, then deletes the invoking command message like AdminCommand does.
+    member private this.ReportCommand(user: User, msg: TgMessage) = task {
+        use _ = botActivity.StartActivity("reportCommand")
+        let! stats =
+            reportStatsCache.GetOrCompute(
+                msg.ChatId,
+                TimeSpan.FromSeconds(float botConfig.Value.ReportCacheTtlSeconds),
+                fun () -> db.GetReportStats(msg.ChatId, timeProvider.GetUtcNow()))
+        // best-effort ephemeral delivery — a failure here must never fail the command, hence
+        // CallIgnore (never CallExn); see AdminCommand's `confirm` helper for the same pattern.
+        do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, stats.ToReportMessage(), receiverUserId = user.Id))
+        // an ephemeral command is invisible to the chat and auto-expires — there is no regular
+        // message to delete (mirrors AdminCommand's deleteCmdTask)
+        if not msg.IsEphemeral then
+            use _ =
+                botActivity
+                    .StartActivity("deleteCmdMsg")
+                    .SetTag("msgId", msg.MessageId)
+                    .SetTag("chatId", msg.ChatId)
+                    .SetTag("chatUsername", msg.ChatUsername)
+            recordDeletedMessage msg.ChatId msg.ChatUsername "reportCommand"
+            do! tg.CallExn(Req.DeleteMessage.Make(msg.ChatId, msg.MessageId))
+                |> safeTaskAwait (fun e -> logger.LogDebug(e, "Failed to delete command message {MessageId} from chat {ChatId}", msg.MessageId, msg.ChatId))
+    }
+
     // -----------------------------------------------------------------------
     // Private members — Vahter-channel admin commands (/vahter ...)
     // -----------------------------------------------------------------------
@@ -1695,6 +1738,15 @@ type BotService(
         // check if message is a known command from authorized user
         if isKnownCommand msg && isUserVahter botConfig.Value user then
             do! this.AdminCommand(user, msg)
+
+        // /vahter_report: public, any chat member — no vahter check (unlike AdminCommand
+        // above). Handled here, before the JustMessage fallthrough, so the command message
+        // never enters the spam pipeline (ML/LLM/etc.) below. Flag-gated: with
+        // ReportCommandEnabled off, the text falls through to JustMessage unchanged, preserving
+        // pre-existing behavior exactly (this bot has no rate limiting, so the flag is the
+        // rollout gate for its first public command).
+        elif isReportCommand msg && botConfig.Value.ReportCommandEnabled then
+            do! this.ReportCommand(user, msg)
 
         // if message is not a command from authorized user, just save it ID to DB
         else

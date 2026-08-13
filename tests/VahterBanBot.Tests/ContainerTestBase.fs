@@ -1012,6 +1012,30 @@ type MlTrainingFromScratchTestContainers() =
 type MlDisabledVahterTestContainers() =
     inherit VahterTestContainers(mlEnabled = false, extraEnvVars = [])
 
+/// ML-disabled container with REPORT_COMMAND_ENABLED seeded true *before* the bot starts.
+/// BotCommandsSetupService is an IHostedService — its command-menu registration runs exactly
+/// once, at container boot, and is never re-triggered by /reload-settings — so exercising it
+/// requires the flag to already be on when the container comes up, unlike every other flag in
+/// this suite (which are flipped mid-run via SetBotSetting + ReloadSettings). Dedicated
+/// container, exclusively for ReportCommandRegistrationTests, so no other test's
+/// ClearFakeCalls can race the one-time startup registration call away before it's asserted.
+type ReportCommandRegisteredTestContainers() =
+    inherit VahterTestContainers(mlEnabled = false, extraEnvVars = [])
+
+    override this.SeedDatabase(connString: string) =
+        let baseSeed = base.SeedDatabase(connString)
+        task {
+            do! baseSeed
+            use conn = new NpgsqlConnection(connString)
+            do! conn.OpenAsync()
+            let! _ =
+                conn.ExecuteAsync(
+                    "INSERT INTO bot_setting(key,value,type,feature_group) VALUES(@k,@v,@t,@g) \
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, type = EXCLUDED.type, feature_group = EXCLUDED.feature_group",
+                    {| k = "REPORT_COMMAND_ENABLED"; v = "true"; t = "FEATURE_FLAG"; g = "REPORT" |})
+            ()
+        } :> Task
+
 // Kept as a no-op so existing test classes can keep `IClassFixture<MlAwaitFixture>` unchanged.
 // The actual readiness wait now lives in MlEnabledVahterTestContainers.AfterStart, which runs
 // once per assembly fixture instead of once per class — and uses /ready polling instead of a
