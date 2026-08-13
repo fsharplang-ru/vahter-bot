@@ -60,6 +60,11 @@
     <PackageVersion Include="WTelegramClient" Version="4.4.7" />
     <PackageVersion Include="Testcontainers" Version="4.10.0" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.10.0" />
+    <!-- SSH.NET is a transitive dependency of Testcontainers (not referenced directly anywhere).
+         Pinned here to override the vulnerable 2025.1.0 transitive version pulled in by
+         Testcontainers 4.10.0-4.13.0 (GHSA-q939-rpr3-3284 / CVE-2026-48798, NU1903).
+         Remove this pin once a Testcontainers release depends on SSH.NET >= 2026.0.0. -->
+    <PackageVersion Include="SSH.NET" Version="2026.0.0" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
     <PackageVersion Include="xunit.v3.extensibility.core" Version="3.2.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
