@@ -13,6 +13,7 @@
     <Compile Include="ParseUpdateTests.fs" />
     <Compile Include="RichMessageFlattenTests.fs" />
     <Compile Include="ContentFilterDetectionTests.fs" />
+    <Compile Include="StickerOcrTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

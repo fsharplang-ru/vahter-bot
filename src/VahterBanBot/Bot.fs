@@ -1219,16 +1219,26 @@ type BotService(
                 entities |> Array.exists (checkEntity text)
             | _ -> false
 
-        // Azure OCR is now deferred — if the cache step left any photo source
+        // Azure OCR is now deferred — if the cache step left any photo/sticker source
         // un-applied, classification still has work to do even when msg.Text
         // is null at this point (it might become non-null after Azure runs).
+        // The sticker terms are the fix for the 2026-08-12 incident: a caption-less sticker
+        // has msg.Text = null and previously never satisfied this gate at all, so a spam
+        // sticker produced zero ML/OCR/LLM activity. Mirrors the photo terms exactly — any
+        // sticker present (not just eligible ones) counts as pending, same as msg.Photos.Length
+        // > 0 doesn't pre-filter by size; eligibility is resolved later in SelectStickerOcrTarget.
         let hasPendingAzureOcr =
             botConfig.Value.OcrEnabled
             && ((not msg.OwnPhotoOcrApplied
                  && msg.Photos.Length > 0)
+                || (not msg.OwnStickerOcrApplied
+                    && msg.Sticker.IsSome)
                 || (botConfig.Value.ForwardSpamDetectionEnabled
                     && not msg.ExternalReplyPhotoOcrApplied
-                    && msg.ExternalReplyPhotos.Length > 0))
+                    && msg.ExternalReplyPhotos.Length > 0)
+                || (botConfig.Value.ForwardSpamDetectionEnabled
+                    && not msg.ExternalReplyStickerOcrApplied
+                    && msg.ExternalReplySticker.IsSome))
 
         if containsInvisibleMention then
             do! recordMsg()
@@ -1308,12 +1318,14 @@ type BotService(
                     | None ->
                         %mlActivity.SetTag("preOcrShortCircuit", false)
                         // Text alone wasn't enough — pay for Azure OCR on the
-                        // cache misses, then re-classify with ML+LLM. Both
+                        // cache misses, then re-classify with ML+LLM. All four
                         // enrichment calls are no-ops when their flag is set
                         // and they swallow their own exceptions, so OCR
                         // failures never block the ML classifier from running.
                         do! this.TryEnrichWithForwardedPhotoOcr(msg)
                         do! this.TryEnrichWithOcr(msg)
+                        do! this.TryEnrichWithForwardedStickerOcr(msg)
+                        do! this.TryEnrichWithStickerOcr(msg)
                         %mlActivity.SetTag("postOcrTextLength", if isNull msg.Text then 0 else msg.Text.Length)
                         do! recordMsg()
                         let! autoVerdict = this.GetAutoVerdict(msg, usrMsgCount)
@@ -1693,15 +1705,18 @@ type BotService(
     // Private members — OCR enrichment
     // -----------------------------------------------------------------------
 
-    member private this.OcrFresh(largestPhoto: PhotoSize, fileUniqueId: string) = task {
-        let! file = tg.CallExn(Req.GetFile.Make largestPhoto.FileId)
+    /// Downloads `fileId` via the Bot API and OCRs it through Azure. `fileUniqueId` is the cache
+    /// key — shared by photos (PhotoSize.FileUniqueId) and stickers (either the sticker's own
+    /// FileUniqueId or its Thumbnail's, see StickerOcr.selectOcrTarget).
+    member private this.OcrFresh(fileId: string, fileUniqueId: string) = task {
+        let! file = tg.CallExn(Req.GetFile.Make fileId)
 
         match file.FilePath with
         | None ->
-            logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+            logger.LogWarning("Failed to resolve file path for file {FileId}", fileId)
             return None
         | Some filePath when String.IsNullOrWhiteSpace filePath ->
-            logger.LogWarning("Failed to resolve file path for photo {PhotoId}", largestPhoto.FileId)
+            logger.LogWarning("Failed to resolve file path for file {FileId}", fileId)
             return None
         | Some filePath ->
             let apiBase = if isNull botConfig.Value.TelegramApiBaseUrl then "https://api.telegram.org" else botConfig.Value.TelegramApiBaseUrl
@@ -1755,7 +1770,50 @@ type BotService(
                 messageId)
             return None
         | Some largestPhoto ->
-            return! this.OcrFresh(largestPhoto, largestPhoto.FileUniqueId)
+            return! this.OcrFresh(largestPhoto.FileId, largestPhoto.FileUniqueId)
+    }
+
+    /// Resolves a sticker to its OCR target (own file for static stickers, Thumbnail for
+    /// animated/video ones) and applies the OcrMaxFileSizeBytes gate. Error carries a stable
+    /// skip-reason string ("sticker-no-static-representation" / "sticker-too-large") — callers
+    /// tag it on their (already-started) span so the skip stays visible in traces instead of
+    /// vanishing silently, which is exactly the bug that made the 2026-08-12 spam sticker
+    /// invisible to the whole ML/OCR/LLM pipeline.
+    member private _.SelectStickerOcrTarget(sticker: Sticker) : Result<StickerOcr.OcrFileRef, string> =
+        StickerOcr.selectEligibleOcrTarget botConfig.Value.OcrMaxFileSizeBytes sticker
+
+    /// Same tagging helper used by both the cache-only and Azure-fresh sticker paths below.
+    member private _.TagStickerOcrSkip(reason: string) =
+        match Activity.Current with
+        | null -> ()
+        | activity -> %activity.SetTag("ocr.skipped", true).SetTag("ocr.skipReason", reason)
+
+    /// Cache-only OCR lookup for a sticker. Mirrors OcrLookupCache — same None/Some(text) shape.
+    /// An ineligible sticker (SelectStickerOcrTarget returns Error) is reported as a miss here
+    /// (no fileUniqueId to look up) but its skip reason is still tagged on the ambient span.
+    member private this.OcrLookupCacheSticker(sticker: Sticker) = task {
+        match this.SelectStickerOcrTarget(sticker) with
+        | Error reason ->
+            this.TagStickerOcrSkip(reason)
+            return None
+        | Ok fileRef ->
+            if String.IsNullOrWhiteSpace fileRef.FileUniqueId then return None
+            else
+                let activity = Activity.Current
+                if not (isNull activity) then
+                    %activity.SetTag("ocr.fileUniqueId", fileRef.FileUniqueId)
+                return! ocrCache.TryGetText(fileRef.FileUniqueId)
+    }
+
+    /// Azure-only OCR for a sticker. Caller is expected to have checked the cache.
+    member private this.OcrStickerFresh(sticker: Sticker, messageId: int64) = task {
+        match this.SelectStickerOcrTarget(sticker) with
+        | Error reason ->
+            this.TagStickerOcrSkip(reason)
+            logger.LogDebug("Skipping sticker OCR for message {MessageId}: {Reason}", messageId, reason)
+            return None
+        | Ok fileRef ->
+            return! this.OcrFresh(fileRef.FileId, fileRef.FileUniqueId)
     }
 
     /// Cheap, synchronous, no I/O. Safe to call at the top of OnUpdate.
@@ -1821,6 +1879,28 @@ type BotService(
                     logger.LogWarning(ex, "OCR cache lookup failed for external-reply photo on message {MessageId}; will fall back to Azure", msg.MessageId)
                     %activity.SetTag("externalReplyCacheHit", "error")
 
+            // External-reply quote sticker (prepend, same slot as the photo case above —
+            // a message can only carry one kind of media, so these never both fire).
+            if botConfig.Value.ForwardSpamDetectionEnabled
+               && msg.ExternalReplySticker.IsSome then
+                %activity.SetTag("externalReplyStickerCacheLookup", true)
+                try
+                    let! cached = this.OcrLookupCacheSticker(msg.ExternalReplySticker.Value)
+                    match cached with
+                    | Some text ->
+                        if not (String.IsNullOrWhiteSpace text) then
+                            msg.PrependText(text)
+                            %activity.SetTag("externalReplyStickerCacheHit", "text")
+                            %activity.SetTag("externalReplyStickerCacheTextLength", text.Length)
+                        else
+                            %activity.SetTag("externalReplyStickerCacheHit", "empty")
+                        msg.ExternalReplyStickerOcrApplied <- true
+                    | None ->
+                        %activity.SetTag("externalReplyStickerCacheHit", "miss")
+                with ex ->
+                    logger.LogWarning(ex, "OCR cache lookup failed for external-reply sticker on message {MessageId}; will fall back to Azure", msg.MessageId)
+                    %activity.SetTag("externalReplyStickerCacheHit", "error")
+
             // Message's own photos (append).
             if msg.Photos.Length > 0 then
                 %activity.SetTag("ownPhotoCacheLookup", true)
@@ -1840,6 +1920,28 @@ type BotService(
                 with ex ->
                     logger.LogWarning(ex, "OCR cache lookup failed for own photo on message {MessageId}; will fall back to Azure", msg.MessageId)
                     %activity.SetTag("ownPhotoCacheHit", "error")
+
+            // Message's own sticker (append). The critical fix (2026-08-12 incident): a
+            // caption-less sticker message previously left msg.Text = null forever, so it never
+            // reached the ML gate at all — see hasPendingAzureOcr in ProcessMessage.
+            if msg.Sticker.IsSome then
+                %activity.SetTag("ownStickerCacheLookup", true)
+                try
+                    let! cached = this.OcrLookupCacheSticker(msg.Sticker.Value)
+                    match cached with
+                    | Some text ->
+                        if not (String.IsNullOrWhiteSpace text) then
+                            msg.AppendText(text)
+                            %activity.SetTag("ownStickerCacheHit", "text")
+                            %activity.SetTag("ownStickerCacheTextLength", text.Length)
+                        else
+                            %activity.SetTag("ownStickerCacheHit", "empty")
+                        msg.OwnStickerOcrApplied <- true
+                    | None ->
+                        %activity.SetTag("ownStickerCacheHit", "miss")
+                with ex ->
+                    logger.LogWarning(ex, "OCR cache lookup failed for own sticker on message {MessageId}; will fall back to Azure", msg.MessageId)
+                    %activity.SetTag("ownStickerCacheHit", "error")
     }
 
     /// Azure-only fallback for external-reply quote photos. Runs only when the
@@ -1890,6 +1992,56 @@ type BotService(
                 logger.LogError(ex, "Azure OCR failed for message {MessageId}; continuing classification with text-only ML", msg.MessageId)
                 %activity.SetTag("ocrOutcome", "error")
             msg.OwnPhotoOcrApplied <- true
+    }
+
+    /// Azure-only fallback for the external-reply quote sticker. Mirrors
+    /// TryEnrichWithForwardedPhotoOcr — runs only when the cache step left
+    /// ExternalReplyStickerOcrApplied=false.
+    member private this.TryEnrichWithForwardedStickerOcr(msg: TgMessage) = task {
+        if msg.ExternalReplyStickerOcrApplied then ()
+        elif botConfig.Value.ForwardSpamDetectionEnabled
+             && botConfig.Value.OcrEnabled
+             && isMessageFromAllowedChats botConfig.Value msg
+             && msg.ExternalReplySticker.IsSome then
+            use activity = botActivity.StartActivity("forwardedStickerOcrEnrichment")
+            try
+                let! ocrText = this.OcrStickerFresh(msg.ExternalReplySticker.Value, msg.MessageId)
+                match ocrText with
+                | Some text ->
+                    msg.PrependText(text)
+                    %activity.SetTag("externalReplyStickerOcrOutcome", "text")
+                    %activity.SetTag("externalReplyStickerOcrLength", text.Length)
+                | None ->
+                    %activity.SetTag("externalReplyStickerOcrOutcome", "empty")
+            with ex ->
+                logger.LogError(ex, "Azure OCR failed for external-reply sticker on message {MessageId}; continuing classification with text-only ML", msg.MessageId)
+                %activity.SetTag("externalReplyStickerOcrOutcome", "error")
+            msg.ExternalReplyStickerOcrApplied <- true
+    }
+
+    /// Azure-only OCR for the message's own sticker. Same invariants as
+    /// TryEnrichWithForwardedStickerOcr — guarded on OwnStickerOcrApplied, errors never block
+    /// the pipeline. Static stickers OCR the sticker itself; animated/video stickers OCR their
+    /// Thumbnail (or skip with a tagged reason if there is none) — see SelectStickerOcrTarget.
+    member private this.TryEnrichWithStickerOcr(msg: TgMessage) = task {
+        if msg.OwnStickerOcrApplied then ()
+        elif botConfig.Value.OcrEnabled
+             && msg.Sticker.IsSome
+             && isMessageFromAllowedChats botConfig.Value msg then
+            use activity = botActivity.StartActivity("stickerOcrEnrichment")
+            try
+                let! ocrResult = this.OcrStickerFresh(msg.Sticker.Value, msg.MessageId)
+                match ocrResult with
+                | Some ocrText ->
+                    msg.AppendText(ocrText)
+                    %activity.SetTag("ocrOutcome", "text")
+                    %activity.SetTag("ocrTextLength", ocrText.Length)
+                | None ->
+                    %activity.SetTag("ocrOutcome", "empty")
+            with ex ->
+                logger.LogError(ex, "Azure OCR failed for message {MessageId}; continuing classification with text-only ML", msg.MessageId)
+                %activity.SetTag("ocrOutcome", "error")
+            msg.OwnStickerOcrApplied <- true
     }
 
     member private _.TryEnrichWithInlineKeyboardText(msg: TgMessage) = task {
