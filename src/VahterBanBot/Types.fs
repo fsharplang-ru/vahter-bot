@@ -518,7 +518,13 @@ type BotConfiguration =
       /// Fixed bilingual warning text, bot_setting-backed so it's tunable via POST
       /// /reload-settings without a redeploy. Deliberately generic — no scores, no ML/LLM
       /// distinction, no strike counts — so it doesn't teach spammers how detection works.
-      SpamWarningText: string }
+      SpamWarningText: string
+      /// Only warn when the deletion's ML score is below this cutoff (strict <), i.e. the
+      /// likely-false-positive band — blatant spam (high score) is deleted silently, no warning.
+      /// bot_setting-backed (not a constant) because the score scale drifts under daily ML
+      /// retraining. Default 3.0 is prod-data-derived (93.8% ham-deletion coverage, 43-point
+      /// spammer-warning reduction) — see Bot.fs's DeleteSpam.
+      SpamWarningMaxScore: float }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 

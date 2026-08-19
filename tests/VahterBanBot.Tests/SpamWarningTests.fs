@@ -22,8 +22,10 @@ type SpamWarningMlTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         let user = Tg.user()
         do! fixture.ClearFakeCalls()
-        // "2222222" is a training-set spam word (see test_seed.sql); a single message never
-        // crosses the karma-autoban threshold on its own.
+        // "2222222" is a training-set spam word (see test_seed.sql), scoring 1.5686... under the
+        // fixture ML model (see MLScoreDeterminismTests) — comfortably below the default
+        // SPAM_WARNING_MAX_SCORE of 3.0. A single message never crosses the karma-autoban
+        // threshold on its own.
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = user)
         let! _ = fixture.SendMessage msgUpdate
 
@@ -40,6 +42,72 @@ type SpamWarningMlTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
                 && c.Body.Contains $"\"receiver_user_id\":{user.Id}")
         Assert.Equal(1, warnings.Length)
         Assert.Contains("automatically", warnings[0].Body)
+    }
+
+    [<Fact>]
+    let ``Flag ON: ML spam deletion scoring at/above SPAM_WARNING_MAX_SCORE sends no warning`` () = task {
+        do! setSpamWarning true
+
+        // Probe the exact ML score for this text under a deliberately permissive cutoff, then
+        // set SPAM_WARNING_MAX_SCORE just below it — robust against the underlying ML model
+        // (and its score scale) changing under retraining, unlike hardcoding a score value.
+        do! fixture.SetBotSetting("SPAM_WARNING_MAX_SCORE", "999")
+        do! fixture.ReloadSettings()
+        let probeMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = Tg.user())
+        let! _ = fixture.SendMessage probeMsg
+        let! scoreOpt = fixture.GetMlScore probeMsg.Message.Value
+        let score =
+            match scoreOpt with
+            | Some s -> s
+            | None -> failwith "Sanity: probe message should have been ML-scored"
+
+        do! fixture.SetBotSetting("SPAM_WARNING_MAX_SCORE", string (score - 0.5))
+        do! fixture.ReloadSettings()
+        let user = Tg.user()
+        do! fixture.ClearFakeCalls()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = user)
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
+        Assert.True(msgDeleted, "Sanity: message should still be auto-deleted regardless of the warning cutoff")
+
+        let! calls = fixture.GetFakeCalls "sendMessage"
+        Assert.False(
+            calls |> Array.exists (fun c -> c.Body.Contains $"\"receiver_user_id\":{user.Id}"),
+            "a deletion scoring at/above SPAM_WARNING_MAX_SCORE must not send the ephemeral warning")
+    }
+
+    [<Fact>]
+    let ``Flag ON: boundary — score exactly equal to SPAM_WARNING_MAX_SCORE sends no warning`` () = task {
+        do! setSpamWarning true
+
+        // Same probe-then-pin approach as the at/above-cutoff test, but this time the cutoff is
+        // pinned to the *exact* observed score (round-trippable via .NET's default double
+        // ToString()), exercising the strict `<` boundary rather than a margin below it.
+        do! fixture.SetBotSetting("SPAM_WARNING_MAX_SCORE", "999")
+        do! fixture.ReloadSettings()
+        let probeMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = Tg.user())
+        let! _ = fixture.SendMessage probeMsg
+        let! scoreOpt = fixture.GetMlScore probeMsg.Message.Value
+        let score =
+            match scoreOpt with
+            | Some s -> s
+            | None -> failwith "Sanity: probe message should have been ML-scored"
+
+        do! fixture.SetBotSetting("SPAM_WARNING_MAX_SCORE", string score)
+        do! fixture.ReloadSettings()
+        let user = Tg.user()
+        do! fixture.ClearFakeCalls()
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = user)
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! msgDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
+        Assert.True(msgDeleted, "Sanity: message should still be auto-deleted at the boundary")
+
+        let! calls = fixture.GetFakeCalls "sendMessage"
+        Assert.False(
+            calls |> Array.exists (fun c -> c.Body.Contains $"\"receiver_user_id\":{user.Id}"),
+            "score == SPAM_WARNING_MAX_SCORE must not warn -- the cutoff is a strict less-than")
     }
 
     [<Fact>]
@@ -84,11 +152,12 @@ type SpamWarningMlTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
             "a deletion that triggers total-ban must not also send an ephemeral warning")
     }
 
-    // Restore the flag to its default after every test.
+    // Restore the flag and cutoff to their defaults after every test.
     interface IAsyncDisposable with
         member _.DisposeAsync() =
             ValueTask(task {
                 do! fixture.SetBotSetting("SPAM_WARNING_ENABLED", "false")
+                do! fixture.SetBotSetting("SPAM_WARNING_MAX_SCORE", "3.0")
                 do! fixture.ReloadSettings()
             } :> Task)
 

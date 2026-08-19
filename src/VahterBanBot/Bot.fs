@@ -689,15 +689,23 @@ type BotService(
         // chat. Skipped if they were just total-banned above (a ban notice, not a warning, is
         // the right signal there) and restricted to the near-zero-false-positive text/LLM
         // verdicts — InvisibleMention/SpamTextCacheHit/ReactionSpam are deliberately excluded so
-        // a warning never teaches a spammer which signature tripped detection. Best-effort:
-        // delivery is not guaranteed and a failure must never fail the deletion, hence
-        // CallIgnore (never CallExn) — see AdminCommand's `confirm` helper for the same pattern.
+        // a warning never teaches a spammer which signature tripped detection. Further capped by
+        // SpamWarningMaxScore (strict <) so blatant spam (high score) is deleted silently — see
+        // BotConfiguration's doc comment. Best-effort: delivery is not guaranteed and a failure
+        // must never fail the deletion, hence CallIgnore (never CallExn) — see AdminCommand's
+        // `confirm` helper for the same pattern.
         if botConfig.Value.SpamWarningEnabled && not justBanned then
-            match reason with
-            | AutoDeleteReason.MlSpam _ | AutoDeleteReason.LlmSpam _ | AutoDeleteReason.ContentFilterSpam _ ->
+            let warnedReasonScore =
+                match reason with
+                | AutoDeleteReason.MlSpam x -> Some x.score
+                | AutoDeleteReason.LlmSpam x -> Some x.score
+                | AutoDeleteReason.ContentFilterSpam x -> Some x.score
+                | AutoDeleteReason.ReactionSpam _ | AutoDeleteReason.InvisibleMention | AutoDeleteReason.SpamTextCacheHit _ -> None
+            match warnedReasonScore with
+            | Some score when score < botConfig.Value.SpamWarningMaxScore ->
                 do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, botConfig.Value.SpamWarningText, receiverUserId = msg.SenderId))
                 recordSpamWarningSent msg.ChatId msg.ChatUsername
-            | AutoDeleteReason.ReactionSpam _ | AutoDeleteReason.InvisibleMention | AutoDeleteReason.SpamTextCacheHit _ -> ()
+            | Some _ | None -> ()
     }
 
     /// Reports uncertain spam to potential spam channel with KILL/SPAM/NOT SPAM buttons for human triage.
