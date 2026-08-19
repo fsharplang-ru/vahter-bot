@@ -166,7 +166,19 @@ let buildBotConf () =
                + "⚠️ Your message was removed automatically because it looks like spam. Please do not "
                + "post it again — repeated removals may lead to a ban. Moderators can see all removals "
                + "and will sort it out if this was a mistake.")
-      SpamWarningMaxScore = getSettingOr "SPAM_WARNING_MAX_SCORE" "3.0" |> double }
+      SpamWarningMaxScore = getSettingOr "SPAM_WARNING_MAX_SCORE" "3.0" |> double
+      // Temporary "vetted" protection after a vahter ham-mark. Off by default — see
+      // BotConfiguration's doc comment.
+      SpamProtectionEnabled = getSettingOr "SPAM_PROTECTION_ENABLED" "false" |> bool.Parse
+      SpamProtectionHours = getSettingOr "SPAM_PROTECTION_HOURS" "48" |> int
+      SpamProtectionMaxHits = getSettingOr "SPAM_PROTECTION_MAX_HITS" "5" |> int
+      SpamProtectionNotifyEnabled = getSettingOr "SPAM_PROTECTION_NOTIFY_ENABLED" "false" |> bool.Parse
+      SpamProtectionNotifyText =
+          getSettingOr "SPAM_PROTECTION_NOTIFY_TEXT"
+              ("✅ Модератор проверил ваше удалённое сообщение — это была ошибка фильтра. "
+               + "Приносим извинения, можете продолжать общение.\n\n"
+               + "✅ A moderator reviewed your removed message — it was flagged in error. "
+               + "Sorry about that, feel free to keep chatting.") }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled

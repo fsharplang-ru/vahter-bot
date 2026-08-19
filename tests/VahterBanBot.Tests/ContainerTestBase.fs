@@ -49,7 +49,9 @@ type SnapshotUserRow =
       banned: Nullable<bool>
       banned_at: Nullable<DateTime>
       banned_by: Nullable<int64>
-      reaction_count: Nullable<int> }
+      reaction_count: Nullable<int>
+      spam_protection_until: Nullable<DateTime>
+      spam_protection_hits: Nullable<int> }
 
 [<CLIMutable>]
 type SnapshotMessageRow =
@@ -774,6 +776,45 @@ WHERE event_type = 'MessageMarkedSpam'
         return count > 0
     }
 
+    /// True if a SpamProtectionGranted event exists for this user.
+    member this.SpamProtectionGranted(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'user:' || @userId AND event_type = 'SpamProtectionGranted'
+            """
+        let! count = conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+        return count > 0
+    }
+
+    /// Number of SpamProtectionConsumed events recorded for this user (the demotion count).
+    member this.SpamProtectionConsumedCount(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT COUNT(*) FROM event
+WHERE stream_id = 'user:' || @userId AND event_type = 'SpamProtectionConsumed'
+            """
+        return! conn.QuerySingleAsync<int>(sql, {| userId = userId |})
+    }
+
+    /// `reason` values of every SpamProtectionRevoked event for this user, oldest first.
+    member this.SpamProtectionRevokedReasons(userId: int64) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'reason' FROM event
+WHERE stream_id = 'user:' || @userId AND event_type = 'SpamProtectionRevoked'
+ORDER BY id
+            """
+        let! rows = conn.QueryAsync<string>(sql, {| userId = userId |})
+        return Array.ofSeq rows
+    }
+
     /// Reads the AdminChannelMessage event for (chatId, messageId), if one was persisted.
     member this.TryGetAdminChannelMessage(chatId: int64, messageId: int64) = task {
         use conn = new NpgsqlConnection(this.DbConnectionString)
@@ -801,7 +842,8 @@ WHERE event_type = 'AdminChannelMessage'
         //language=postgresql
         let sql =
             """
-SELECT user_id, stream_version, username, banned, banned_at, banned_by, reaction_count
+SELECT user_id, stream_version, username, banned, banned_at, banned_by, reaction_count,
+       spam_protection_until, spam_protection_hits
 FROM snapshot_user
 WHERE user_id = @userId
             """
@@ -862,6 +904,18 @@ ON CONFLICT (stream_id, stream_version) DO NOTHING
             """
         let! _ = conn.ExecuteAsync(sql, {| streamId = streamId; version = version; data = dataJson; createdAt = createdAt |})
         return ()
+    }
+
+    /// Inserts a SpamProtectionGranted event directly (bypassing the ham-mark flow), so tests
+    /// can set up a protected user's starting state without orchestrating a full auto-delete +
+    /// NotASpam-click round trip for every scenario. `version` must be the next free
+    /// stream_version on `user:{userId}` (1 for a brand-new synthetic test user).
+    member this.GrantSpamProtection(userId: int64, until: DateTime, chatId: int64, messageId: int64, vahterId: int64, ?version: int) = task {
+        let v = defaultArg version 1
+        do! this.InsertRawEvent<UserEvent>(
+                $"user:{userId}", v,
+                SpamProtectionGranted {| userId = userId; until = until; chatId = chatId; messageId = messageId; vahterId = vahterId |},
+                DateTime.UtcNow)
     }
 
 /// Polls `/ready` until the bot reports its ML model is loaded or trained.
