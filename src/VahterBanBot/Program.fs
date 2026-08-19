@@ -155,7 +155,17 @@ let buildBotConf () =
       // see AGENTS.md's Settings configuration section and SpamTextCache.fs.
       SpamTextCacheMode = getSettingOr "SPAM_TEXT_CACHE_MODE" "off" |> SpamTextCacheMode.FromString
       SpamTextCacheTtl = getSettingOr "SPAM_TEXT_CACHE_TTL_HOURS" "24" |> float |> TimeSpan.FromHours
-      SpamTextCacheMinLength = getSettingOr "SPAM_TEXT_CACHE_MIN_LENGTH" "40" |> int }
+      SpamTextCacheMinLength = getSettingOr "SPAM_TEXT_CACHE_MIN_LENGTH" "40" |> int
+      // Ephemeral spam-deletion warning. Off by default — see BotConfiguration's doc comment.
+      SpamWarningEnabled = getSettingOr "SPAM_WARNING_ENABLED" "false" |> bool.Parse
+      SpamWarningText =
+          getSettingOr "SPAM_WARNING_TEXT"
+              ("⚠️ Ваше сообщение было автоматически удалено, потому что оно похоже на спам. "
+               + "Пожалуйста, не отправляйте его повторно — повторные удаления могут привести к бану. "
+               + "Модераторы видят все удаления и разберутся, если это ошибка.\n\n"
+               + "⚠️ Your message was removed automatically because it looks like spam. Please do not "
+               + "post it again — repeated removals may lead to a ban. Moderators can see all removals "
+               + "and will sort it out if this was a mistake.") }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled

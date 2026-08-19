@@ -683,8 +683,21 @@ type BotService(
         logger.LogInformation logMsg
 
         // 4. Karma check + autoban
-        let! _ = this.CheckAndAutoBan(msg, actor)
-        ()
+        let! justBanned = this.CheckAndAutoBan(msg, actor)
+
+        // 5. Ephemeral heads-up to the sender (Bot API 10.2), visible only to them in the same
+        // chat. Skipped if they were just total-banned above (a ban notice, not a warning, is
+        // the right signal there) and restricted to the near-zero-false-positive text/LLM
+        // verdicts — InvisibleMention/SpamTextCacheHit/ReactionSpam are deliberately excluded so
+        // a warning never teaches a spammer which signature tripped detection. Best-effort:
+        // delivery is not guaranteed and a failure must never fail the deletion, hence
+        // CallIgnore (never CallExn) — see AdminCommand's `confirm` helper for the same pattern.
+        if botConfig.Value.SpamWarningEnabled && not justBanned then
+            match reason with
+            | AutoDeleteReason.MlSpam _ | AutoDeleteReason.LlmSpam _ | AutoDeleteReason.ContentFilterSpam _ ->
+                do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, botConfig.Value.SpamWarningText, receiverUserId = msg.SenderId))
+                recordSpamWarningSent msg.ChatId msg.ChatUsername
+            | AutoDeleteReason.ReactionSpam _ | AutoDeleteReason.InvisibleMention | AutoDeleteReason.SpamTextCacheHit _ -> ()
     }
 
     /// Reports uncertain spam to potential spam channel with KILL/SPAM/NOT SPAM buttons for human triage.
