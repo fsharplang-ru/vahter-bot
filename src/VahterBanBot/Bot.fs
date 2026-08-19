@@ -256,6 +256,10 @@ module private BotHelpers =
         let prefix = actor |> Option.map (fun a -> $"{a.DisplayName}, ") |> Option.defaultValue ""
         match reason with
         | AutoDeleteReason.MlSpam r           -> $"{prefix}score: {r.score}"
+        // Same "score: x" shape as MlSpam — the actor prefix (already "LLM/{modelName}, " via
+        // Actor.LLM.DisplayName) is what tells a human this was the LLM's own kill call, not a
+        // plain ML-threshold verdict; formatReasonStr keeps that wording stable on purpose.
+        | AutoDeleteReason.LlmSpam r          -> $"{prefix}score: {r.score}"
         | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
         | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
         | AutoDeleteReason.SpamTextCacheHit r  -> $"{prefix}spam-text cache hit, seeded by ban of {r.seedChatId}/{r.seedMessageId}"
@@ -267,6 +271,18 @@ module private BotHelpers =
             withSize |> Array.maxBy (fun p -> p.FileSize.Value)
         else
             photos |> Array.maxBy (fun p -> p.Width * p.Height)
+
+/// Picks the `AutoDeleteReason` case for an `AutoVerdict.Spam` kill, based on which actor made
+/// the call: `Actor.LLM` means `LlmVerdict.Kill` decided it (see `GetAutoVerdict`), so it's
+/// `LlmSpam`; anything else (`Actor.ML`, the only other actor `AutoVerdict.Spam` carries) is a
+/// plain ML-threshold verdict, `MlSpam`. Deliberately public — unlike BotHelpers' predicates,
+/// which are private to this file — so the 2026-08-18 misattribution incident (an LLM kill
+/// recorded/rendered as a plain `MlSpam` verdict) is unit-testable without a container: see
+/// VahterBanBot.Unit.Tests/SpamDeleteReasonTests.fs.
+let spamDeleteReason (score: float) (actor: Actor) : AutoDeleteReason =
+    match actor with
+    | Actor.LLM l -> AutoDeleteReason.LlmSpam {| score = score; modelName = l.modelName |}
+    | _           -> AutoDeleteReason.MlSpam {| score = score |}
 
 /// True if the message's first token is the "/vahter_report" command (mention-tolerant,
 /// same tokenizing pattern as BotHelpers.isVahterCommand above — e.g. "/vahter_report@my_bot"
@@ -1358,7 +1374,10 @@ type BotService(
                         | Some (AutoVerdict.Spam (score, actor)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "spam")
-                            do! enforceSpam actor (MlSpam {| score = score |})
+                            // The LLM itself said SPAM (LlmVerdict.Kill) vs. crossing the ML score
+                            // threshold on its own — attribute the reason accordingly (2026-08-18
+                            // incident: an LLM kill was mislabeled as a plain MlSpam verdict).
+                            do! enforceSpam actor (spamDeleteReason score actor)
                         | Some (AutoVerdict.ContentFilterSpam (score, actor, triggers)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "contentFilterSpam")
