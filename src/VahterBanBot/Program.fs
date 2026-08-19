@@ -165,7 +165,8 @@ let buildBotConf () =
                + "Модераторы видят все удаления и разберутся, если это ошибка.\n\n"
                + "⚠️ Your message was removed automatically because it looks like spam. Please do not "
                + "post it again — repeated removals may lead to a ban. Moderators can see all removals "
-               + "and will sort it out if this was a mistake.") }
+               + "and will sort it out if this was a mistake.")
+      SpamWarningMaxScore = getSettingOr "SPAM_WARNING_MAX_SCORE" "3.0" |> double }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled
