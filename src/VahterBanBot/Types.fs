@@ -510,7 +510,15 @@ type BotConfiguration =
       // require a redeploy — see AGENTS.md's Settings configuration section.
       SpamTextCacheMode: SpamTextCacheMode
       SpamTextCacheTtl: TimeSpan
-      SpamTextCacheMinLength: int }
+      SpamTextCacheMinLength: int
+      // Ephemeral warning to the user whose message was just auto-deleted as spam (Bot API
+      // 10.2). Off by default; only sent for MlSpam/LlmSpam/ContentFilterSpam deletions of a
+      // user who was NOT just auto-banned by CheckAndAutoBan — see Bot.fs's DeleteSpam.
+      SpamWarningEnabled: bool
+      /// Fixed bilingual warning text, bot_setting-backed so it's tunable via POST
+      /// /reload-settings without a redeploy. Deliberately generic — no scores, no ML/LLM
+      /// distinction, no strike counts — so it doesn't teach spammers how detection works.
+      SpamWarningText: string }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 

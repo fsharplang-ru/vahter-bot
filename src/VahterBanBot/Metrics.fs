@@ -30,6 +30,13 @@ let bannedUsersCounter =
         "Total number of users banned by vahters"
     )
 
+let spamWarningsSentCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_warnings_sent_total",
+        "warnings",
+        "Total number of ephemeral spam warnings sent to users after auto-deletion"
+    )
+
 let spamTextCacheSeedsCounter =
     meter.CreateCounter<int64>(
         "vahter_spam_text_cache_seeds_total",
@@ -87,5 +94,8 @@ let recordDeletedMessage (chatId: int64) (chatUsername: string) (reason: string)
 let recordDeletedMessagesBatch (chatId: int64) (chatUsername: string) (count: int) (reason: string) =
     if count > 0 then
         deletedMessagesCounter.Add(int64 count, tagsForDeletedMessage chatId chatUsername reason)
+
+let recordSpamWarningSent (chatId: int64) (chatUsername: string) =
+    spamWarningsSentCounter.Add(1L, tagsForChat chatId chatUsername)
 
 
