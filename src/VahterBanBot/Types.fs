@@ -117,13 +117,31 @@ type UserEvent =
     /// Reaction-spam triage verdict NOT_SPAM — sets a cooldown so a legit lurker doesn't
     /// keep re-triggering the pipeline. Set by LLM (autonomous mode) or by a vahter button.
     | ReactionTriageNotSpamSet     of {| userId: int64; until: DateTime; actor: Actor |}
+    /// Temporary "vetted" protection window granted after a ham mark on one of the user's
+    /// auto-deleted messages (VahterMarkedAsNotSpam / `/vahter unmarkspam`) — see Bot.fs's
+    /// MaybeGrantSpamProtection and the SPAM_PROTECTION_* settings. A later grant for the same
+    /// user REFRESHES the window: User.Fold below always takes the latest `until` and resets the
+    /// hit budget to 0, it never merges with a still-active prior grant.
+    | SpamProtectionGranted        of {| userId: int64; until: DateTime; chatId: int64; messageId: int64; vahterId: int64 |}
+    /// One would-be auto-deletion demoted to report-only (ReportPotentialSpam) for a protected
+    /// user — the budget counter consumed against SpamProtectionMaxHits. Never written alongside
+    /// a BotAutoDeleted for the same message (demotion means the message was NOT deleted).
+    | SpamProtectionConsumed       of {| userId: int64; chatId: int64; messageId: int64 |}
+    /// Protection window closed early, before its natural expiry. `reason` is one of
+    /// "budget" (demotion budget exhausted), "killed" (vahter KILL/soft-spam button),
+    /// "banned" (manual /ban, /sban, or any other TotalBan of the user), or "markspam"
+    /// (`/vahter markspam`) — see Bot.fs call sites. A plain time expiry (until <= now) is NOT
+    /// a revocation and never produces this event; SpamProtectionActive just goes false.
+    | SpamProtectionRevoked        of {| userId: int64; reason: string |}
 
 type User =
     { Id:             int64
       Banned:         (Actor * DateTime) option  // (bannedBy, bannedAt)
       Username:       string option
       ReactionCount:  int
-      NotSpamUntil:   DateTime option }          // reaction-spam triage cooldown
+      NotSpamUntil:   DateTime option             // reaction-spam triage cooldown
+      SpamProtectionUntil: DateTime option         // temporary post-ham-mark protection window
+      SpamProtectionHits:  int }                   // demotions consumed since the latest grant
     member this.IsBanned(banExpiryDays: int, now: DateTime) =
         match this.Banned with
         | None -> false
@@ -133,7 +151,21 @@ type User =
         match this.NotSpamUntil with
         | Some until -> until > now
         | None -> false
-    static member Zero = { Id = 0L; Banned = None; Username = None; ReactionCount = 0; NotSpamUntil = None }
+    /// True while a grant exists and hasn't expired yet, regardless of remaining budget — lets
+    /// callers tell "protection active" (demote) apart from "grant present but budget exhausted"
+    /// (revoke + normal delete) — see Bot.fs's EnforceOrDemote.
+    member this.HasUnexpiredSpamProtectionGrant(now: DateTime) =
+        this.SpamProtectionUntil |> Option.exists (fun until -> until > now)
+    /// Active protection: unexpired grant, hits under budget, and not currently banned
+    /// (defensive — banned users never reach this check in practice, since JustMessage
+    /// short-circuits them before ProcessMessage runs).
+    member this.SpamProtectionActive(maxHits: int, banExpiryDays: int, now: DateTime) =
+        not (this.IsBanned(banExpiryDays, now))
+        && this.HasUnexpiredSpamProtectionGrant(now)
+        && this.SpamProtectionHits < maxHits
+    static member Zero =
+        { Id = 0L; Banned = None; Username = None; ReactionCount = 0; NotSpamUntil = None
+          SpamProtectionUntil = None; SpamProtectionHits = 0 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
         | UsernameChanged e          -> { state with Id = e.userId; Username = e.username }
@@ -152,6 +184,9 @@ type User =
         | UserUnbanned e             -> { state with Id = e.userId; Banned = None }
         | UserReactionRecorded e     -> { state with Id = e.userId; ReactionCount = state.ReactionCount + e.delta }
         | ReactionTriageNotSpamSet e -> { state with Id = e.userId; NotSpamUntil = Some e.until }
+        | SpamProtectionGranted e    -> { state with Id = e.userId; SpamProtectionUntil = Some e.until; SpamProtectionHits = 0 }
+        | SpamProtectionConsumed e   -> { state with Id = e.userId; SpamProtectionHits = state.SpamProtectionHits + 1 }
+        | SpamProtectionRevoked e    -> { state with Id = e.userId; SpamProtectionUntil = None; SpamProtectionHits = 0 }
 
     static member fromTgUser (user: Funogram.Telegram.Types.User) =
         { User.Zero with Id = user.Id; Username = user.Username }
@@ -524,7 +559,25 @@ type BotConfiguration =
       /// bot_setting-backed (not a constant) because the score scale drifts under daily ML
       /// retraining. Default 3.0 is prod-data-derived (93.8% ham-deletion coverage, 43-point
       /// spammer-warning reduction) — see Bot.fs's DeleteSpam.
-      SpamWarningMaxScore: float }
+      SpamWarningMaxScore: float
+      // Temporary "vetted" protection after a vahter ham-mark (see Bot.fs's EnforceOrDemote /
+      // MaybeGrantSpamProtection). Master flag for BOTH the grant (VahterMarkedAsNotSpam /
+      // `/vahter unmarkspam`) and the demotion (would-be MlSpam/LlmSpam/ContentFilterSpam
+      // deletions become ReportPotentialSpam instead) — off by default.
+      SpamProtectionEnabled: bool
+      /// Protection window length from grant time (`until = now + hours`). Default 48.
+      SpamProtectionHours: int
+      /// Demotions allowed per grant before the window auto-revokes (reason "budget") and lets
+      /// the next would-be deletion proceed normally. Default 5.
+      SpamProtectionMaxHits: int
+      /// When true (default false), send a best-effort ephemeral (Bot API 10.2, same CallIgnore
+      /// pattern as SpamWarningEnabled) to the vetted user at grant time. Independent of
+      /// SpamProtectionEnabled's demotion behavior — a grant can be recorded silently.
+      SpamProtectionNotifyEnabled: bool
+      /// Fixed bilingual grant-notification text, bot_setting-backed. Deliberately generic —
+      /// never reveals that enforcement was relaxed or time-boxed, so a wrongly-vetted spammer
+      /// can't learn a shield exists.
+      SpamProtectionNotifyText: string }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 
@@ -577,7 +630,8 @@ let snapshotJsonOpts =
         .WithSkippableOptionFields(SkippableOptionFields.Always)
         .ToJsonSerializerOptions()
 
-/// Flat snapshot DTOs. Keys MUST match the GENERATED-column expressions in V38__snapshot.sql.
+/// Flat snapshot DTOs. Keys MUST match the GENERATED-column expressions in V38__snapshot.sql
+/// (and, for the spam-protection fields, V43__spam_protection_snapshot.sql).
 
 let userSnapshot (s: User) =                 // -> snapshot_user.state
     let bannedByUserId =
@@ -588,7 +642,9 @@ let userSnapshot (s: User) =                 // -> snapshot_user.state
        bannedAt       = s.Banned |> Option.map snd
        bannedByUserId = bannedByUserId
        reactionCount  = s.ReactionCount
-       notSpamUntil   = s.NotSpamUntil |}
+       notSpamUntil   = s.NotSpamUntil
+       spamProtectionUntil = s.SpamProtectionUntil
+       spamProtectionHits  = s.SpamProtectionHits |}
 
 let messageSnapshot (s: Message) =           // -> snapshot_message.message_data
     {| userId         = s.UserId

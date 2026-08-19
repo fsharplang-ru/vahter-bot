@@ -39,6 +39,7 @@
         <Compile Include="SnapshotTests.fs" />
         <Compile Include="SpamTextCacheTests.fs" />
         <Compile Include="SpamWarningTests.fs" />
+        <Compile Include="SpamProtectionTests.fs" />
         <Compile Include="Program.fs"/>
     </ItemGroup>
 

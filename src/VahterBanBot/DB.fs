@@ -566,6 +566,51 @@ FROM expanded;
         recordReactionTriageNotSpamSet userId until actor
 
     // -----------------------------------------------------------------------
+    // Public members — Spam protection (temporary post-ham-mark demotion window)
+    // -----------------------------------------------------------------------
+
+    /// Looks up the BotAutoDeleted event (if any) on a message's moderation stream, returning
+    /// the auto-deleted author's userId. Used both to guard a grant on the message actually
+    /// having been auto-deleted, and (for `/vahter unmarkspam`, which only has chatId/messageId
+    /// from the #ref token, no TgMessage) to recover the author's userId.
+    member _.TryGetBotAutoDeletedUserId(chatId: int64, messageId: int64) : Task<int64 option> =
+        task {
+            let! events = store.GetEventsForStream<ModerationEvent>($"moderation:{chatId}:{messageId}")
+            return events |> Array.tryPick (function BotAutoDeleted e -> Some e.userId | _ -> None)
+        }
+
+    /// Grants (or refreshes) the temporary spam-protection window — always appends, even if a
+    /// grant is already active, so a repeat ham mark extends `until` and resets the hit budget
+    /// (User.Fold's SpamProtectionGranted case takes the latest grant unconditionally).
+    member _.RecordSpamProtectionGranted(userId: int64, until: DateTime, chatId: int64, messageId: int64, vahterId: int64) : Task<unit> =
+        task {
+            let! _ = appendUserEvents userId (fun (_: User) ->
+                [ SpamProtectionGranted {| userId = userId; until = until; chatId = chatId; messageId = messageId; vahterId = vahterId |} ])
+            return ()
+        }
+
+    /// Records one demotion (ReportPotentialSpam instead of DeleteSpam) against the budget.
+    member _.RecordSpamProtectionConsumed(userId: int64, chatId: int64, messageId: int64) : Task<unit> =
+        task {
+            let! _ = appendUserEvents userId (fun (_: User) ->
+                [ SpamProtectionConsumed {| userId = userId; chatId = chatId; messageId = messageId |} ])
+            return ()
+        }
+
+    /// Revokes an active spam-protection grant early. No-op (appends nothing, returns false) if
+    /// the user has no unexpired grant — this lets call sites that fire unconditionally on every
+    /// ban/kill (e.g. TotalBan) stay cheap and idempotent without checking first. Returns true
+    /// iff an event was actually appended, so callers only increment the revoked-count metric on
+    /// a genuine revocation.
+    member _.RecordSpamProtectionRevoked(userId: int64, reason: string) : Task<bool> =
+        task {
+            let! (evts, _) = appendUserEvents userId (fun (state: User) ->
+                if not (state.HasUnexpiredSpamProtectionGrant (utcNow())) then []
+                else [ SpamProtectionRevoked {| userId = userId; reason = reason |} ])
+            return not (List.isEmpty evts)
+        }
+
+    // -----------------------------------------------------------------------
     // Public members — Profile cache (reaction-spam triage)
     // -----------------------------------------------------------------------
 

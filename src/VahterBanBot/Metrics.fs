@@ -37,6 +37,27 @@ let spamWarningsSentCounter =
         "Total number of ephemeral spam warnings sent to users after auto-deletion"
     )
 
+let spamProtectionsGrantedCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_protections_granted_total",
+        "grants",
+        "Total number of temporary spam-protection windows granted after a ham mark on an auto-deleted message"
+    )
+
+let spamProtectionDemotionsCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_protection_demotions_total",
+        "demotions",
+        "Total number of would-be auto-deletions demoted to report-only for a protected user"
+    )
+
+let spamProtectionsRevokedCounter =
+    meter.CreateCounter<int64>(
+        "vahter_spam_protections_revoked_total",
+        "revocations",
+        "Total number of spam-protection windows revoked before their natural expiry, tagged by reason"
+    )
+
 let spamTextCacheSeedsCounter =
     meter.CreateCounter<int64>(
         "vahter_spam_text_cache_seeds_total",
@@ -97,5 +118,21 @@ let recordDeletedMessagesBatch (chatId: int64) (chatUsername: string) (count: in
 
 let recordSpamWarningSent (chatId: int64) (chatUsername: string) =
     spamWarningsSentCounter.Add(1L, tagsForChat chatId chatUsername)
+
+let recordSpamProtectionGranted (chatId: int64) (chatUsername: string) =
+    spamProtectionsGrantedCounter.Add(1L, tagsForChat chatId chatUsername)
+
+let recordSpamProtectionDemotion (chatId: int64) (chatUsername: string) =
+    spamProtectionDemotionsCounter.Add(1L, tagsForChat chatId chatUsername)
+
+let tagsForSpamProtectionRevoke (chatId: int64) (chatUsername: string) (reason: string) =
+    [|
+        KeyValuePair("chat_id", box chatId)
+        KeyValuePair("chat_username", box (if isNull chatUsername then "" else chatUsername))
+        KeyValuePair("reason", box reason)
+    |]
+
+let recordSpamProtectionRevoked (chatId: int64) (chatUsername: string) (reason: string) =
+    spamProtectionsRevokedCounter.Add(1L, tagsForSpamProtectionRevoke chatId chatUsername reason)
 
 

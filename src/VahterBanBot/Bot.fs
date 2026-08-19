@@ -405,6 +405,15 @@ type BotService(
                 .SetTag("promptHash", l.promptHash)
         | _ -> ()
 
+        // Spam protection: any total ban makes an active window moot (a banned user skips
+        // processing entirely), but revoke here for a clean ledger — this is the single central
+        // hook for every TotalBan caller (manual /ban, BanOnReply/KILL, ML/LLM/Bot autobans via
+        // CheckAndAutoBan) rather than duplicating the call at each one. No-op (and metric-silent)
+        // if the user has no active grant, or if a more specific call site (e.g. the KILL button)
+        // already revoked it with a more precise reason.
+        let! spamProtectionRevoked = db.RecordSpamProtectionRevoked(msg.SenderId, "banned")
+        if spamProtectionRevoked then recordSpamProtectionRevoked msg.ChatId msg.ChatUsername "banned"
+
         // Ban-seeded spam-text cache: seed ONLY on a genuinely manual ban (Actor.User — i.e.
         // this is the /ban and BanOnReply path). This is a deliberate exhaustive-by-actor-shape
         // decision, not a catch-all — ML/LLM/Bot auto-bans (which also flow through TotalBan,
@@ -573,6 +582,11 @@ type BotService(
 
         let logText = softBanResultInLogMsg messageToRemove vahter duration (utcNow())
 
+        // /sban doesn't flow through TotalBan (it mutes rather than bans), so it needs its own
+        // revoke call — same "banned" bucket as TotalBan's central hook.
+        let! spamProtectionRevoked = db.RecordSpamProtectionRevoked(messageToRemove.SenderId, "banned")
+        if spamProtectionRevoked then recordSpamProtectionRevoked messageToRemove.ChatId messageToRemove.ChatUsername "banned"
+
         do! this.SoftBanInChat(messageToRemove.ChatId, messageToRemove.SenderId, duration) |> taskIgnore
         do! deleteMsgTask
 
@@ -709,16 +723,22 @@ type BotService(
     }
 
     /// Reports uncertain spam to potential spam channel with KILL/SPAM/NOT SPAM buttons for human triage.
-    /// Does NOT delete the message.
-    member private _.ReportPotentialSpam(msg: TgMessage, reason: AutoDeleteReason) = task {
+    /// Does NOT delete the message. `protectedUser` (default false) is set by EnforceOrDemote when
+    /// this call is a demotion of a would-be deletion for a protected user — it prefixes the card
+    /// with a moderator-only "🛡 protected user" tag. The tag/text must never say WHY (time-boxed,
+    /// budgeted) so a wrongly-vetted spammer reading a forwarded card can't learn a shield exists.
+    member private _.ReportPotentialSpam(msg: TgMessage, reason: AutoDeleteReason, ?protectedUser: bool) = task {
+        let isProtectedDemotion = defaultArg protectedUser false
         use activity = botActivity.StartActivity("reportPotentialSpam")
         %activity
             .SetTag("spammerId", msg.SenderId)
             .SetTag("spammerUsername", msg.SenderUsername)
+            .SetTag("protectedDemotion", isProtectedDemotion)
 
         // Button post carries no #ref (identity travels in the callback payloads);
         // the AllLogs mirror gets the token so it can be forward-actioned via /vahter markspam.
-        let baseMsg = $"Detected spam ({formatReasonStr reason None}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
+        let protectedTag = if isProtectedDemotion then "🛡 protected user\n" else ""
+        let baseMsg = $"{protectedTag}Detected spam ({formatReasonStr reason None}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
         let logMsg = $"{baseMsg}\n{msgRefToken msg.ChatId msg.MessageId}"
 
         // Create three callbacks for human triage
@@ -744,6 +764,35 @@ type BotService(
         // All logs channel (readonly, no buttons)
         do! tg.CallExn(Req.SendMessage.Make(botConfig.Value.AllLogsChannelId, logMsg)) |> taskIgnore
         logger.LogInformation logMsg
+    }
+
+    /// Grants (or refreshes) the temporary spam-protection window for the author of a ham-marked
+    /// message, but ONLY if that message was actually auto-deleted (BotAutoDeleted on its
+    /// moderation stream) — a ham mark on a message that was merely reported (never deleted) has
+    /// nothing to protect against. Called from both ham-mark entry points: the "✅ NOT a spam"
+    /// button (VahterMarkedAsNotSpam) and `/vahter unmarkspam` (VahterUnmarkSpam) — the latter
+    /// only has (chatId, messageId) from the #ref token, so the author's userId is recovered from
+    /// the BotAutoDeleted event itself (TryGetBotAutoDeletedUserId), same as the design note.
+    /// `chatUsername` is best-effort (metrics tagging only) — null when the caller doesn't have it.
+    member private this.MaybeGrantSpamProtection(chatId: int64, chatUsername: string, messageId: int64, vahterId: int64) = task {
+        if botConfig.Value.SpamProtectionEnabled then
+            let! autoDeletedUserId = db.TryGetBotAutoDeletedUserId(chatId, messageId)
+            match autoDeletedUserId with
+            | None -> ()  // never auto-deleted — nothing to protect
+            | Some userId ->
+                let until = (utcNow()).AddHours(float botConfig.Value.SpamProtectionHours)
+                do! db.RecordSpamProtectionGranted(userId, until, chatId, messageId, vahterId)
+                recordSpamProtectionGranted chatId chatUsername
+                logger.LogInformation(
+                    "Granted spam protection to user {UserId} until {Until:u} (ham mark on {ChatId}/{MessageId} by vahter {VahterId})",
+                    userId, until, chatId, messageId, vahterId)
+
+                // Best-effort ephemeral heads-up to the vetted user, same CallIgnore pattern as
+                // SpamWarningEnabled — a delivery failure must never fail the ham mark. Text is
+                // deliberately generic (see SpamProtectionNotifyText's doc comment): it must never
+                // reveal that enforcement was relaxed or time-boxed.
+                if botConfig.Value.SpamProtectionNotifyEnabled then
+                    do! tg.CallIgnore(Req.SendMessage.Make(chatId, botConfig.Value.SpamProtectionNotifyText, receiverUserId = userId))
     }
 
     // ── Reaction-spam triage pipeline ──────────────────────────────────────
@@ -1223,7 +1272,44 @@ type BotService(
             ()  // unreachable — ProcessMessage never computes a hit in Off mode
     }
 
-    member private this.ProcessMessage(msg: TgMessage) = task {
+    /// Plain (non-demotable) enforcement — DeleteSpam when ML_SPAM_DELETION_ENABLED, else just
+    /// a ReportPotentialSpam card. Exactly the pre-existing `enforceSpam`/pre-OCR behavior,
+    /// factored out so EnforceOrDemote below can fall back to it unchanged.
+    member private this.EnforceSpamPlain(msg: TgMessage, actor: Actor, reason: AutoDeleteReason) = task {
+        if botConfig.Value.MlSpamDeletionEnabled then
+            do! this.DeleteSpam(msg, actor, reason)
+        else
+            do! this.ReportPotentialSpam(msg, reason)
+    }
+
+    /// Wraps a would-be MlSpam/LlmSpam/ContentFilterSpam enforcement with the temporary
+    /// post-ham-mark protection check (SPAM_PROTECTION_*, locked design). NEVER used for the
+    /// SpamTextCacheHit/InvisibleMention/ReactionSpam carve-outs — those call EnforceSpamPlain /
+    /// DeleteSpam / ReportPotentialSpam directly and are untouched by this feature.
+    /// `user` is whatever JustMessage already fetched via GetUserById for the banned-check —
+    /// reused here instead of a second per-message query.
+    member private this.EnforceOrDemote(msg: TgMessage, actor: Actor, reason: AutoDeleteReason, user: User option) = task {
+        if not botConfig.Value.SpamProtectionEnabled then
+            do! this.EnforceSpamPlain(msg, actor, reason)
+        else
+            let now = utcNow()
+            match user with
+            | Some u when u.SpamProtectionActive(botConfig.Value.SpamProtectionMaxHits, botConfig.Value.BanExpiryDays, now) ->
+                // Demote: report instead of delete, tag the card, and consume one hit of budget.
+                do! this.ReportPotentialSpam(msg, reason, protectedUser = true)
+                do! db.RecordSpamProtectionConsumed(msg.SenderId, msg.ChatId, msg.MessageId)
+                recordSpamProtectionDemotion msg.ChatId msg.ChatUsername
+            | Some u when u.HasUnexpiredSpamProtectionGrant now ->
+                // Grant present but the demotion budget is exhausted on THIS message — revoke
+                // and let it delete normally, same as any other would-be spam deletion.
+                let! revoked = db.RecordSpamProtectionRevoked(u.Id, "budget")
+                if revoked then recordSpamProtectionRevoked msg.ChatId msg.ChatUsername "budget"
+                do! this.EnforceSpamPlain(msg, actor, reason)
+            | _ ->
+                do! this.EnforceSpamPlain(msg, actor, reason)
+    }
+
+    member private this.ProcessMessage(msg: TgMessage, user: User option) = task {
         // Records the message exactly once, with whatever enrichment finished
         // by the time we call it. Each branch below calls this at the right
         // point so the persisted text matches the text we classified on, and
@@ -1364,10 +1450,7 @@ type BotService(
                             msg.MessageId, score)
                         do! recordMsg()
                         let reason = MlSpam {| score = score |}
-                        if botConfig.Value.MlSpamDeletionEnabled then
-                            do! this.DeleteSpam(msg, Actor.ML, reason)
-                        else
-                            do! this.ReportPotentialSpam(msg, reason)
+                        do! this.EnforceOrDemote(msg, Actor.ML, reason, user)
                     | None ->
                         %mlActivity.SetTag("preOcrShortCircuit", false)
                         // Text alone wasn't enough — pay for Azure OCR on the
@@ -1383,13 +1466,10 @@ type BotService(
                         do! recordMsg()
                         let! autoVerdict = this.GetAutoVerdict(msg, usrMsgCount)
                         // Shared by AutoVerdict.Spam and AutoVerdict.ContentFilterSpam below — both
-                        // take the EXACT SAME delete/report enforcement gating; only the `reason`
-                        // (and hence formatReasonStr's rendering) differs between the two arms.
+                        // take the EXACT SAME delete/report/demote enforcement gating; only the
+                        // `reason` (and hence formatReasonStr's rendering) differs between the two arms.
                         let enforceSpam (actor: Actor) (reason: AutoDeleteReason) = task {
-                            if botConfig.Value.MlSpamDeletionEnabled then
-                                do! this.DeleteSpam(msg, actor, reason)
-                            else
-                                do! this.ReportPotentialSpam(msg, reason)
+                            do! this.EnforceOrDemote(msg, actor, reason, user)
                         }
                         match autoVerdict with
                         | Some (AutoVerdict.Spam (score, actor)) ->
@@ -1442,7 +1522,7 @@ type BotService(
             do! tg.CallExn(Req.DeleteMessage.Make(msg.ChatId, msg.MessageId))
                 |> safeTaskAwait (fun e -> logger.LogDebug(e, "Failed to delete message {MessageId} from chat {ChatId}", msg.MessageId, msg.ChatId))
 
-        else do! this.ProcessMessage(msg)
+        else do! this.ProcessMessage(msg, user)
     }
 
     // -----------------------------------------------------------------------
@@ -1701,6 +1781,7 @@ type BotService(
                 do! this.ReplyAdmin(msg, "Could not find a message reference in that post. Forward a bot log message from the logs channel and reply /vahter unmarkspam to it.")
             | Some(chatId, messageId) ->
                 do! db.RecordMessageMarkedHam(chatId, messageId, "", Some vahter.Id)
+                do! this.MaybeGrantSpamProtection(chatId, null, messageId, vahter.Id)
                 do! this.ReplyAdmin(msg, $"✅ Reversed: message {messageId} in chat {chatId} marked as NOT spam (ham).")
                 logger.LogInformation($"Vahter {vahter.Id} reversed spam mark for {chatId}:{messageId}")
     }
@@ -1718,6 +1799,16 @@ type BotService(
                 do! this.ReplyAdmin(msg, "Could not find a message reference in that post. Forward a bot log message from the logs channel and reply /vahter markspam to it.")
             | Some(chatId, messageId) ->
                 do! db.RecordMessageMarkedSpam(chatId, messageId, Some vahter.Id)
+                // Classification-only reversal of a possible earlier grant — no TgMessage/author
+                // id at hand here, but RecordMessageMarkedSpam's target is the same message the
+                // ham mark (if any) would have granted on, so recover the author the same way
+                // MaybeGrantSpamProtection does.
+                let! autoDeletedUserId = db.TryGetBotAutoDeletedUserId(chatId, messageId)
+                match autoDeletedUserId with
+                | Some userId ->
+                    let! revoked = db.RecordSpamProtectionRevoked(userId, "markspam")
+                    if revoked then recordSpamProtectionRevoked chatId null "markspam"
+                | None -> ()
                 do! this.ReplyAdmin(msg, $"✅ Message {messageId} in chat {chatId} marked as spam.")
                 logger.LogInformation($"Vahter {vahter.Id} marked {chatId}:{messageId} as spam")
     }
@@ -2186,6 +2277,7 @@ type BotService(
                 .SetTag("messageId", msgId)
                 .SetTag("chatId", chatId)
         do! db.RecordMessageMarkedHam(chatId, msgId, (if isNull tgMsg.Text then "" else tgMsg.Text), Some vahter.Id)
+        do! this.MaybeGrantSpamProtection(chatId, chatName, msgId, vahter.Id)
 
         let vahterUsername = vahter.Username |> Option.defaultValue null
 
@@ -2205,6 +2297,11 @@ type BotService(
 
         let isAuthed = isBanAuthorized botConfig.Value tgMsg vahter logger
         if isAuthed then
+            // The KILL verdict on a (possibly protected) card — revoke explicitly, before
+            // TotalBan's own central "banned" hook, so the ledger's reason reflects the actual
+            // vahter verdict. TotalBan's hook below then no-ops (grant already cleared).
+            let! revoked = db.RecordSpamProtectionRevoked(tgMsg.SenderId, "killed")
+            if revoked then recordSpamProtectionRevoked chatId tgMsg.ChatUsername "killed"
             let actor = Actor.User {| userId = vahter.Id; username = vahter.Username |}
             do! this.TotalBan(tgMsg, actor)
     }
@@ -2227,6 +2324,12 @@ type BotService(
 
         // 2. Mark as spam (for ML training + karma)
         do! db.RecordMessageMarkedSpam(chatId, msgId, None)
+
+        // 2.5. A vahter spam verdict on a (possibly protected) message revokes protection
+        // immediately, even though this path doesn't ban — the vahter just judged the user
+        // spam after all.
+        let! revoked = db.RecordSpamProtectionRevoked(tgMsg.SenderId, "killed")
+        if revoked then recordSpamProtectionRevoked chatId chatName "killed"
 
         // 3. Log the action
         let vahterUsername = vahter.Username |> Option.defaultValue null
