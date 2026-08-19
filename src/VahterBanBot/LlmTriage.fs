@@ -18,6 +18,7 @@ open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.LlmVerdictCache
+open VahterBanBot.ProfileFetcher
 open BotInfra
 
 // ── Dedup helpers ─────────────────────────────────────────────────────────────
@@ -237,6 +238,65 @@ let private logContentFilterRejection (logger: ILogger) (pathLabel: string) (tri
         "{TriagePath} content_filter rejection (HTTP 400): Azure RAI policy flagged the prompt as harmful. Triggers: {ContentFilterTriggers}. Raw response: {RawResponseBody}",
         pathLabel, triggers, defaultArg rawBody "(raw response body unavailable)")
 
+// ── Empty-text media placeholder (message LLM triage only) ────────────────────
+//
+// Incident (2026-08-18, @AvaloniaRU, msg 217142): a caption-less spam-check-worthy sticker had
+// no OCR text, so `msg.Text` stayed null. The LLM user-content rendered `Message:` with an EMPTY
+// body (null interpolates to ""), so gpt-4o-mini judged a blank message on username/display-name
+// alone and said SPAM — an innocent static cat sticker got auto-deleted. Real spammers DO post
+// content-less stickers/photos with the spam in their NAME or BIO, so the fix is to give the LLM
+// honest context about WHAT the message is, not to skip triage on empty text.
+//
+// CRITICAL: `mediaPlaceholder` is read ONLY when building the LLM prompt below — it must never be
+// written back via `msg.AppendText`/`msg.PrependText`. `msg.Text` also feeds the ML scorer, the
+// spam-text cache, the verdict-cache key (see `hasStableTextCacheKey` / Classify below), and the
+// deleted-spam channel post. If the placeholder ever leaked into `msg.Text`, every photo/sticker
+// would collapse onto the SAME cache key (e.g. "[photo, no readable text]") and — because
+// SPAM/SKIP verdicts are cached GLOBALLY by text hash (see the module doc comment at the top of
+// this file) — one SPAM verdict on a single photo would globally condemn every future photo.
+
+/// Descriptive placeholder for the LLM prompt's `Message:` body when the message has no readable
+/// text (`msg.Text` is null/empty) — `None` when there IS real text, in which case the caller
+/// should render `msg.Text` as-is. Degrades gracefully when sticker emoji/set_name are absent
+/// (the 2026-08-12 prod spam sticker had neither — see StickerOcrTests.fs).
+let mediaPlaceholder (msg: TgMessage) : string option =
+    if not (String.IsNullOrEmpty msg.Text) then None
+    else
+        match msg.Sticker with
+        | Some s ->
+            let emojiPart = s.Emoji |> Option.map (fun e -> $" \"{e}\"") |> Option.defaultValue ""
+            let setPart = s.SetName |> Option.map (fun n -> $" from set \"{n}\"") |> Option.defaultValue ""
+            Some $"[sticker{emojiPart}{setPart}, no readable text]"
+        | None ->
+            if msg.Photos.Length > 0 then
+                Some "[photo, no readable text]"
+            else
+                // RawMessage is `internal` (same-assembly access only — see TgMessage.fs), so this
+                // generic media check lives here rather than as a public TgMessage member.
+                let raw = msg.RawMessage
+                if raw.Video.IsSome then Some "[video, no readable text]"
+                elif raw.Animation.IsSome then Some "[animation, no readable text]"
+                elif raw.VideoNote.IsSome then Some "[video note, no readable text]"
+                elif raw.Voice.IsSome then Some "[voice message, no readable text]"
+                elif raw.Audio.IsSome then Some "[audio, no readable text]"
+                elif raw.Document.IsSome then Some "[document, no readable text]"
+                else Some "[empty message]"
+
+/// Whether `msg.Text` alone yields a stable cache key — mirrors the guard `Classify` uses to pick
+/// `NoCache` (LlmTriage.fs's `CacheRouting`). Pulled out as a pure predicate so "a placeholder-
+/// rendered message still hits NoCache" is unit-testable without a live Azure client: `msg.Text`
+/// is never mutated by `mediaPlaceholder` above, so a message that gets a placeholder in the
+/// prompt still reports `false` here, exactly as before this change.
+let hasStableTextCacheKey (msg: TgMessage) : bool =
+    not (String.IsNullOrEmpty msg.Text)
+
+/// Renders a fetched sender bio for the LLM prompt's "Bio:" line — `(none)` for null/empty/
+/// whitespace, the bio text otherwise. `IUserProfileFetcher.Fetch` never throws (see
+/// ProfileFetcher.fs) and already degrades any fetch failure to `Bio = ""`, so blank-vs-real is
+/// the only distinction left to make here. Pulled out as a pure function purely for unit testing.
+let formatBioLine (bio: string) : string =
+    if String.IsNullOrWhiteSpace bio then "(none)" else bio
+
 // ── Interface + implementation ────────────────────────────────────────────────
 
 type ILlmTriage =
@@ -244,7 +304,7 @@ type ILlmTriage =
     abstract member PromptHash: string
     abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmVerdict>
 
-type AzureLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<AzureLlmTriage>, db: DbService, cache: ILlmVerdictCache) =
+type AzureLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<AzureLlmTriage>, db: DbService, cache: ILlmVerdictCache, profileFetcher: IUserProfileFetcher) =
 
     // Coalesces concurrent identical-text classifications (same spam across channels at once).
     let inflight = ConcurrentDictionary<string, Lazy<Task<LlmVerdict>>>()
@@ -261,6 +321,12 @@ Message count context (provided as "Total messages seen from this user"):
  - < 10 messages: new user — almost all spammers fall in this range
  - 10-20 messages: could be a hidden spammer who posted random stuff to blend in
  - 20-50 messages: most probably not a spammer — message must be really advertising something or be malicious
+
+A media-only message with no readable text (rendered below as e.g. "[sticker ..., no readable
+text]" or "[photo, no readable text]") is NOT, by itself, a spam signal — real spammers do this,
+but so do ordinary members posting a reaction sticker/photo with nothing to OCR. For such
+messages, judge only the sender signals (username, display name, bio); when those look normal,
+prefer NOT_SPAM/SKIP.
 
 Classify the message as exactly one of:
  - SPAM     : obvious advertising/bot/malicious content — delete and reduce user karma
@@ -296,13 +362,27 @@ Respond with exactly: {"verdict":"SPAM"} or {"verdict":"SKIP"} or {"verdict":"NO
 
         let username    = if isNull msg.SenderUsername then "(none)" else $"@{msg.SenderUsername}"
         let displayName = msg.SenderDisplayName
+
+        // Fetched only here — at the point of actual LLM escalation, not for every message.
+        // IUserProfileFetcher.Fetch never throws (see ProfileFetcher.fs); an empty/missing bio
+        // still degrades to "(none)" below.
+        let! profile = profileFetcher.Fetch(msg.SenderId)
+        let bio = formatBioLine profile.Bio
+
+        // See the module doc comment above `mediaPlaceholder`: this placeholder is rendered ONLY
+        // in the prompt string below — msg.Text itself is never touched, so the ML scorer / spam-
+        // text cache / verdict-cache key / deleted-spam channel post all keep seeing the real
+        // (empty) text.
+        let messageBody = mediaPlaceholder msg |> Option.defaultValue msg.Text
+
         let userPrompt  =
             $"""Username: {username}
 Display name: {displayName}
+Bio: {bio}
 Total messages seen from this user: {userMsgCount}
 
 Message:
-{msg.Text}"""
+{messageBody}"""
 
         let options =
             ChatCompletionOptions(
@@ -395,7 +475,9 @@ Message:
             else
 
             // Photo-only / empty-text messages have no stable text key → classify directly, no cache.
-            match (if String.IsNullOrEmpty msg.Text then None else Some (md5Hex msg.Text)) with
+            // (Unchanged by the media-placeholder prompt rendering above — hasStableTextCacheKey
+            // reads msg.Text, never the placeholder; see that function's doc comment.)
+            match (if hasStableTextCacheKey msg then Some (md5Hex msg.Text) else None) with
             | None -> return! classifyUncached msg userMsgCount NoCache ct
             | Some hash ->
                 let senderKey = sprintf "text:%d:%s" msg.SenderId hash

@@ -210,6 +210,14 @@ type VahterAction =
 
 type AutoDeleteReason =
     | MlSpam of {| score: float |}
+    /// The kill decision came from LLM triage (LlmVerdict.Kill — the LLM itself said SPAM), not
+    /// from crossing the ML score threshold on its own. Distinct from MlSpam so stats/rendering
+    /// don't mislabel an LLM call as a plain ML verdict — see the 2026-08-18 incident
+    /// (@AvaloniaRU msg 217142): an innocent caption-less sticker was auto-deleted with
+    /// `reason = MlSpam` even though the LLM, not the ML threshold, made the kill call.
+    /// `score` is still the ML score that triggered LLM escalation (for the same human-facing
+    /// "score: x" rendering as MlSpam); `modelName` names which deployment decided.
+    | LlmSpam of {| score: float; modelName: string |}
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
     /// Ban-seeded spam-text cache hit (see SpamTextCache.fs) — the normalized text exactly
