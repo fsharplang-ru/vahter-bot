@@ -17,6 +17,7 @@
     <Compile Include="StickerOcrTests.fs" />
     <Compile Include="ReportCommandTests.fs" />
     <Compile Include="SpamDeleteReasonTests.fs" />
+    <Compile Include="TruncateTextForTgTests.fs" />
     <Compile Include="TtlCacheTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

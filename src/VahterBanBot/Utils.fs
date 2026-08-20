@@ -14,6 +14,18 @@ let prependUsername (s: string) =
         s
     else "@" + s
 
+/// Telegram's sendMessage caps text at 4096 chars — callers embedding unbounded user text
+/// (e.g. OCR-enriched msg.Text) must pre-truncate with a budget that leaves headroom for the
+/// rest of the message (header, ref token) on top of `text`.
+let truncateTextForTg (budget: int) (text: string) =
+    if isNull text then
+        ""
+    elif text.Length <= budget then
+        text
+    else
+        let marker = $"… [truncated, {text.Length} chars total]"
+        text.Substring(0, budget - marker.Length) + marker
+
 let pluralize n s =
     if n < 2.0 then
         s

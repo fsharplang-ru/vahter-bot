@@ -672,7 +672,7 @@ type BotService(
         // path tolerates action_message_id = NULL, so the brief race window is safe.
         // Button post carries no #ref (identity travels in the callback payload);
         // the AllLogs mirror gets the token so it can be forward-actioned via /vahter markspam.
-        let baseMsg = $"Deleted spam ({formatReasonStr reason (Some actor)}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
+        let baseMsg = $"Deleted spam ({formatReasonStr reason (Some actor)}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{truncateTextForTg 3500 msg.Text}"
         let logMsg = $"{baseMsg}\n{msgRefToken msg.ChatId msg.MessageId}"
         let callbackId = Guid.NewGuid()
         do! db.RecordCallbackCreated(callbackId, CallbackMessage.NotASpam { message = msg.RawMessage }, msg.SenderId, botConfig.Value.DetectedSpamChannelId)
@@ -738,7 +738,7 @@ type BotService(
         // Button post carries no #ref (identity travels in the callback payloads);
         // the AllLogs mirror gets the token so it can be forward-actioned via /vahter markspam.
         let protectedTag = if isProtectedDemotion then "🛡 protected user\n" else ""
-        let baseMsg = $"{protectedTag}Detected spam ({formatReasonStr reason None}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{msg.Text}"
+        let baseMsg = $"{protectedTag}Detected spam ({formatReasonStr reason None}) in {prependUsername msg.ChatUsername} ({msg.ChatId}) from {prependUsername msg.SenderUsername} ({msg.SenderId}) with text:\n{truncateTextForTg 3500 msg.Text}"
         let logMsg = $"{baseMsg}\n{msgRefToken msg.ChatId msg.MessageId}"
 
         // Create three callbacks for human triage
@@ -2281,7 +2281,7 @@ type BotService(
 
         let vahterUsername = vahter.Username |> Option.defaultValue null
 
-        let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.Id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{tgMsg.Text}\n{msgRefToken chatId msgId}"
+        let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.Id}) marked message {msgId} in {prependUsername chatName}({chatId}) as false-positive (NOT A SPAM)\n{truncateTextForTg 3500 tgMsg.Text}\n{msgRefToken chatId msgId}"
         do! tg.CallExn(Req.SendMessage.Make(botConfig.Value.AllLogsChannelId, logMsg)) |> taskIgnore
         logger.LogInformation logMsg
     }
@@ -2333,7 +2333,7 @@ type BotService(
 
         // 3. Log the action
         let vahterUsername = vahter.Username |> Option.defaultValue null
-        let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.Id}) marked message {msgId} in {prependUsername chatName}({chatId}) as SPAM (soft, no ban)\n{tgMsg.Text}\n{msgRefToken chatId msgId}"
+        let logMsg = $"Vahter {prependUsername vahterUsername} ({vahter.Id}) marked message {msgId} in {prependUsername chatName}({chatId}) as SPAM (soft, no ban)\n{truncateTextForTg 3500 tgMsg.Text}\n{msgRefToken chatId msgId}"
         do! tg.CallExn(Req.SendMessage.Make(botConfig.Value.AllLogsChannelId, logMsg)) |> taskIgnore
         logger.LogInformation logMsg
 
