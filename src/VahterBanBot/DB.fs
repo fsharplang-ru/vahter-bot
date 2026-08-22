@@ -44,6 +44,14 @@ type ManualBanSeed =
       message_text: string
       banned_at: DateTime }
 
+/// Prior-sightings signal for prompt v2's repetition line — see GetTextRepetition and
+/// LlmTriage.fs's formatRepetitionLine.
+[<CLIMutable>]
+type MessageRepetition =
+    { total: int
+      distinct_other_users: int
+      distinct_chats: int }
+
 [<CLIMutable>]
 type SpamOrHamDb =
     { text: string
@@ -404,6 +412,35 @@ WHERE event_type = 'MessageReceived'
 
             let! messages = conn.QueryAsync<UserMessage>(sql, {| userId = userId |})
             return Array.ofSeq messages
+        }
+
+    /// Prompt-v2 repetition signal (see LlmTriage.fs's formatRepetitionLine): count of this exact
+    /// text posted in the last `sinceDays` days, by other users, across chats. Excludes the
+    /// message's own `stream_id` — its MessageReceived event is already recorded by the time this
+    /// runs, so a naive count would double-count itself. Backed by idx_event_msg_text_md5_created_at (V44).
+    member _.GetTextRepetition(chatId: int64, messageId: int64, senderId: int64, text: string, sinceDays: int) : Task<MessageRepetition> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+
+            //language=postgresql
+            let sql =
+                """
+SELECT
+    COUNT(*)::INT AS total,
+    COUNT(DISTINCT (data->>'userId')::BIGINT)
+        FILTER (WHERE (data->>'userId')::BIGINT <> @senderId)::INT AS distinct_other_users,
+    COUNT(DISTINCT (data->>'chatId')::BIGINT)::INT AS distinct_chats
+FROM event
+WHERE event_type = 'MessageReceived'
+  AND msg_text_md5 = md5(@text)
+  AND created_at >= @since
+  AND stream_id <> @excludeStreamId
+                """
+
+            let since = utcNow().AddDays(-float sinceDays)
+            let excludeStreamId = $"message:{chatId}:{messageId}"
+            return! conn.QuerySingleAsync<MessageRepetition>(
+                        sql, {| senderId = senderId; text = text; since = since; excludeStreamId = excludeStreamId |})
         }
 
     /// Inserts or updates a single bot_setting value (used by admin commands).
