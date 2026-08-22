@@ -1,6 +1,7 @@
 module VahterBanBot.LlmTriage
 
-// ChatReasoningEffortLevel is [Experimental("OPENAI001")] in the SDK (FS0057) — used deliberately below.
+// ChatReasoningEffortLevel is [Experimental("OPENAI001")], SetNewMaxCompletionTokensPropertyEnabled
+// is [Experimental("AOAI001")] in the SDK (both FS0057) — used deliberately below.
 #nowarn "57"
 
 open System
@@ -14,6 +15,7 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open Azure.AI.OpenAI
+open Azure.AI.OpenAI.Chat
 open OpenAI.Chat
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Options
@@ -468,6 +470,8 @@ Message:
                     MaxOutputTokenCount = Nullable reqParams.MaxOutputTokenCount,
                     ResponseFormat      = ChatResponseFormat.CreateJsonSchemaFormat(
                                             "spam_verdict", spamVerdictSchema, jsonSchemaIsStrict = Nullable true))
+            // Azure SDK sends legacy max_tokens unless opted in; gpt-5 family rejects it.
+            o.SetNewMaxCompletionTokensPropertyEnabled(true)
             match reqParams.Temperature with
             | Some t -> o.Temperature <- Nullable t
             | None -> ()   // gpt-5-family rejects/ignores Temperature — omitted entirely, not sent as 0.
@@ -732,11 +736,15 @@ Respond with strict JSON: {"verdict":"BAN"|"SPAM"|"NOT_SPAM"|"UNSURE", "reason":
             else
 
             let options =
-                ChatCompletionOptions(
-                    Temperature         = Nullable 0.0f,
-                    MaxOutputTokenCount = Nullable 200,
-                    ResponseFormat      = ChatResponseFormat.CreateJsonSchemaFormat(
-                                            "reaction_spam_verdict", reactionVerdictSchema, jsonSchemaIsStrict = Nullable true))
+                let o =
+                    ChatCompletionOptions(
+                        Temperature         = Nullable 0.0f,
+                        MaxOutputTokenCount = Nullable 200,
+                        ResponseFormat      = ChatResponseFormat.CreateJsonSchemaFormat(
+                                                "reaction_spam_verdict", reactionVerdictSchema, jsonSchemaIsStrict = Nullable true))
+                // Azure SDK sends legacy max_tokens unless opted in; gpt-5 family rejects it.
+                o.SetNewMaxCompletionTokensPropertyEnabled(true)
+                o
             let messages : ChatMessage[] =
                 [| SystemChatMessage(staticSystemPrompt)
                    buildUserMessage dossier |]

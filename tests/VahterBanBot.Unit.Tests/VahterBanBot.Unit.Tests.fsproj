@@ -15,6 +15,7 @@
     <Compile Include="ContentFilterDetectionTests.fs" />
     <Compile Include="LlmMediaPlaceholderTests.fs" />
     <Compile Include="LlmPromptV2Tests.fs" />
+    <Compile Include="LlmMaxCompletionTokensTests.fs" />
     <Compile Include="StickerOcrTests.fs" />
     <Compile Include="ReportCommandTests.fs" />
     <Compile Include="SpamDeleteReasonTests.fs" />
