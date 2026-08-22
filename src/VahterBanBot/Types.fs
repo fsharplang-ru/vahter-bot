@@ -487,6 +487,10 @@ type BotConfiguration =
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
       LlmChatDescriptions: Dictionary<int64, string>
+      /// LLM_REASONING_EFFORT bot_setting — reasoning effort for message triage only (never
+      /// reaction triage). Empty (default) omits `reasoning_effort` and keeps Temperature=0
+      /// (pre-gpt-5 shape); any non-empty value sends it and drops Temperature instead.
+      LlmReasoningEffort: string
       /// Minutes a cached LLM verdict (text or reaction triage) is reused before re-asking
       /// the model. Dedups identical spam across channels and absorbs rate-limit bursts.
       LlmVerdictCacheTtlMinutes: int

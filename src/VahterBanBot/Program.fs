@@ -133,6 +133,8 @@ let buildBotConf () =
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
       LlmChatDescriptions   = getSettingOr "CHAT_DESCRIPTIONS_JSON" "{}" |> fromJson
+      // Message-triage path only (never reaction triage) — see BotConfiguration's doc comment.
+      LlmReasoningEffort    = getSettingOr "LLM_REASONING_EFFORT" ""
       LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
       LlmVerdictCacheGlobalEnabled = getSettingOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
       LlmContentFilterIsSpam = getSettingOr "LLM_CONTENT_FILTER_IS_SPAM" "true" |> bool.Parse
