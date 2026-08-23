@@ -561,6 +561,17 @@ type BotContainerBase(config: BotContainerConfig) =
             return ()
         }
 
+    /// Requires TEST_MODE=true on the bot. Clears TelegramMembershipService's
+    /// in-memory cache so a subsequent IsMember() re-checks live instead of
+    /// returning a stale cached verdict.
+    member _.InvalidateMembershipCache() =
+        task {
+            use content = new StringContent("", Encoding.UTF8, "application/json")
+            let! resp = botHttp.PostAsync("/test/membership/invalidate", content)
+            resp.EnsureSuccessStatusCode() |> ignore
+            return ()
+        }
+
     /// Stops and re-starts the bot app container, preserving postgres + fakes so
     /// DB state survives. Used for restart-recovery tests.
     member this.RestartBotApp() =
