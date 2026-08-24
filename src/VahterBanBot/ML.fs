@@ -92,6 +92,9 @@ type MachineLearning(
         
     let mutable predictionEngine: PredictionEngine<SpamOrHam, Prediction> option = None
     let mutable modelCreatedAt: DateTime option = None
+    // PredictionEngine is not thread-safe (reuses internal VBuffer/row state); concurrent
+    // Predict calls from the webhook path corrupt it. Guard every call with this lock.
+    let predictLock = obj()
 
     /// Loads a serialized model from DB via streaming and creates a PredictionEngine.
     let loadModelFromDb () = task {
@@ -206,13 +209,14 @@ type MachineLearning(
                     |> Seq.filter (fun x -> x.Type = "custom_emoji")
                     |> Seq.length
                 
-                predictionEngine.Predict
-                    { text = text
-                      spam = false
-                      lessThanNMessagesF = if userMsgCount < botConf.Value.MlTrainCriticalMsgCount then 1.0f else 0.0f
-                      moreThanNEmojisF = if emojiCount > botConf.Value.MlCustomEmojiThreshold then 1.0f else 0.0f
-                      weight = 1.0f
-                      createdAt = timeProvider.GetUtcNow().UtcDateTime }
+                lock predictLock (fun () ->
+                    predictionEngine.Predict
+                        { text = text
+                          spam = false
+                          lessThanNMessagesF = if userMsgCount < botConf.Value.MlTrainCriticalMsgCount then 1.0f else 0.0f
+                          moreThanNEmojisF = if emojiCount > botConf.Value.MlCustomEmojiThreshold then 1.0f else 0.0f
+                          weight = 1.0f
+                          createdAt = timeProvider.GetUtcNow().UtcDateTime })
                 |> Some
             | None ->
                 logger.LogInformation "Model not trained yet"

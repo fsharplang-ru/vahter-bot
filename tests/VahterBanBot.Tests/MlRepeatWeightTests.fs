@@ -118,6 +118,34 @@ let ``Weight reaches the trainer: SDCA scores shift materially between low- and 
           (hamShift={abs (highHamScore - lowHamScore)}, spamShift={abs (highSpamScore - lowSpamScore)})")
 
 // ---------------------------------------------------------------------------
+// Predict concurrency smoke test — PredictionEngine is not thread-safe (reuses internal
+// VBuffer/row state between calls); production guards every Predict call with a lock
+// (MachineLearning.Predict). This proves the same lock pattern survives many concurrent
+// callers on a shared engine without corrupting its state.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``Predict survives concurrent callers when guarded by a lock`` () =
+    let engine = trainWith 1.0f
+    let predictLock = obj()
+    let texts = spamTexts @ hamTexts |> List.toArray
+    let errors = System.Collections.Concurrent.ConcurrentBag<exn>()
+
+    let work () =
+        for i in 0 .. 199 do
+            let text = texts.[i % texts.Length]
+            try
+                lock predictLock (fun () -> engine.Predict(mkRow text false 1.0f)) |> ignore
+            with ex ->
+                errors.Add ex
+
+    let threads = [ for _ in 1 .. 8 -> System.Threading.Thread(System.Threading.ThreadStart work) ]
+    threads |> List.iter (fun t -> t.Start())
+    threads |> List.iter (fun t -> t.Join())
+
+    Assert.Empty(errors :> seq<exn>)
+
+// ---------------------------------------------------------------------------
 // MlData query — repeat-count weighting and cap, against a real Postgres instance.
 // Reuses MlDisabledVahterTestContainers (ML disabled, but the event table / MlData query
 // itself doesn't depend on ML being enabled) purely for its Postgres + migrated schema; no
