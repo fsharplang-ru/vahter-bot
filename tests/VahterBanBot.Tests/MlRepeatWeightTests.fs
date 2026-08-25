@@ -118,10 +118,9 @@ let ``Weight reaches the trainer: SDCA scores shift materially between low- and 
           (hamShift={abs (highHamScore - lowHamScore)}, spamShift={abs (highSpamScore - lowSpamScore)})")
 
 // ---------------------------------------------------------------------------
-// Predict concurrency smoke test — PredictionEngine is not thread-safe (reuses internal
-// VBuffer/row state between calls); production guards every Predict call with a lock
-// (MachineLearning.Predict). This proves the same lock pattern survives many concurrent
-// callers on a shared engine without corrupting its state.
+// Does not exercise MachineLearning.Predict — locks its own raw engine instead. Exists to prove
+// why that lock is needed: removing the lock here makes this test fail every run with the same
+// IndexOutOfRangeException seen in production.
 // ---------------------------------------------------------------------------
 
 [<Fact>]

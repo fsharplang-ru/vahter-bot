@@ -92,8 +92,9 @@ type MachineLearning(
         
     let mutable predictionEngine: PredictionEngine<SpamOrHam, Prediction> option = None
     let mutable modelCreatedAt: DateTime option = None
-    // PredictionEngine is not thread-safe (reuses internal VBuffer/row state); concurrent
-    // Predict calls from the webhook path corrupt it. Guard every call with this lock.
+    // PredictionEngine is not thread-safe: unguarded concurrent Predict calls corrupt its internal
+    // VBuffer state (production IndexOutOfRangeException in the ML.NET text pipeline). Proven by
+    // MlRepeatWeightTests.``Predict survives concurrent callers when guarded by a lock``.
     let predictLock = obj()
 
     /// Loads a serialized model from DB via streaming and creates a PredictionEngine.
