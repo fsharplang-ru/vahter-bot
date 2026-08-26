@@ -35,10 +35,20 @@ type BotContainerConfig =
       PostgresImage: string }
 
 /// Shared container lifecycle for bot integration tests.
-/// Orchestrates: network, postgres, init.sql, flyway, fake TG API, fake Azure OCR, bot app.
+/// Orchestrates: network, postgres, init.sql, flyway, fake TG API, fake Azure OCR, N app
+/// containers from ONE cached image spec (ContainerHelpers.getOrCreateImageSpec /
+/// buildImageOncePerProcess — a per-instance rebuild of the same tag races and 409s on podman).
 /// Subclasses provide bot-specific DB seeding and domain helpers.
+///
+/// COMPAT: `instanceCount` defaults to 1. Every pre-existing public singular member (BotHttp,
+/// SendUpdate, RestartBotApp, GetBotLogs(), the "bot"-named log dump, etc.) delegates to
+/// instance 0 with byte-identical behavior, so the 10 pre-existing single-pod fixtures need
+/// zero source changes. N>1 additionally exposes a plural surface — BotHttpAt(i),
+/// SendUpdateTo(i, update), GetBotLogs(i) (dumped as "bot-i" logs), GetSettingsDump(i),
+/// AdvanceAllClocks(ms) — for multi-pod fixtures (see MultiPodContainerBase).
 [<AbstractClass>]
-type BotContainerBase(config: BotContainerConfig) =
+type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
+    let n = defaultArg instanceCount 1
     let solutionDir = CommonDirectoryPath.GetSolutionDirectory()
     let solutionDirPath = solutionDir.DirectoryPath
     let dbAlias = config.MigrationsSubdir + "-db"
@@ -49,7 +59,7 @@ type BotContainerBase(config: BotContainerConfig) =
     let internalConnectionString =
         $"Server={dbAlias};Database={config.DbName};Port=5432;User Id={config.DbUser};Password={config.DbPassword};Include Error Detail=true;Minimum Pool Size=1;Maximum Pool Size=20;Max Auto Prepare=100;Auto Prepare Min Usages=1;Trust Server Certificate=true;"
 
-    let mutable botHttp: HttpClient = null
+    let mutable botHttps: HttpClient[] = [||]
     let mutable fakeTgHttp: HttpClient = null
     let mutable fakeAzureHttp: HttpClient = null
     let mutable publicConnectionString: string = null
@@ -87,7 +97,7 @@ type BotContainerBase(config: BotContainerConfig) =
                     .Build()
             (img, logger))
 
-    let botContainer =
+    let makeBotContainer () =
         let mutable b =
             ContainerBuilder(botImage)
                 .WithNetwork(network)
@@ -103,12 +113,16 @@ type BotContainerBase(config: BotContainerConfig) =
         b.WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(80))
             .Build()
 
-    /// Override to seed the database after migrations run and before the app starts.
+    // N app containers built from the SAME cached image spec above — never a per-instance
+    // rebuild (Array.init only creates N *container* handles, not N image builds).
+    let botContainers: IContainer[] = Array.init n (fun _ -> makeBotContainer())
+
+    /// Override to seed the database after migrations run and before any instance starts.
     abstract SeedDatabase: connString: string -> Task
     default _.SeedDatabase(_) = Task.CompletedTask
 
-    /// Override to run additional setup after the bot container is started and HTTP clients are ready.
-    /// Intended for readiness-probe polling and post-startup data extraction.
+    /// Override to run additional setup after the bot container(s) are started and HTTP
+    /// clients are ready. Intended for readiness-probe polling and post-startup data extraction.
     abstract AfterStart: unit -> Task
     default _.AfterStart() = Task.CompletedTask
 
@@ -141,7 +155,7 @@ type BotContainerBase(config: BotContainerConfig) =
                     let! struct (stdout, stderr) = flywayContainer.GetLogsAsync()
                     failwith $"Flyway migrations failed (exit code {flywayExitCode})\n=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}"
 
-                // seed database (subclass hook)
+                // seed database (subclass hook) — runs exactly once, before any instance starts.
                 do! this.SeedDatabase(publicConnectionString)
 
                 // build images in parallel (each image name at most once per process — the
@@ -156,11 +170,17 @@ type BotContainerBase(config: BotContainerConfig) =
                 do! fakeTgContainer.StartAsync()
                 if config.OcrEnabled then
                     do! fakeAzureContainer.StartAsync()
-                do! botContainer.StartAsync()
 
-                botHttp <- new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{botContainer.GetMappedPublicPort(80)}"))
-                botHttp.Timeout <- TimeSpan.FromSeconds(15.0)
-                botHttp.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
+                // Start every instance in parallel from the one already-built image.
+                do! Task.WhenAll(botContainers |> Array.map (fun c -> c.StartAsync()))
+
+                botHttps <-
+                    botContainers
+                    |> Array.map (fun c ->
+                        let http = new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{c.GetMappedPublicPort(80)}"))
+                        http.Timeout <- TimeSpan.FromSeconds(15.0)
+                        http.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
+                        http)
 
                 fakeTgHttp <- new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{fakeTgContainer.GetMappedPublicPort(8080)}"))
                 fakeTgHttp.Timeout <- TimeSpan.FromSeconds(5.0)
@@ -175,7 +195,11 @@ type BotContainerBase(config: BotContainerConfig) =
     interface IAsyncDisposable with
         member _.DisposeAsync() =
             ValueTask(task {
-                let! _ = dumpContainerLogs testArtifactsDir "bot" botContainer
+                // N=1 keeps the legacy "bot" log dump name byte-identical; N>1 uses "bot-i".
+                for i in 0 .. n - 1 do
+                    let logName = if n = 1 then "bot" else $"bot-{i}"
+                    let! _ = dumpContainerLogs testArtifactsDir logName botContainers[i]
+                    ()
                 let! _ = dumpContainerLogs testArtifactsDir "fake-tg-api" fakeTgContainer
                 if config.OcrEnabled then
                     let! _ = dumpContainerLogs testArtifactsDir "fake-azure-ocr" fakeAzureContainer
@@ -183,10 +207,11 @@ type BotContainerBase(config: BotContainerConfig) =
                 let! _ = dumpContainerLogs testArtifactsDir "flyway" flywayContainer
                 let! _ = dumpContainerLogs testArtifactsDir "postgres" dbContainer
 
-                if not (isNull botHttp) then botHttp.Dispose()
+                for http in botHttps do
+                    if not (isNull http) then http.Dispose()
                 if not (isNull fakeTgHttp) then fakeTgHttp.Dispose()
                 if not (isNull fakeAzureHttp) then fakeAzureHttp.Dispose()
-                do! botContainer.DisposeAsync()
+                do! Task.WhenAll(botContainers |> Array.map (fun c -> c.DisposeAsync().AsTask()))
                 do! fakeTgContainer.DisposeAsync()
                 if config.OcrEnabled then
                     do! fakeAzureContainer.DisposeAsync()
@@ -195,7 +220,8 @@ type BotContainerBase(config: BotContainerConfig) =
             } :> Task)
 
     // ── Exposed clients ─────────────────────────────────────────────────
-    member _.BotHttp = botHttp
+    /// Instance 0's HTTP client — unchanged accessor for every single-pod fixture.
+    member _.BotHttp = botHttps[0]
     member _.FakeTgHttp = fakeTgHttp
     member _.FakeAzureHttp = fakeAzureHttp
     /// Connection string as the bot's least-privilege service role (`config.DbUser`).
@@ -204,12 +230,25 @@ type BotContainerBase(config: BotContainerConfig) =
     /// service role intentionally can't perform.
     member _.AdminDbConnectionString = adminConnectionString
     member _.OcrEnabled = config.OcrEnabled
+    /// Number of app instances (1 for every pre-existing single-pod fixture).
+    member _.InstanceCount = n
+    /// Instance `i`'s HTTP client — plural surface for N>1 fixtures. Named `BotHttpAt` (not an
+    /// overload of `BotHttp`) because F# resolves a same-named property + method pair as one
+    /// ambiguous overload group, breaking `BotHttp`'s no-args property semantics.
+    member _.BotHttpAt(i: int) = botHttps[i]
 
     // ── Shared helpers ──────────────────────────────────────────────────
 
     member _.GetBotLogs() =
         task {
-            let! (stdout, stderr) = botContainer.GetLogsAsync()
+            let! (stdout, stderr) = botContainers[0].GetLogsAsync()
+            return $"=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}"
+        }
+
+    /// Instance `i`'s container logs — plural surface for N>1 fixtures.
+    member _.GetBotLogs(i: int) =
+        task {
+            let! (stdout, stderr) = botContainers[i].GetLogsAsync()
             return $"=== STDOUT ===\n{stdout}\n=== STDERR ===\n{stderr}"
         }
 
@@ -217,7 +256,7 @@ type BotContainerBase(config: BotContainerConfig) =
         task {
             let sb = StringBuilder()
             for (name, container: IContainer) in
-                [ "bot", botContainer
+                [ "bot", botContainers[0]
                   "fake-tg-api", fakeTgContainer
                   "postgres", dbContainer ] do
                 let! (stdout, stderr) = container.GetLogsAsync()
@@ -234,7 +273,17 @@ type BotContainerBase(config: BotContainerConfig) =
         task {
             let json = Encoding.UTF8.GetString(Funogram.Tools.toJson update)
             use content = new StringContent(json, Encoding.UTF8, "application/json")
-            return! botHttp.PostAsync(config.WebhookRoute, content)
+            return! botHttps[0].PostAsync(config.WebhookRoute, content)
+        }
+
+    /// Sends an update to instance `i`'s webhook route — plural surface for N>1 fixtures.
+    /// FakeTgApi is shared across all instances (FakeCall has no instance-identity field) —
+    /// assert on aggregate call content.
+    member _.SendUpdateTo(i: int, update: Funogram.Telegram.Types.Update) =
+        task {
+            let json = Encoding.UTF8.GetString(Funogram.Tools.toJson update)
+            use content = new StringContent(json, Encoding.UTF8, "application/json")
+            return! botHttps[i].PostAsync(config.WebhookRoute, content)
         }
 
     member _.ClearFakeCalls() =
@@ -556,9 +605,22 @@ type BotContainerBase(config: BotContainerConfig) =
     member _.AdvanceBotClock(ms: int) =
         task {
             use content = new StringContent("", Encoding.UTF8, "application/json")
-            let! resp = botHttp.PostAsync($"/test/clock/advance?ms={ms}", content)
+            let! resp = botHttps[0].PostAsync($"/test/clock/advance?ms={ms}", content)
             resp.EnsureSuccessStatusCode() |> ignore
             return ()
+        }
+
+    /// Advances EVERY instance's FakeTimeProvider by the same `ms`, in lockstep — required for
+    /// N>1 fixtures whose cross-pod logic compares this-instance `now` against another
+    /// instance's DB-persisted timestamp (e.g. CouponHubBot's batch debounce): advancing one
+    /// instance alone would desync it from the others. For N=1 this is equivalent to
+    /// AdvanceBotClock. Requires TEST_MODE=true.
+    member _.AdvanceAllClocks(ms: int) =
+        task {
+            for i in 0 .. n - 1 do
+                use content = new StringContent("", Encoding.UTF8, "application/json")
+                let! resp = botHttps[i].PostAsync($"/test/clock/advance?ms={ms}", content)
+                resp.EnsureSuccessStatusCode() |> ignore
         }
 
     /// Requires TEST_MODE=true on the bot. Clears TelegramMembershipService's
@@ -567,19 +629,31 @@ type BotContainerBase(config: BotContainerConfig) =
     member _.InvalidateMembershipCache() =
         task {
             use content = new StringContent("", Encoding.UTF8, "application/json")
-            let! resp = botHttp.PostAsync("/test/membership/invalidate", content)
+            let! resp = botHttps[0].PostAsync("/test/membership/invalidate", content)
             resp.EnsureSuccessStatusCode() |> ignore
             return ()
         }
 
-    /// Stops and re-starts the bot app container, preserving postgres + fakes so
+    /// GET /config-dump from instance `i` — the auth header is already the default request
+    /// header on `botHttps[i]` (same SecretToken as the webhook secret). Raw JSON; secret
+    /// fields are `{present:bool}` only — parse with JsonDocument per AGENTS.md's
+    /// Cyrillic/JSON rule.
+    member _.GetSettingsDump(i: int) =
+        task {
+            let! resp = botHttps[i].GetAsync("/config-dump")
+            resp.EnsureSuccessStatusCode() |> ignore
+            return! resp.Content.ReadAsStringAsync()
+        }
+
+    /// Stops and re-starts instance 0's bot app container, preserving postgres + fakes so
     /// DB state survives. Used for restart-recovery tests.
     member this.RestartBotApp() =
         task {
-            do! botContainer.StopAsync()
-            do! botContainer.StartAsync()
-            botHttp.Dispose()
-            botHttp <- new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{botContainer.GetMappedPublicPort(80)}"))
-            botHttp.Timeout <- TimeSpan.FromSeconds(15.0)
-            botHttp.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
+            do! botContainers[0].StopAsync()
+            do! botContainers[0].StartAsync()
+            botHttps[0].Dispose()
+            let http = new HttpClient(BaseAddress = Uri($"http://127.0.0.1:{botContainers[0].GetMappedPublicPort(80)}"))
+            http.Timeout <- TimeSpan.FromSeconds(15.0)
+            http.DefaultRequestHeaders.Add("X-Telegram-Bot-Api-Secret-Token", config.SecretToken)
+            botHttps[0] <- http
         }

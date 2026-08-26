@@ -313,6 +313,16 @@ Readiness.mapReadyEndpoint
         Results.Ok "Settings reloaded"
 ))
 
+// Config dump: live effective BotConfiguration as JSON, secret fields (token/key) redacted
+// via BotInfra.SettingsDump. Gated the same as /reload-settings and /rebuild-snapshots above
+// (auth-token header) — the strongest existing precedent for admin-only surface on this bot.
+SettingsDump.mapConfigDumpEndpoint
+    (WebhookHost.validateApiKey webhookCfg.SecretToken)
+    (fun () ->
+        let live = app.Services.GetRequiredService<IOptions<BotConfiguration>>().Value
+        SettingsDump.toJson eventJsonOpts live)
+    app
+
 // One-off backfill of the snapshot_* read models from the event log. Idempotent; run manually
 // after deploy. Not auto-run on boot — the event table is too large to rescan every start.
 %app.MapPost("/rebuild-snapshots", Func<HttpContext, Task<IResult>>(fun ctx ->
