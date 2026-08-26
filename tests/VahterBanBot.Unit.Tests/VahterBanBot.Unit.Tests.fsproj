@@ -21,6 +21,7 @@
     <Compile Include="SpamDeleteReasonTests.fs" />
     <Compile Include="TruncateTextForTgTests.fs" />
     <Compile Include="TtlCacheTests.fs" />
+    <Compile Include="ReadinessTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

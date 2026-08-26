@@ -12,6 +12,7 @@
     <Compile Include="LiveOptions.fs" />
     <Compile Include="OcrService.fs" />
     <Compile Include="DbSettings.fs" />
+    <Compile Include="Readiness.fs" />
     <Compile Include="AdminHooks.fs" />
     <Compile Include="DapperSetup.fs" />
     <Compile Include="JsonLogging.fs" />
