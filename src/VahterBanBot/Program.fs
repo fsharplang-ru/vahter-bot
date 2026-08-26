@@ -287,14 +287,13 @@ if startupBotConf.SpamTextCacheMode <> SpamTextCacheMode.Off then
         "Spam-text cache rehydrated {SeededCount}/{CandidateCount} seeds (>= min length) from manual bans in the last {TtlHours}h",
         seededCount, candidateCount, startupBotConf.SpamTextCacheTtl.TotalHours)
 
-// Readiness check for ML model (used by startupProbe)
-%app.MapGet("/ready", Func<HttpContext, IResult>(fun ctx ->
-    let ml = ctx.RequestServices.GetRequiredService<MachineLearning>()
-    if ml.IsReady then
-        Results.Text "READY"
-    else
-        Results.Text("ML model not ready yet", statusCode = 503)
-))
+// Readiness: DB ping (cached) + ML model load state. Used by startupProbe today;
+// the readinessProbe will also target /ready once probe-wiring lands (my-infra PR).
+let dbPingCheck = DbPingCheck(connString, app.Services.GetRequiredService<TimeProvider>())
+Readiness.mapReadyEndpoint
+    [ "db", dbPingCheck.CheckAsync
+      "ml", fun () -> Task.FromResult(app.Services.GetRequiredService<MachineLearning>().IsReady) ]
+    app
 
 // Fallback for any GET (Azure health checks on any route)
 %app.MapFallback(Func<string>(fun () -> "OK"))
