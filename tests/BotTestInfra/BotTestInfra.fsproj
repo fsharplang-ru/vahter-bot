@@ -6,6 +6,7 @@
     <Compile Include="TgMessageUtils.fs" />
     <Compile Include="ContainerHelpers.fs" />
     <Compile Include="BotContainerBase.fs" />
+    <Compile Include="MultiPodContainerBase.fs" />
   </ItemGroup>
 
   <ItemGroup>
