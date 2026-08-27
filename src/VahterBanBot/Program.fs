@@ -197,6 +197,10 @@ let reloadSettings () =
     botConfOptions.Set(fresh)
     botOcrOptions.Set(ocrConfigOf fresh)
 
+/// Publishes the local reload to every other pod via Postgres LISTEN/NOTIFY. Run AFTER
+/// reloadSettings() applied the change locally — this pod's own re-run on notify is harmless.
+let notifyOtherPods () = SettingsNotify.notifySettingsChanged connString
+
 let webhookCfg: WebhookConfig =
     let c = botConfOptions.Value
     { BotToken = c.BotToken
@@ -219,9 +223,18 @@ WebhookHost.configureSharedServices webhookCfg builder
     // In-process (no table, no migration — see SpamTextCache.fs); one instance for the process
     // lifetime, rehydrated from recent manual bans below once the host is built.
     .AddSingleton<ISpamTextCache>(fun _ -> SpamTextCache() :> ISpamTextCache)
-    // Reload hook: lets admin commands publish bot_setting changes without a restart
+    // Reload hook: lets admin commands publish bot_setting changes without a restart, and
+    // NOTIFY other pods so the change isn't confined to the pod that handled the command.
     .AddSingleton<ISettingsReloader>({ new ISettingsReloader with
-        member _.Reload() = task { reloadSettings() } :> Task })
+        member _.Reload() = task {
+            reloadSettings()
+            do! notifyOtherPods()
+        } })
+    .AddHostedService<SettingsListenerHostedService>(fun sp ->
+        new SettingsListenerHostedService(
+            connString,
+            (fun () -> task { reloadSettings() }),
+            sp.GetRequiredService<ILogger<SettingsListenerHostedService>>()))
     .AddSingleton<ILlmVerdictCache>(fun _ -> LlmVerdictCacheRepository(connString) :> ILlmVerdictCache)
     .AddSingleton<BotService>()
     // MachineLearning must start before CleanupService (loads model from DB on startup)
@@ -299,19 +312,31 @@ Readiness.mapReadyEndpoint
 %app.MapFallback(Func<string>(fun () -> "OK"))
 
 // Reload settings endpoint
-%app.MapPost("/reload-settings", Func<HttpContext, IResult>(fun ctx ->
-    if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
-        Results.Text("Access Denied", statusCode = 401)
-    else
-        reloadSettings()
-        // Update the runtime TimeProvider so BOT_FIXED_UTC_NOW changes take effect immediately.
-        // This is a no-op in production (setting is empty → System clock), but lets integration
-        // tests advance time without restarting the container.
-        let mtp = ctx.RequestServices.GetRequiredService<Time.MutableTimeProvider>()
-        mtp.SetInner(Time.fromString (getSettingOr "BOT_FIXED_UTC_NOW" ""))
-        ctx.RequestServices.GetRequiredService<ILogger<Root>>().LogInformation "Settings reloaded"
-        Results.Ok "Settings reloaded"
+%app.MapPost("/reload-settings", Func<HttpContext, Task<IResult>>(fun ctx ->
+    task {
+        if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
+            return Results.Text("Access Denied", statusCode = 401)
+        else
+            reloadSettings()
+            // No-op in production (setting empty → System clock); lets integration tests advance
+            // time via BOT_FIXED_UTC_NOW without restarting the container.
+            let mtp = ctx.RequestServices.GetRequiredService<Time.MutableTimeProvider>()
+            mtp.SetInner(Time.fromString (getSettingOr "BOT_FIXED_UTC_NOW" ""))
+            do! notifyOtherPods()
+            ctx.RequestServices.GetRequiredService<ILogger<Root>>().LogInformation "Settings reloaded"
+            return Results.Ok "Settings reloaded"
+    }
 ))
+
+// Config dump: live effective BotConfiguration as JSON, secret fields (token/key) redacted
+// via BotInfra.SettingsDump. Gated the same as /reload-settings and /rebuild-snapshots above
+// (auth-token header) — the strongest existing precedent for admin-only surface on this bot.
+SettingsDump.mapConfigDumpEndpoint
+    (WebhookHost.validateApiKey webhookCfg.SecretToken)
+    (fun () ->
+        let live = app.Services.GetRequiredService<IOptions<BotConfiguration>>().Value
+        SettingsDump.toJson eventJsonOpts live)
+    app
 
 // One-off backfill of the snapshot_* read models from the event log. Idempotent; run manually
 // after deploy. Not auto-run on boot — the event table is too large to rescan every start.

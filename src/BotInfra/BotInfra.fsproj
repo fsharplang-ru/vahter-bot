@@ -13,7 +13,9 @@
     <Compile Include="OcrService.fs" />
     <Compile Include="DbSettings.fs" />
     <Compile Include="Readiness.fs" />
+    <Compile Include="SettingsNotify.fs" />
     <Compile Include="AdminHooks.fs" />
+    <Compile Include="SettingsDump.fs" />
     <Compile Include="DapperSetup.fs" />
     <Compile Include="JsonLogging.fs" />
     <Compile Include="Observability.fs" />
