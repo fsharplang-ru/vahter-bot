@@ -881,15 +881,6 @@ WHERE chat_id = @chatId AND message_id = @messageId
         return ()
     }
 
-    /// Runs the production `DbService.GetRecentManualBansWithText` query directly against the
-    /// test DB (same construction pattern as RebuildSnapshots above) — used to cover ban-seeded
-    /// spam-text cache startup rehydration without restarting the shared container (see
-    /// SpamTextCacheTests.fs's "Startup rehydration" tests).
-    member this.GetRecentManualBansWithText(since: DateTime) = task {
-        let db = VahterBanBot.DbService(this.DbConnectionString, TimeProvider.System)
-        return! db.GetRecentManualBansWithText(since)
-    }
-
     /// Inserts one event with a controlled created_at, serializing the typed event via eventJsonOpts
     /// (so the 'Case' discriminator / shape match production). For snapshot status-timeline tests.
     member this.InsertRawEvent<'e>(streamId: string, version: int, evt: 'e, createdAt: DateTime) = task {

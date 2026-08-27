@@ -1,18 +1,15 @@
 module VahterBanBot.Tests.SpamTextCacheTests
 
 open System
+open VahterBanBot.SpamTextCache
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
 
 /// Ban-seeded spam-text cache (SPAM_TEXT_CACHE_MODE) integration tests.
 ///
-/// Isolation: the cache is in-process and keyed purely on normalized text, with no per-test
-/// Clear() call (ISpamTextCache.Clear exists for callers that need it, but every text used below
-/// embeds a fresh GUID — collision with any other test, in this file or any other sharing these
-/// containers, is not possible). This mirrors ReactionSpamTests.fs's `svetla_{guid}` convention
-/// rather than the truncate-a-table approach LlmVerdictCacheGlobalFlagTests/OcrCacheTests use,
-/// because this cache has no table to truncate (see the module doc in SpamTextCache.fs).
+/// Isolation: Postgres-backed but keyed on normalized text; no per-test Clear() since every text
+/// below embeds a fresh GUID (ReactionSpamTests.fs's convention, not a truncate-a-table approach).
 let private longSpamText () =
     $"click this link right now to claim your huge prize before it expires forever {Guid.NewGuid()}"
 
@@ -198,50 +195,40 @@ type SpamTextCacheEnforceTests(fixture: SpamTextCacheEnforceTestContainers, _unu
         Assert.False(wasDeleted, "A vahter's own message must never be actioned, cache hit or not")
     }
 
+    /// Two independent `SpamTextCache` instances simulate two pods: a seed written by one must
+    /// be visible to a lookup on the other -- the property a ConcurrentDictionary could never fix.
     [<Fact>]
-    let ``Startup rehydration query returns manual bans with text, excluding auto-bans and out-of-window bans`` () = task {
-        let spamText = longSpamText ()
-        let vahter = fixture.Vahters[0]
-        let beforeBan = DateTime.UtcNow
+    let ``Cross-pod visibility: a seed written via one SpamTextCache instance is read via a second`` () = task {
+        let text = $"win a free prize right now claim it before it expires forever {Guid.NewGuid()}"
+        let podA = SpamTextCache(fixture.DbConnectionString) :> ISpamTextCache
+        let podB = SpamTextCache(fixture.DbConnectionString) :> ISpamTextCache
+        let bannedAt = DateTime.UtcNow
 
-        let originalMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = spamText)
-        let! _ = fixture.SendMessage originalMsg
-        let! _ = Tg.replyMsg(originalMsg.Message.Value, "/ban", vahter) |> fixture.SendMessage
+        let! seeded = podA.Seed(text, 40, TimeSpan.FromHours 24.0, -666L, 1L, bannedAt)
+        Assert.True(seeded, "Seed should succeed for text over the min-length floor")
 
-        // A wide window (since = just before the ban) includes the manual ban with its text --
-        // this is exactly the query Program.fs runs on startup to rehydrate the in-process cache.
-        let! seedsWide = fixture.GetRecentManualBansWithText(beforeBan.AddSeconds(-5.0))
-        let seed =
-            seedsWide
-            |> Array.tryFind (fun s ->
-                s.chat_id = originalMsg.Message.Value.Chat.Id && s.message_id = originalMsg.Message.Value.MessageId)
-        Assert.True(seed.IsSome, "Recent manual ban with text should be returned by the rehydration query")
-        Assert.Equal(spamText, seed.Value.message_text)
+        let! hit = podB.TryGet(text, bannedAt)
+        Assert.True(hit.IsSome, "A seed written by one instance must be visible to a lookup on a different instance")
+        Assert.Equal(-666L, hit.Value.SeedChatId)
+        Assert.Equal(1L, hit.Value.SeedMessageId)
+    }
 
-        // A `since` cutoff placed AFTER the ban excludes it -- simulates a restart far enough in
-        // the future that the ban has aged out of the TTL window.
-        let! seedsNarrow = fixture.GetRecentManualBansWithText(DateTime.UtcNow.AddSeconds(5.0))
-        let stillThere =
-            seedsNarrow
-            |> Array.exists (fun s ->
-                s.chat_id = originalMsg.Message.Value.Chat.Id && s.message_id = originalMsg.Message.Value.MessageId)
-        Assert.False(stillThere, "A since-cutoff after the ban must exclude it")
+    /// Same two-instance setup, but proves TTL expiry is enforced by the read, not writer-side
+    /// eviction -- a pod that never wrote the seed still sees it expire correctly.
+    [<Fact>]
+    let ``Cross-pod TTL: expiry is enforced on read by a different instance than the one that seeded`` () = task {
+        let text = $"limited time offer act now before this deal disappears forever {Guid.NewGuid()}"
+        let podA = SpamTextCache(fixture.DbConnectionString) :> ISpamTextCache
+        let podB = SpamTextCache(fixture.DbConnectionString) :> ISpamTextCache
+        let bannedAt = DateTime.UtcNow
 
-        // Auto-bans must never appear -- trigger one via the existing karma-autoban path (4
-        // consecutive spam messages hits the karma threshold, same as MLBanTests).
-        let autoBanSpammer = Tg.user()
-        for _ in 1..4 do
-            let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "2222222", from = autoBanSpammer)
-            let! _ = fixture.SendMessage msg
-            ()
-        let! autoBanned = fixture.UserBannedByBot autoBanSpammer.Id
-        Assert.True(autoBanned, "Sanity: spammer should be auto-banned by the karma system")
+        let! _ = podA.Seed(text, 40, TimeSpan.FromHours 1.0, -666L, 2L, bannedAt)
 
-        let! seedsAfterAutoBan = fixture.GetRecentManualBansWithText(beforeBan.AddSeconds(-5.0))
-        let autoBanLeaked =
-            seedsAfterAutoBan
-            |> Array.exists (fun s -> s.message_text = "2222222")
-        Assert.False(autoBanLeaked, "Auto-bans (actor <> User) must never be returned by the rehydration query")
+        let! hitBeforeExpiry = podB.TryGet(text, bannedAt.AddMinutes 30.0)
+        Assert.True(hitBeforeExpiry.IsSome, "Lookup within the TTL window should hit")
+
+        let! hitAfterExpiry = podB.TryGet(text, bannedAt.AddHours 2.0)
+        Assert.True(hitAfterExpiry.IsNone, "Lookup past the TTL window should miss")
     }
 
     interface IClassFixture<MlAwaitFixture>

@@ -35,15 +35,6 @@ type CachedUserProfile =
       bio: string
       fetched_at: DateTime }
 
-/// A manual-ban seed for the ban-seeded spam-text cache's startup rehydration
-/// (see SpamTextCache.fs / GetRecentManualBansWithText).
-[<CLIMutable>]
-type ManualBanSeed =
-    { chat_id: int64
-      message_id: int64
-      message_text: string
-      banned_at: DateTime }
-
 /// Prior-sightings signal for prompt v2's repetition line — see GetTextRepetition and
 /// LlmTriage.fs's formatRepetitionLine.
 [<CLIMutable>]
@@ -330,36 +321,6 @@ ON CONFLICT DO NOTHING
             else
                 let state = (User.Zero, events) ||> Array.fold (fun s e -> User.Fold(s, e))
                 return Some { state with Id = userId }
-        }
-
-    /// Manual-ban events (Actor.User — vahter-issued /ban or BanOnReply, never ML/LLM/Bot
-    /// auto-bans) with a non-null message text, recorded after `since`. Used ONLY to rehydrate
-    /// the ban-seeded spam-text cache on startup (see SpamTextCache.fs / Program.fs) so a
-    /// deploy/restart doesn't blank it. Not scoped to `stream_id` — a fresh process has no
-    /// per-user starting point, so this scans the `event` table's (event_type, created_at)
-    /// index (idx_event_type) directly.
-    member _.GetRecentManualBansWithText(since: DateTime) : Task<ManualBanSeed array> =
-        task {
-            use conn = new NpgsqlConnection(connString)
-
-            //language=postgresql
-            let sql =
-                """
-SELECT (data->>'chatId')::BIGINT    AS chat_id,
-       (data->>'messageId')::BIGINT AS message_id,
-       data->>'messageText'         AS message_text,
-       created_at                   AS banned_at
-FROM event
-WHERE event_type = 'UserBanned'
-  AND data->'actor'->>'Case' = 'User'
-  AND data->>'messageText' IS NOT NULL
-  AND data->>'chatId' IS NOT NULL
-  AND data->>'messageId' IS NOT NULL
-  AND created_at > @since
-                """
-
-            let! rows = conn.QueryAsync<ManualBanSeed>(sql, {| since = since |})
-            return Array.ofSeq rows
         }
 
     // -----------------------------------------------------------------------
@@ -1181,8 +1142,9 @@ ORDER BY MAX(m.created_at), MIN(m.stream_id);
             return Array.ofSeq data
         }
 
-    /// Saves a trained ML model to the database (singleton row, upsert).
-    member _.SaveTrainedModel(modelStream: Stream) : Task =
+    /// Saves a trained ML model (singleton row, upsert). WHERE guards a losing pod's fallback
+    /// retrain from clobbering a newer model; returns false when the write was skipped for that.
+    member _.SaveTrainedModel(modelStream: Stream) : Task<bool> =
         task {
             use conn = new NpgsqlConnection(connString)
             do! conn.OpenAsync()
@@ -1194,14 +1156,15 @@ INSERT INTO ml_trained_model (id, model_data, created_at)
 VALUES (1, @modelData, @now)
 ON CONFLICT (id) DO UPDATE
     SET model_data = EXCLUDED.model_data,
-        created_at = EXCLUDED.created_at;
+        created_at = EXCLUDED.created_at
+    WHERE EXCLUDED.created_at > ml_trained_model.created_at;
                 """
 
             use cmd = new NpgsqlCommand(sql, conn)
             cmd.Parameters.Add(NpgsqlParameter("modelData", NpgsqlTypes.NpgsqlDbType.Bytea, Value = modelStream)) |> ignore
             cmd.Parameters.AddWithValue("now", utcNow()) |> ignore
-            let! _ = cmd.ExecuteNonQueryAsync()
-            return ()
+            let! rowsAffected = cmd.ExecuteNonQueryAsync()
+            return rowsAffected > 0
         }
 
     /// Loads a trained ML model from the database as a Stream.
@@ -1283,6 +1246,28 @@ WHERE job_name = @jobName;
             return ()
         }
 
+    /// Interval counterpart to TryAcquireScheduledJob: acquires when the job hasn't completed within
+    /// `minInterval`, instead of gating on time-of-day. Same `scheduled_job` lease/CompleteScheduledJob.
+    member _.TryAcquireIntervalJob(jobName: string, minInterval: TimeSpan, podId: string) : Task<bool> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+
+            //language=postgresql
+            let sql =
+                """
+UPDATE scheduled_job
+SET locked_until = @now + INTERVAL '10 minutes',
+    locked_by = @podId
+WHERE job_name = @jobName
+  AND (last_completed_at IS NULL OR last_completed_at < @now - @minInterval)
+  AND (locked_until IS NULL OR locked_until < @now)
+RETURNING job_name;
+                """
+
+            let! result = conn.QueryAsync<string>(sql, {| jobName = jobName; minInterval = minInterval; podId = podId; now = utcNow() |})
+            return Seq.length result > 0
+        }
+
     /// Executes an action while holding a PostgreSQL session-level advisory lock.
     member _.WithAdvisoryLock(lockKey: int, action: unit -> Task) : Task<bool> =
         task {
@@ -1300,6 +1285,47 @@ WHERE job_name = @jobName;
                     conn.Execute("SELECT pg_advisory_unlock(@key)", {| key = lockKey |}) |> ignore
             else
                 return false
+        }
+
+    // Public members — chat_admin (shared UpdateChatAdmins snapshot)
+
+    /// Replaces the whole chat_admin table (delete-then-insert in one transaction, so readers
+    /// never see a partial/empty table mid-refresh). Called by the 'chat_admins_refresh' lease holder.
+    member _.SaveChatAdmins(admins: (int64 * int64) array) : Task =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            do! conn.OpenAsync()
+            let! tx = conn.BeginTransactionAsync()
+
+            let! _ = conn.ExecuteAsync("DELETE FROM chat_admin", null, tx)
+            //language=postgresql
+            let insertSql = "INSERT INTO chat_admin (chat_id, user_id, updated_at) VALUES (@chatId, @userId, @now)"
+            for chatId, userId in admins do
+                let! _ = conn.ExecuteAsync(insertSql, {| chatId = chatId; userId = userId; now = utcNow() |}, tx)
+                ()
+
+            do! tx.CommitAsync()
+            do! tx.DisposeAsync()
+        }
+
+    /// Flat set of every admin user_id across all monitored chats; chat_id isn't consumed —
+    /// UpdateChatAdmins.Admins is chat-agnostic.
+    member _.GetChatAdminIds() : Task<int64 array> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            let! rows = conn.QueryAsync<int64>("SELECT DISTINCT user_id FROM chat_admin")
+            return Array.ofSeq rows
+        }
+
+    // Public members — spam_text_seed cleanup
+
+    /// Sweeps expired spam-text cache seeds; piggybacks on the existing daily cleanup job
+    /// instead of a dedicated schedule.
+    member _.DeleteExpiredSpamTextSeeds() : Task<int> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            let! rowsAffected = conn.ExecuteAsync("DELETE FROM spam_text_seed WHERE expires_at <= @now", {| now = utcNow() |})
+            return rowsAffected
         }
 
     // -----------------------------------------------------------------------

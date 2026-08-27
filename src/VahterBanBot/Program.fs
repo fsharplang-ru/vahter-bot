@@ -220,9 +220,9 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<DbService>(fun sp ->
         DbService(connString, sp.GetRequiredService<TimeProvider>()))
     .AddSingleton<IOcrCache>(fun _ -> OcrCacheRepository(connString) :> IOcrCache)
-    // In-process (no table, no migration — see SpamTextCache.fs); one instance for the process
-    // lifetime, rehydrated from recent manual bans below once the host is built.
-    .AddSingleton<ISpamTextCache>(fun _ -> SpamTextCache() :> ISpamTextCache)
+    // Postgres-backed (spam_text_seed table — see SpamTextCache.fs); shared across pods, no
+    // startup rehydration needed since the DB IS the cache.
+    .AddSingleton<ISpamTextCache>(fun _ -> SpamTextCache(connString) :> ISpamTextCache)
     // Reload hook: lets admin commands publish bot_setting changes without a restart, and
     // NOTIFY other pods so the change isn't confined to the pod that handled the command.
     .AddSingleton<ISettingsReloader>({ new ISettingsReloader with
@@ -274,31 +274,6 @@ let startupBotConf = botConfOptions.Value
 // NOTE(project-agent): intentional blocking call. One-time startup seeding after the host is
 // built but before it runs; ASP.NET Core has no SynchronizationContext so this cannot deadlock.
 (app.Services.GetRequiredService<DbService>().UpsertUser(startupBotConf.BotUserId, Some startupBotConf.BotUserName)).Result |> ignore
-
-// Rehydrate the ban-seeded spam-text cache from the last TTL window's worth of manual-ban
-// events so a deploy/restart doesn't start it blank (see SpamTextCache.fs). Skipped entirely in
-// Off mode. Uses the same TimeProvider as the rest of the app (not DateTime.UtcNow) so a fixed
-// clock (BOT_FIXED_UTC_NOW, test-only) is honored consistently.
-if startupBotConf.SpamTextCacheMode <> SpamTextCacheMode.Off then
-    let spamTextCacheLogger = app.Services.GetRequiredService<ILogger<Root>>()
-    // NOTE: intentional blocking call — same justification as the UpsertUser call above.
-    let seededCount, candidateCount =
-        (task {
-            let spamTextCache = app.Services.GetRequiredService<ISpamTextCache>()
-            let db = app.Services.GetRequiredService<DbService>()
-            let now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime
-            let! seeds = db.GetRecentManualBansWithText(now - startupBotConf.SpamTextCacheTtl)
-            let mutable count = 0
-            for seed in seeds do
-                if spamTextCache.Seed(
-                        seed.message_text, startupBotConf.SpamTextCacheMinLength, startupBotConf.SpamTextCacheTtl,
-                        seed.chat_id, seed.message_id, seed.banned_at) then
-                    count <- count + 1
-            return count, seeds.Length
-        }).GetAwaiter().GetResult()
-    spamTextCacheLogger.LogInformation(
-        "Spam-text cache rehydrated {SeededCount}/{CandidateCount} seeds (>= min length) from manual bans in the last {TtlHours}h",
-        seededCount, candidateCount, startupBotConf.SpamTextCacheTtl.TotalHours)
 
 // Readiness: DB ping (cached) + ML model load state. Used by startupProbe today;
 // the readinessProbe will also target /ready once probe-wiring lands (my-infra PR).
