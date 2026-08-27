@@ -415,13 +415,11 @@ type BotService(
         if spamProtectionRevoked then recordSpamProtectionRevoked msg.ChatId msg.ChatUsername "banned"
 
         // Ban-seeded spam-text cache: seed ONLY on a genuinely manual ban (Actor.User — i.e.
-        // this is the /ban and BanOnReply path). This is a deliberate exhaustive-by-actor-shape
-        // decision, not a catch-all — ML/LLM/Bot auto-bans (which also flow through TotalBan,
-        // e.g. via CheckAndAutoBan) must never seed here (design item 4). Synchronous/in-process,
-        // so no `do!` needed.
+        // the /ban and BanOnReply path). ML/LLM/Bot auto-bans (also routed through TotalBan,
+        // e.g. via CheckAndAutoBan) must never seed here.
         match actor with
         | Actor.User _ when botConfig.Value.SpamTextCacheMode <> SpamTextCacheMode.Off ->
-            let seeded =
+            let! seeded =
                 spamTextCache.Seed(
                     msg.Text, botConfig.Value.SpamTextCacheMinLength, botConfig.Value.SpamTextCacheTtl,
                     msg.ChatId, msg.MessageId, utcNow())
@@ -1423,13 +1421,13 @@ type BotService(
                 // (chat allowlist, vahter/admin skip, stop-words — already-banned users are
                 // filtered even earlier, in JustMessage) and BEFORE any ML/LLM/OCR cost, so a hit
                 // short-circuits the model entirely. Old-user immunity reuses the same
-                // usrMsgCount threshold ML uses (design item 5). See SpamTextCache.fs.
+                // usrMsgCount threshold ML uses. See SpamTextCache.fs.
                 let spamCacheMode = botConfig.Value.SpamTextCacheMode
-                let spamCacheHit =
+                let! spamCacheHit =
                     if spamCacheMode = SpamTextCacheMode.Off
                        || isNull msg.Text
                        || usrMsgCount >= botConfig.Value.MlOldUserMsgCount then
-                        None
+                        Task.FromResult None
                     else
                         spamTextCache.TryGet(msg.Text, utcNow())
                 %mlActivity.SetTag("spamTextCacheHit", spamCacheHit.IsSome)

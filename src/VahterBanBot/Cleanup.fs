@@ -62,6 +62,12 @@ type CleanupService(
         if orphaned > 0 then
             %sb.AppendLine $"Expired {orphaned} orphaned callbacks"
 
+        // Sweep expired ban-seeded spam-text cache rows (spam_text_seed) — piggybacked here
+        // instead of a dedicated schedule (see SpamTextCache.fs).
+        let! expiredSeeds = db.DeleteExpiredSpamTextSeeds()
+        if expiredSeeds > 0 then
+            %sb.AppendLine $"Deleted {expiredSeeds} expired spam-text cache seeds"
+
         let msg = sb.ToString()
         if msg.Length > 0 then
             do! tg.CallExn(Req.SendMessage.Make(botConf.Value.AllLogsChannelId, msg)) |> taskIgnore

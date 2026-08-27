@@ -178,9 +178,16 @@ type MachineLearning(
             mlContext.Model.Save(trainedModel, dataView.Schema, ms)
             logger.LogInformation("Serialized model ({Size} bytes)", ms.Length)
             ms.Position <- 0L
-            do! db.SaveTrainedModel(ms)
-            modelCreatedAt <- Some(timeProvider.GetUtcNow().UtcDateTime)
-            logger.LogInformation "Saved trained model to DB"
+            // Guarded write: if another pod already saved a newer model, ours is skipped and we
+            // reload theirs — closes the fallback-retrain-vs-real-winner race.
+            let! saved = db.SaveTrainedModel(ms)
+            if saved then
+                modelCreatedAt <- Some(timeProvider.GetUtcNow().UtcDateTime)
+                logger.LogInformation "Saved trained model to DB"
+            else
+                logger.LogWarning "Skipped saving trained model: a newer model already exists in DB, reloading it"
+                let! _ = loadModelFromDb()
+                ()
         finally
             ms.Dispose()
         
@@ -281,12 +288,15 @@ type MachineLearning(
                             loaded <- result
                             attempts <- attempts + 1
                         if not loaded then
-                            // Timeout or other pod crashed. Train ourselves as fallback.
-                            logger.LogWarning "Timed out waiting for model from another pod, training locally"
-                            try
-                                do! trainAndSaveModel false
-                            with ex ->
-                                logger.LogError(ex, "Error training model on startup (fallback)")
+                            // Timeout or crash: re-check once more (winner may have finished in the gap);
+                            // SaveTrainedModel's WHERE guard is the backstop if this is still lost.
+                            let! recheckedLoaded = loadModelFromDb()
+                            if not recheckedLoaded then
+                                logger.LogWarning "Timed out waiting for model from another pod, training locally"
+                                try
+                                    do! trainAndSaveModel false
+                                with ex ->
+                                    logger.LogError(ex, "Error training model on startup (fallback)")
         }
 
         member _.StopAsync _ = Task.CompletedTask
