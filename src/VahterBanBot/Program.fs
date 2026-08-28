@@ -180,7 +180,10 @@ let buildBotConf () =
               ("✅ Модератор проверил ваше удалённое сообщение — это была ошибка фильтра. "
                + "Приносим извинения, можете продолжать общение.\n\n"
                + "✅ A moderator reviewed your removed message — it was flagged in error. "
-               + "Sorry about that, feel free to keep chatting.") }
+               + "Sorry about that, feel free to keep chatting.")
+      // Apk-attachment delete heuristic. Empty (unseeded) turns it off — see
+      // BotConfiguration's doc comment; extensions are normalized at check time.
+      SuspiciousAttachmentExtensions = getSettingOr "SUSPICIOUS_ATTACHMENT_EXTENSIONS" "[]" |> fromJson }
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled

@@ -114,13 +114,25 @@ type Tg() =
     static member textQuote(text: string) =
         TextQuote.Create(text = text, position = 0L)
 
-    static member externalReply(?photos: PhotoSize[], ?chat: Chat) =
+    static member externalReply(?photos: PhotoSize[], ?chat: Chat, ?document: Document) =
         // Funogram requires a MessageOrigin; a hidden-user origin is the most neutral.
         ExternalReplyInfo.Create(
             origin = MessageOrigin.HiddenUser(
                 MessageOriginHiddenUser.Create("hidden_user", DateTime.UtcNow, "hidden")),
             ?photo = photos,
-            ?chat = chat
+            ?chat = chat,
+            ?document = document
+        )
+
+    /// Document fixture — defaults to a non-apk name/mime/size; override to build apk/other cases.
+    static member document(?fileId: string, ?fileUniqueId: string, ?fileName: string, ?mimeType: string, ?fileSize: int64) =
+        let fid = fileId |> Option.defaultWith (fun () -> $"doc-{next()}")
+        let fuid = fileUniqueId |> Option.defaultValue (fid + "-uid")
+        Document.Create(
+            fid, fuid,
+            ?fileName = fileName,
+            ?mimeType = mimeType,
+            ?fileSize = fileSize
         )
 
     // ── Rich message helpers (Bot API 10.1) ─────────────────────────────────
@@ -154,7 +166,7 @@ type Tg() =
 
     // ── Message factories (VahterBanBot-style) ───────────────────────────────
 
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo, ?replyMarkup: InlineKeyboardMarkup, ?sticker: Sticker, ?ephemeralMessageId: int64, ?richMessage: RichMessage) =
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo, ?replyMarkup: InlineKeyboardMarkup, ?sticker: Sticker, ?ephemeralMessageId: int64, ?richMessage: RichMessage, ?document: Document, ?replyToMessage: Message) =
         let msgId = next()
         let msgChat = chat |> Option.defaultWith (fun () -> Tg.chat())
         let msgFrom = from |> Option.defaultWith (fun () -> Tg.user())
@@ -178,7 +190,9 @@ type Tg() =
                     ?replyMarkup = replyMarkup,
                     ?sticker = sticker,
                     ?ephemeralMessageId = ephemeralMessageId,
-                    ?richMessage = richMessage
+                    ?richMessage = richMessage,
+                    ?document = document,
+                    ?replyToMessage = replyToMessage
                 ),
             ?editedMessage =
                 (editedText
@@ -369,7 +383,7 @@ type Tg() =
         )
 
     /// Builds an Update with a document in a group/supergroup chat.
-    static member groupDocumentMessage(fromUser: User, chatId: int64, ?caption: string) =
+    static member groupDocumentMessage(fromUser: User, chatId: int64, ?caption: string, ?fileName: string, ?mimeType: string, ?fileSize: int64) =
         let chat = Tg.groupChat(id = chatId)
         let docFileId = $"group-doc-{next ()}"
         Update.Create(
@@ -381,7 +395,7 @@ type Tg() =
                     chat = chat,
                     from = fromUser,
                     ?caption = caption,
-                    document = Document.Create(docFileId, docFileId + "-uid")
+                    document = Document.Create(docFileId, docFileId + "-uid", ?fileName = fileName, ?mimeType = mimeType, ?fileSize = fileSize)
                 )
         )
 

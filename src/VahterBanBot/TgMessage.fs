@@ -132,6 +132,11 @@ type TgMessage private (raw: Message, isEdit: bool) =
     /// Sticker of the external-reply quote (None when there is no external reply or no sticker).
     member _.ExternalReplySticker : Sticker option =
         raw.ExternalReply |> Option.bind _.Sticker
+    /// The message's own document, if any.
+    member _.Document : Document option = raw.Document
+    /// Document of the external-reply quote (None when there is no external reply or no document).
+    member _.ExternalReplyDocument : Document option =
+        raw.ExternalReply |> Option.bind _.Document
     member _.ReplyMarkup  = raw.ReplyMarkup
     member _.RichMessage  = raw.RichMessage
 
