@@ -4,3 +4,4 @@ GRANT vahter_bot_ban_service TO postgres; -- no need for prod DB
 CREATE DATABASE vahter_db OWNER admin ENCODING 'UTF8';
 GRANT CONNECT ON DATABASE vahter_db TO vahter_bot_ban_service;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
