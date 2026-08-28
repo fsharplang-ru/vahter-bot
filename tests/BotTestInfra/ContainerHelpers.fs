@@ -92,7 +92,7 @@ let createPostgresContainer (network: INetwork) (alias: string) (pgImage: string
         .Build()
 
 let createFlywayContainer (network: INetwork) (migrationsPath: string) (dbAlias: string) (dbName: string) (dbContainer: PostgreSqlContainer) =
-    ContainerBuilder("flyway/flyway")
+    ContainerBuilder("flyway/flyway:13.4.0")
         .WithNetwork(network)
         .WithBindMount(migrationsPath, "/flyway/sql", AccessMode.ReadOnly)
         // Without label=disable, hosts with SELinux enforcing block the container from
@@ -102,7 +102,8 @@ let createFlywayContainer (network: INetwork) (migrationsPath: string) (dbAlias:
         .WithEnvironment("FLYWAY_URL", $"jdbc:postgresql://{dbAlias}:5432/{dbName}")
         .WithEnvironment("FLYWAY_USER", "admin")
         .WithEnvironment("FLYWAY_PASSWORD", "admin")
-        .WithCommand("migrate", "-schemas=public")
+        // Must match prod's migrate flags, or CIC migrations deadlock only here, not in prod.
+        .WithCommand("-postgresql.transactional.lock=false", "migrate", "-schemas=public")
         .WithWaitStrategy(
             Wait.ForUnixContainer().AddCustomWaitStrategy(
                 { new IWaitUntil with
