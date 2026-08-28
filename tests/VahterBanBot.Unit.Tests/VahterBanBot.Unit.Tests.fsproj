@@ -18,6 +18,7 @@
     <Compile Include="LlmMaxCompletionTokensTests.fs" />
     <Compile Include="StickerOcrTests.fs" />
     <Compile Include="ReportCommandTests.fs" />
+    <Compile Include="SuspiciousAttachmentTests.fs" />
     <Compile Include="SpamDeleteReasonTests.fs" />
     <Compile Include="TruncateTextForTgTests.fs" />
     <Compile Include="TtlCacheTests.fs" />

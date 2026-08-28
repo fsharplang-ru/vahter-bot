@@ -45,6 +45,30 @@ let ``photo with no OCR text: generic photo placeholder`` () =
     Assert.Equal(Some "[photo, no readable text]", mediaPlaceholder msg)
 
 [<Fact>]
+let ``document with file_name, mime_type and file_size: full placeholder`` () =
+    let doc = Tg.document(fileName = "Поиск Пропавших.apk", mimeType = "application/octet-stream", fileSize = 163_840L)
+    let msg = msgOf (Tg.quickMsg(text = null, document = doc))
+    Assert.Equal(Some "[document: Поиск Пропавших.apk, application/octet-stream, 160 KB]", mediaPlaceholder msg)
+
+[<Fact>]
+let ``document with only file_name (mime/size absent): placeholder degrades gracefully`` () =
+    let doc = Tg.document(fileName = "resume.pdf")
+    let msg = msgOf (Tg.quickMsg(text = null, document = doc))
+    Assert.Equal(Some "[document: resume.pdf]", mediaPlaceholder msg)
+
+[<Fact>]
+let ``document with no name/mime/size at all: falls back to the generic placeholder`` () =
+    let doc = Tg.document()
+    let msg = msgOf (Tg.quickMsg(text = null, document = doc))
+    Assert.Equal(Some "[document, no readable text]", mediaPlaceholder msg)
+
+[<Fact>]
+let ``external_reply document is rendered the same as an own document`` () =
+    let doc = Tg.document(fileName = "invoice.exe", mimeType = "application/x-msdownload", fileSize = 2048L)
+    let msg = msgOf (Tg.quickMsg(text = null, externalReply = Tg.externalReply(document = doc)))
+    Assert.Equal(Some "[document: invoice.exe, application/x-msdownload, 2 KB]", mediaPlaceholder msg)
+
+[<Fact>]
 let ``truly empty message (no text, no media): empty-message placeholder`` () =
     let msg = msgOf (Tg.quickMsg(text = null))
     Assert.Equal(Some "[empty message]", mediaPlaceholder msg)

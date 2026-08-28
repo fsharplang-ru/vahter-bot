@@ -262,6 +262,7 @@ module private BotHelpers =
         | AutoDeleteReason.LlmSpam r          -> $"{prefix}score: {r.score}"
         | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
         | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
+        | AutoDeleteReason.SuspiciousAttachment -> $"{prefix}suspicious attachment"
         | AutoDeleteReason.SpamTextCacheHit r  -> $"{prefix}spam-text cache hit, seeded by ban of {r.seedChatId}/{r.seedMessageId}"
         | AutoDeleteReason.ContentFilterSpam r -> $"{prefix}Azure content policy filter, score: {r.score}, triggers: {r.triggers}"
 
@@ -294,6 +295,23 @@ let isReportCommand (msg: TgMessage) =
     (let trimmed = msg.Text.TrimStart()
      let first = trimmed.Split([| ' '; '\n'; '\t' |]).[0]
      stripBotMention first = "/vahter_report")
+
+/// Trims whitespace, strips a leading '.', lowercases — so a SUSPICIOUS_ATTACHMENT_EXTENSIONS
+/// entry stored as ".apk"/"APK"/" apk " still matches. Blank entries are dropped.
+let private normalizeAttachmentExtension (ext: string) =
+    ext.Trim().TrimStart('.').ToLowerInvariant()
+
+/// True when own/external-reply document filename ends in one of `extensions` (SUSPICIOUS_
+/// ATTACHMENT_EXTENSIONS). Empty = off. Excludes reply_to_message.document (different sender).
+let hasSuspiciousApkAttachment (extensions: string list) (msg: TgMessage) =
+    let normalized = extensions |> List.map normalizeAttachmentExtension |> List.filter ((<>) "")
+    if List.isEmpty normalized then false
+    else
+        let matchesAny (name: string) =
+            normalized |> List.exists (fun ext -> name.EndsWith("." + ext, StringComparison.OrdinalIgnoreCase))
+        let isMatch (doc: Document option) =
+            doc |> Option.bind _.FileName |> Option.exists matchesAny
+        isMatch msg.Document || isMatch msg.ExternalReplyDocument
 
 type BotService(
     tg: ITelegramApi,
@@ -712,7 +730,8 @@ type BotService(
                 | AutoDeleteReason.MlSpam x -> Some x.score
                 | AutoDeleteReason.LlmSpam x -> Some x.score
                 | AutoDeleteReason.ContentFilterSpam x -> Some x.score
-                | AutoDeleteReason.ReactionSpam _ | AutoDeleteReason.InvisibleMention | AutoDeleteReason.SpamTextCacheHit _ -> None
+                | AutoDeleteReason.ReactionSpam _ | AutoDeleteReason.InvisibleMention
+                | AutoDeleteReason.SpamTextCacheHit _ | AutoDeleteReason.SuspiciousAttachment -> None
             match warnedReasonScore with
             | Some score when score < botConfig.Value.SpamWarningMaxScore ->
                 do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, botConfig.Value.SpamWarningText, receiverUserId = msg.SenderId))
@@ -1377,11 +1396,21 @@ type BotService(
                     && not msg.ExternalReplyStickerOcrApplied
                     && msg.ExternalReplySticker.IsSome))
 
-        if containsInvisibleMention then
+        // Documents get no OCR but must still reach ML/LLM triage with a null caption —
+        // mirrors hasPendingAzureOcr's role without pretending OCR is pending for one.
+        let hasUnenrichedDocument =
+            msg.Document.IsSome
+            || (botConfig.Value.ForwardSpamDetectionEnabled && msg.ExternalReplyDocument.IsSome)
+
+        if hasSuspiciousApkAttachment botConfig.Value.SuspiciousAttachmentExtensions msg then
+            do! recordMsg()
+            do! this.DeleteSpam(msg, botConfig.Value.BotActor, SuspiciousAttachment)
+
+        elif containsInvisibleMention then
             do! recordMsg()
             do! this.DeleteSpam(msg, botConfig.Value.BotActor, InvisibleMention)
 
-        elif botConfig.Value.MlEnabled && (msg.Text <> null || hasPendingAzureOcr) then
+        elif botConfig.Value.MlEnabled && (msg.Text <> null || hasPendingAzureOcr || hasUnenrichedDocument) then
             use mlActivity = botActivity.StartActivity("mlPrediction")
 
             let shouldBeSkipped =

@@ -255,6 +255,8 @@ type AutoDeleteReason =
     | LlmSpam of {| score: float; modelName: string |}
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
+    /// Deterministic attachment-extension delete (SUSPICIOUS_ATTACHMENT_EXTENSIONS). Delete only, no ban.
+    | SuspiciousAttachment
     /// Ban-seeded spam-text cache hit (see SpamTextCache.fs) — the normalized text exactly
     /// matches a message a vahter manually /banned within the last TTL window. Carries the
     /// (chatId, messageId) of the seeding ban so a hit can be traced back to its cause.
@@ -581,7 +583,9 @@ type BotConfiguration =
       /// Fixed bilingual grant-notification text, bot_setting-backed. Deliberately generic —
       /// never reveals that enforcement was relaxed or time-boxed, so a wrongly-vetted spammer
       /// can't learn a shield exists.
-      SpamProtectionNotifyText: string }
+      SpamProtectionNotifyText: string
+      /// Extensions (no leading dot) triggering the document delete heuristic. Empty = off.
+      SuspiciousAttachmentExtensions: string list }
     member this.BotActor =
         Actor.Bot (Some {| botUserId = this.BotUserId; botUsername = this.BotUserName |})
 

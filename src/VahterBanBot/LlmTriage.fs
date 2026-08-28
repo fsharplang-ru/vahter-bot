@@ -260,6 +260,17 @@ let private logContentFilterRejection (logger: ILogger) (pathLabel: string) (tri
 // SPAM/SKIP verdicts are cached GLOBALLY by text hash (see the module doc comment at the top of
 // this file) — one SPAM verdict on a single photo would globally condemn every future photo.
 
+/// Renders filename/mime/size for the LLM prompt, omitting absent fields; falls back to the
+/// generic placeholder when none are present.
+let private formatDocumentPlaceholder (doc: Funogram.Telegram.Types.Document) =
+    let parts =
+        [ doc.FileName
+          doc.MimeType
+          doc.FileSize |> Option.map (fun bytes -> $"{bytes / 1024L} KB") ]
+        |> List.choose id
+    if List.isEmpty parts then "[document, no readable text]"
+    else $"""[document: {String.Join(", ", parts)}]"""
+
 /// Descriptive placeholder for the LLM prompt's `Message:` body when the message has no readable
 /// text (`msg.Text` is null/empty) — `None` when there IS real text, in which case the caller
 /// should render `msg.Text` as-is. Degrades gracefully when sticker emoji/set_name are absent
@@ -276,6 +287,12 @@ let mediaPlaceholder (msg: TgMessage) : string option =
             if msg.Photos.Length > 0 then
                 Some "[photo, no readable text]"
             else
+                match msg.Document with
+                | Some doc -> Some (formatDocumentPlaceholder doc)
+                | None ->
+                match msg.ExternalReplyDocument with
+                | Some doc -> Some (formatDocumentPlaceholder doc)
+                | None ->
                 // RawMessage is `internal` (same-assembly access only — see TgMessage.fs), so this
                 // generic media check lives here rather than as a public TgMessage member.
                 let raw = msg.RawMessage
@@ -284,7 +301,6 @@ let mediaPlaceholder (msg: TgMessage) : string option =
                 elif raw.VideoNote.IsSome then Some "[video note, no readable text]"
                 elif raw.Voice.IsSome then Some "[voice message, no readable text]"
                 elif raw.Audio.IsSome then Some "[audio, no readable text]"
-                elif raw.Document.IsSome then Some "[document, no readable text]"
                 else Some "[empty message]"
 
 /// Whether `msg.Text` alone yields a stable cache key — mirrors the guard `Classify` uses to pick

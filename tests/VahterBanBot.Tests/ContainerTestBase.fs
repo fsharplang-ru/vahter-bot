@@ -328,6 +328,22 @@ WHERE event_type = 'BotAutoDeleted'
         return count > 0
     }
 
+    /// Gets the AutoDeleteReason DU case name (e.g. "SuspiciousAttachment", "MlSpam") from the
+    /// BotAutoDeleted event for a message. None if the message wasn't auto-deleted.
+    member this.TryGetAutoDeleteReasonCase(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->'reason'->>'Case' FROM event
+WHERE event_type = 'BotAutoDeleted'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! cases = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return cases |> Seq.tryHead
+    }
+
     member this.GetCallbackId(msg: TgMsg) (caseName: string) = task {
         //language=postgresql
         let sql = """
