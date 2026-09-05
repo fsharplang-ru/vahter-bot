@@ -137,6 +137,8 @@ let buildBotConf () =
       LlmReasoningEffort    = getSettingOr "LLM_REASONING_EFFORT" ""
       LlmVerdictCacheTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_TTL_MINUTES" "60" |> int
       LlmVerdictCacheGlobalEnabled = getSettingOr "LLM_VERDICT_CACHE_GLOBAL_ENABLED" "true" |> bool.Parse
+      LlmVerdictCacheLongTextMinChars = getSettingOr "LLM_VERDICT_CACHE_LONG_TEXT_MIN_CHARS" "40" |> int
+      LlmVerdictCacheLongTextTtlMinutes = getSettingOr "LLM_VERDICT_CACHE_LONG_TEXT_TTL_MINUTES" "10080" |> int
       LlmContentFilterIsSpam = getSettingOr "LLM_CONTENT_FILTER_IS_SPAM" "true" |> bool.Parse
       // Reaction-spam triage (vision LLM)
       LlmReactionTriageAutoAct       = getSettingOr "LLM_REACTION_TRIAGE_AUTO_ACT" "false" |> bool.Parse

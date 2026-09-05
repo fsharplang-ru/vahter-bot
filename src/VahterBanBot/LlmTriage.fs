@@ -23,6 +23,7 @@ open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open VahterBanBot.Metrics
+open VahterBanBot.SpamTextCache
 open VahterBanBot.LlmVerdictCache
 open VahterBanBot.ProfileFetcher
 open BotInfra
@@ -43,13 +44,16 @@ open BotInfra
 // exoneration and always wins — even if a DIFFERENT sender has since made the same text SPAM/SKIP
 // globally. Only when the per-sender key misses do we fall through to the global key. This favors
 // "don't re-punish a user we already cleared" over "a newer global verdict might supersede an older
-// personal one" — a stale personal NOT_SPAM naturally falls out of consideration once its own TTL
-// expires, same as any other cache entry, so the exposure window is bounded by
-// LLM_VERDICT_CACHE_TTL_MINUTES either way. With the flag OFF, only the per-sender key exists for
-// any verdict (the pre-PR behavior).
+// personal one" — a stale personal NOT_SPAM naturally falls out once its own (length-tiered, D1)
+// TTL expires. With the flag OFF, only the per-sender key exists for any verdict (the pre-PR behavior).
 
-let private md5Hex (s: string) =
-    MD5.HashData(Encoding.UTF8.GetBytes s) |> Convert.ToHexString |> _.ToLower()
+/// D1: TTL (minutes) that applies to a cached row, given its verdict and normalized text length.
+/// SKIP always keeps the short TTL; SPAM/NOT_SPAM get the long TTL once text is long enough.
+let selectCacheTtlMinutes (minChars: int) (shortTtlMinutes: int) (longTtlMinutes: int) (verdict: string) (normalizedTextLength: int) : int =
+    match verdict with
+    | "SKIP" -> shortTtlMinutes
+    | _ when normalizedTextLength >= minChars -> longTtlMinutes
+    | _ -> shortTtlMinutes
 
 /// How (and whether) `classifyUncached` should persist the verdict it produces.
 ///   - NoCache            : no stable key exists (e.g. empty-text/photo-only messages) — never persisted.
@@ -360,7 +364,9 @@ type ILlmTriage =
     abstract member PromptHash: string
     abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmVerdict>
 
-type AzureLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<AzureLlmTriage>, db: DbService, cache: ILlmVerdictCache, profileFetcher: IUserProfileFetcher) =
+type AzureLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<AzureLlmTriage>, db: DbService, cache: ILlmVerdictCache, profileFetcher: IUserProfileFetcher, timeProvider: TimeProvider) =
+
+    let utcNow () = timeProvider.GetUtcNow().UtcDateTime
 
     // Coalesces concurrent identical-text classifications (same spam across channels at once).
     let inflight = ConcurrentDictionary<string, Lazy<Task<LlmVerdict>>>()
@@ -613,10 +619,9 @@ Message:
             // Photo-only / empty-text messages have no stable text key → classify directly, no cache.
             // (Unchanged by the media-placeholder prompt rendering above — hasStableTextCacheKey
             // reads msg.Text, never the placeholder; see that function's doc comment.)
-            match (if hasStableTextCacheKey msg then Some (md5Hex msg.Text) else None) with
+            match (if hasStableTextCacheKey msg then Some (LlmVerdictCache.senderKey msg.SenderId msg.Text) else None) with
             | None -> return! classifyUncached msg userMsgCount NoCache ct
-            | Some hash ->
-                let senderKey = sprintf "text:%d:%s" msg.SenderId hash
+            | Some senderKey ->
 
                 // In-process single-flight coalescing stays scoped to (sender, text) — NOT widened to
                 // the global text-only key — even though the persisted cache below now has a global
@@ -633,17 +638,34 @@ Message:
                 // MANY different senders still makes one Azure call per distinct sender until the
                 // first classification is persisted — only sequential/TTL-window dedup is global.)
                 return! singleFlight inflight senderKey (fun () -> task {
-                    let ttl = TimeSpan.FromMinutes(float botConf.Value.LlmVerdictCacheTtlMinutes)
+                    // D1: long TTL is the SQL bound; the tiered TTL is re-checked in F# below against CreatedAt.
+                    let longTtl = TimeSpan.FromMinutes(float botConf.Value.LlmVerdictCacheLongTextTtlMinutes)
+                    let normalizedTextLength = (normalize msg.Text).Length
+                    let tryFresh (key: string) = task {
+                        match! cache.TryGet(key, longTtl) with
+                        | None -> return None
+                        | Some cv ->
+                            let ttlMinutes =
+                                selectCacheTtlMinutes
+                                    botConf.Value.LlmVerdictCacheLongTextMinChars
+                                    botConf.Value.LlmVerdictCacheTtlMinutes
+                                    botConf.Value.LlmVerdictCacheLongTextTtlMinutes
+                                    cv.Verdict
+                                    normalizedTextLength
+                            if cv.CreatedAt > utcNow() - TimeSpan.FromMinutes(float ttlMinutes)
+                            then return Some cv
+                            else return None
+                    }
 
                     // Tier 1, always checked first (see module doc comment for the full precedence
                     // rationale): this sender's own prior verdict for this exact text always wins.
-                    match! cache.TryGet(senderKey, ttl) with
+                    match! tryFresh senderKey with
                     | Some cv -> return! recordCacheHit msg "sender" cv
                     | None ->
                         if botConf.Value.LlmVerdictCacheGlobalEnabled then
                             // Tier 2: any sender's prior SPAM/SKIP for this exact text.
-                            let globalKey = sprintf "text:global:%s" hash
-                            match! cache.TryGet(globalKey, ttl) with
+                            let globalKey = LlmVerdictCache.globalKey msg.Text
+                            match! tryFresh globalKey with
                             | Some cv -> return! recordCacheHit msg "global" cv
                             | None -> return! classifyUncached msg userMsgCount (SplitByVerdict(globalKey, senderKey)) ct
                         else

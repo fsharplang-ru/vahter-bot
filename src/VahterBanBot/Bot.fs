@@ -12,6 +12,7 @@ open Funogram.Telegram.Types
 open VahterBanBot.ML
 open VahterBanBot.ComputerVision
 open VahterBanBot.LlmTriage
+open VahterBanBot.LlmVerdictCache
 open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
@@ -325,6 +326,7 @@ type BotService(
     ocrCache: VahterBanBot.OcrCache.IOcrCache,
     spamTextCache: ISpamTextCache,
     llmTriage: ILlmTriage,
+    verdictCache: ILlmVerdictCache,
     reactionTriage: IReactionTriageClassifier,
     profileFetcher: IUserProfileFetcher,
     settingsReloader: ISettingsReloader,
@@ -333,6 +335,15 @@ type BotService(
     timeProvider: TimeProvider
 ) =
     let utcNow () = timeProvider.GetUtcNow().UtcDateTime
+
+    /// D2: invalidates a cache row on a human correction — never throws into the calling command
+    /// path; a failed invalidation just leaves the row to expire on its own TTL.
+    let invalidateVerdictCache (label: string) (action: unit -> Task<unit>) = task {
+        try
+            do! action()
+        with ex ->
+            logger.LogWarning(ex, "LLM verdict cache invalidation failed ({Label})", label)
+    }
 
     // Per-chat /vahter_report stats cache — the abuse bound for a public command with no
     // rate limiting of its own. TTL is read from botConfig.Value.ReportCacheTtlSeconds on
@@ -449,6 +460,15 @@ type BotService(
                 logger.LogInformation(
                     "Spam-text cache seeded from manual ban of message {ChatId}/{MessageId} (mode={Mode})",
                     msg.ChatId, msg.MessageId, caseName botConfig.Value.SpamTextCacheMode)
+        | _ -> ()
+
+        // D2: Actor.User only (human ban) — clears stale NOT_SPAM + global SKIP for this text.
+        match actor with
+        | Actor.User _ when not (String.IsNullOrEmpty msg.Text) ->
+            let banSenderKey = LlmVerdictCache.senderKey msg.SenderId msg.Text
+            let banGlobalKey = LlmVerdictCache.globalKey msg.Text
+            do! invalidateVerdictCache "manualBan-sender" (fun () -> verdictCache.Invalidate(banSenderKey, Some "NOT_SPAM"))
+            do! invalidateVerdictCache "manualBan-global" (fun () -> verdictCache.Invalidate(banGlobalKey, Some "SKIP"))
         | _ -> ()
 
         // delete message
@@ -1817,6 +1837,13 @@ type BotService(
                 do! this.ReplyAdmin(msg, "Could not find a message reference in that post. Forward a bot log message from the logs channel and reply /vahter unmarkspam to it.")
             | Some(chatId, messageId) ->
                 do! db.RecordMessageMarkedHam(chatId, messageId, "", Some vahter.Id)
+
+                do! invalidateVerdictCache $"hamMark-global-admin (chat={chatId}, msg={messageId})" (fun () -> task {
+                    match! db.TryGetMessageTextAndSender(chatId, messageId) with
+                    | Some(text, _senderId) -> do! verdictCache.Invalidate(LlmVerdictCache.globalKey text, None)
+                    | None -> ()
+                })
+
                 do! this.MaybeGrantSpamProtection(chatId, null, messageId, vahter.Id)
                 do! this.ReplyAdmin(msg, $"✅ Reversed: message {messageId} in chat {chatId} marked as NOT spam (ham).")
                 logger.LogInformation($"Vahter {vahter.Id} reversed spam mark for {chatId}:{messageId}")
@@ -1845,6 +1872,16 @@ type BotService(
                     let! revoked = db.RecordSpamProtectionRevoked(userId, "markspam")
                     if revoked then recordSpamProtectionRevoked chatId null "markspam"
                 | None -> ()
+
+                // D2: text/sender recovered from snapshot (no TgMessage here).
+                do! invalidateVerdictCache $"markSpam-admin (chat={chatId}, msg={messageId})" (fun () -> task {
+                    match! db.TryGetMessageTextAndSender(chatId, messageId) with
+                    | Some(text, senderId) ->
+                        do! verdictCache.Invalidate(LlmVerdictCache.senderKey senderId text, Some "NOT_SPAM")
+                        do! verdictCache.Invalidate(LlmVerdictCache.globalKey text, Some "SKIP")
+                    | None -> ()
+                })
+
                 do! this.ReplyAdmin(msg, $"✅ Message {messageId} in chat {chatId} marked as spam.")
                 logger.LogInformation($"Vahter {vahter.Id} marked {chatId}:{messageId} as spam")
     }
@@ -2313,6 +2350,12 @@ type BotService(
                 .SetTag("messageId", msgId)
                 .SetTag("chatId", chatId)
         do! db.RecordMessageMarkedHam(chatId, msgId, (if isNull tgMsg.Text then "" else tgMsg.Text), Some vahter.Id)
+
+        // D2: ham-mark invalidates the global row (SPAM or SKIP) for this text.
+        if not (String.IsNullOrEmpty tgMsg.Text) then
+            let hamGlobalKey = LlmVerdictCache.globalKey tgMsg.Text
+            do! invalidateVerdictCache "hamMark-global" (fun () -> verdictCache.Invalidate(hamGlobalKey, None))
+
         do! this.MaybeGrantSpamProtection(chatId, chatName, msgId, vahter.Id)
 
         let vahterUsername = vahter.Username |> Option.defaultValue null
@@ -2360,6 +2403,13 @@ type BotService(
 
         // 2. Mark as spam (for ML training + karma)
         do! db.RecordMessageMarkedSpam(chatId, msgId, None)
+
+        // D2: mark-spam invalidation (no ban) — same as TotalBan's Actor.User branch.
+        if not (String.IsNullOrEmpty tgMsg.Text) then
+            let softSpamSenderKey = LlmVerdictCache.senderKey tgMsg.SenderId tgMsg.Text
+            let softSpamGlobalKey = LlmVerdictCache.globalKey tgMsg.Text
+            do! invalidateVerdictCache "softSpam-sender" (fun () -> verdictCache.Invalidate(softSpamSenderKey, Some "NOT_SPAM"))
+            do! invalidateVerdictCache "softSpam-global" (fun () -> verdictCache.Invalidate(softSpamGlobalKey, Some "SKIP"))
 
         // 2.5. A vahter spam verdict on a (possibly protected) message revokes protection
         // immediately, even though this path doesn't ban — the vahter just judged the user
