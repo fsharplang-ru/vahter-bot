@@ -12,20 +12,34 @@ open Xunit
 [<Fact>]
 let ``LLM kill verdict (Actor.LLM) attributes to LlmSpam, carrying score and modelName`` () =
     let actor = Actor.LLM {| modelName = "gpt-4o-mini"; promptHash = "abc123" |}
-    match spamDeleteReason 0.31478 actor with
+    match spamDeleteReason 0.31478 actor None None with
     | AutoDeleteReason.LlmSpam r ->
         Assert.Equal(0.31478, r.score)
         Assert.Equal("gpt-4o-mini", r.modelName)
     | other -> Assert.Fail $"Expected LlmSpam but got {other}"
 
 [<Fact>]
+let ``LLM kill verdict with a reason carries it through to LlmSpam`` () =
+    let actor = Actor.LLM {| modelName = "gpt-4o-mini"; promptHash = "abc123" |}
+    match spamDeleteReason 0.31478 actor (Some "advertising link in bio") None with
+    | AutoDeleteReason.LlmSpam r -> Assert.Equal(Some "advertising link in bio", r.reason)
+    | other -> Assert.Fail $"Expected LlmSpam but got {other}"
+
+[<Fact>]
+let ``LLM kill verdict served from the cache carries cacheScope through to LlmSpam`` () =
+    let actor = Actor.LLM {| modelName = "gpt-4o-mini"; promptHash = "abc123" |}
+    match spamDeleteReason 0.31478 actor (Some "advertising link in bio") (Some "global") with
+    | AutoDeleteReason.LlmSpam r -> Assert.Equal(Some "global", r.cacheScope)
+    | other -> Assert.Fail $"Expected LlmSpam but got {other}"
+
+[<Fact>]
 let ``plain ML-threshold verdict (Actor.ML) attributes to MlSpam`` () =
-    match spamDeleteReason 0.87 Actor.ML with
+    match spamDeleteReason 0.87 Actor.ML None None with
     | AutoDeleteReason.MlSpam r -> Assert.Equal(0.87, r.score)
     | other -> Assert.Fail $"Expected MlSpam but got {other}"
 
 [<Fact>]
 let ``any non-LLM actor (defensive: AutoVerdict.Spam never actually carries these) falls back to MlSpam`` () =
-    match spamDeleteReason 0.6 (Actor.Bot None) with
+    match spamDeleteReason 0.6 (Actor.Bot None) None None with
     | AutoDeleteReason.MlSpam r -> Assert.Equal(0.6, r.score)
     | other -> Assert.Fail $"Expected MlSpam but got {other}"

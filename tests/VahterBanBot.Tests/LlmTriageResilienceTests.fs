@@ -76,6 +76,9 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
 
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
+
+        let! cacheHit = fixture.TryGetLlmVerdictCacheHit m2.Message.Value
+        Assert.Equal(Some ("SPAM", Some "keyword match: kill", "global"), cacheHit)
     }
 
     [<Fact>]
@@ -102,6 +105,13 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
 
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
+
+        let! cacheHit = fixture.TryGetLlmVerdictCacheHit m2.Message.Value
+        Assert.Equal(Some ("SPAM", Some "keyword match: kill", "global"), cacheHit)
+
+        let! sends = fixture.GetFakeCalls "sendMessage"
+        let toDetected = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.DetectedSpamChannel.Id}")
+        Assert.True(toDetected |> Array.exists (fun c -> c.Body.Contains "cached/global"), "cache-served kill must be marked in the channel text")
     }
 
     [<Fact>]
@@ -126,6 +136,12 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
 
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
+
+        // NOT_SPAM (the other same-sender cache case) posts no channel message to check, so this
+        // SKIP case is the stand-in coverage for a cache-served report's channel-text annotation.
+        let! sends = fixture.GetFakeCalls "sendMessage"
+        let toPotential = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.PotentialSpamChannel.Id}")
+        Assert.True(toPotential |> Array.exists (fun c -> c.Body.Contains "cached/global"), "cache-served SKIP report must be marked in the channel text")
     }
 
     [<Fact>]
@@ -151,6 +167,26 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
         // classified, not silently served from sender A's cached exoneration) → two Azure calls.
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(2, calls.Length)
+    }
+
+    [<Fact>]
+    let ``LLM triage caches NOT_SPAM per-sender even with the global flag ON: the same sender's repeat is Tier-1 sender-first`` () = task {
+        do! resetFakes ()
+        let a = Tg.user()
+
+        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
+        let! _ = fixture.SendMessage m1
+        let! v1 = fixture.TryGetLlmTriageVerdict m1.Message.Value
+        Assert.Equal(Some "NOT_SPAM", v1)
+
+        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[1], text = "77", from = a)
+        let! _ = fixture.SendMessage m2
+
+        let! calls = fixture.GetAzureLlmCalls()
+        Assert.Equal(1, calls.Length)
+
+        let! cacheHit = fixture.TryGetLlmVerdictCacheHit m2.Message.Value
+        Assert.Equal(Some ("NOT_SPAM", Some "keyword match: none", "sender"), cacheHit)
     }
 
     [<Fact>]

@@ -63,25 +63,25 @@ let ``long message, sightings all from the sender's own repeats (0 other users):
 // ── selectLlmRequestParams ───────────────────────────────────────────────────────
 
 [<Fact>]
-let ``empty LLM_REASONING_EFFORT: pre-gpt-5 shape — Temperature 0, no reasoning_effort, cap 100`` () =
+let ``empty LLM_REASONING_EFFORT: pre-gpt-5 shape — Temperature 0, no reasoning_effort, cap 200`` () =
     let p = selectLlmRequestParams ""
     Assert.Equal(Some 0.0f, p.Temperature)
     Assert.Equal(None, p.ReasoningEffort)
-    Assert.Equal(100, p.MaxOutputTokenCount)
+    Assert.Equal(200, p.MaxOutputTokenCount)
 
 [<Fact>]
 let ``null LLM_REASONING_EFFORT: same as empty (defensive — bot_setting values are never null in practice)`` () =
     let p = selectLlmRequestParams null
     Assert.Equal(Some 0.0f, p.Temperature)
     Assert.Equal(None, p.ReasoningEffort)
-    Assert.Equal(100, p.MaxOutputTokenCount)
+    Assert.Equal(200, p.MaxOutputTokenCount)
 
 [<Fact>]
-let ``LLM_REASONING_EFFORT="none" (the A/B-tested gpt-5.6-sol value): Temperature omitted, effort passed through, cap 100`` () =
+let ``LLM_REASONING_EFFORT="none" (the A/B-tested gpt-5.6-sol value): Temperature omitted, effort passed through, cap 200`` () =
     let p = selectLlmRequestParams "none"
     Assert.Equal(None, p.Temperature)
     Assert.Equal(Some "none", p.ReasoningEffort)
-    Assert.Equal(100, p.MaxOutputTokenCount)
+    Assert.Equal(200, p.MaxOutputTokenCount)
 
 [<Theory>]
 [<InlineData("minimal")>]
@@ -92,8 +92,8 @@ let ``any other non-empty LLM_REASONING_EFFORT value: same omit-Temperature/pass
     let p = selectLlmRequestParams effort
     Assert.Equal(None, p.Temperature)
     Assert.Equal(Some effort, p.ReasoningEffort)
-    Assert.Equal(100, p.MaxOutputTokenCount)
+    Assert.Equal(200, p.MaxOutputTokenCount)
 
 [<Fact>]
-let ``MaxOutputTokenCount is 100 unconditionally — not gated on whether reasoning effort is set`` () =
+let ``MaxOutputTokenCount is 200 unconditionally — not gated on whether reasoning effort is set`` () =
     Assert.Equal((selectLlmRequestParams "").MaxOutputTokenCount, (selectLlmRequestParams "none").MaxOutputTokenCount)

@@ -67,6 +67,9 @@ type SnapshotMessageRow =
       vahter_verdict: string
       created_at: Nullable<DateTime> }
 
+[<CLIMutable>]
+type LlmVerdictCacheHitRow = { verdict: string; reason: string; cache_scope: string }
+
 module private VahterTestConfig =
     let secret = "OUR_SECRET"
     let fakeAzureAlias = "fake-azure-ocr"
@@ -620,6 +623,49 @@ WHERE event_type = 'LlmClassified'
             """
         let! values = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
         return values |> Seq.tryHead
+    }
+
+    /// Gets the reason from the LlmClassified event for a message (None if event/field absent —
+    /// the skippable-option field is OMITTED from the JSONB, so `->>'reason'` is SQL NULL).
+    member this.TryGetLlmClassifiedReason(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'reason' FROM event
+WHERE event_type = 'LlmClassified'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! values = conn.QueryAsync<string>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return values |> Seq.tryHead |> Option.bind Option.ofObj
+    }
+
+    /// Gets (verdict, reason, cacheScope) from the LlmVerdictCacheHit event for a message
+    /// (None if no cache-hit event exists for it).
+    member this.TryGetLlmVerdictCacheHit(msg: TgMsg) = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql =
+            """
+SELECT data->>'verdict' AS verdict, data->>'reason' AS reason, data->>'cacheScope' AS cache_scope
+FROM event
+WHERE event_type = 'LlmVerdictCacheHit'
+  AND (data->>'chatId')::BIGINT   = @chatId
+  AND (data->>'messageId')::INT   = @messageId
+            """
+        let! rows = conn.QueryAsync<LlmVerdictCacheHitRow>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
+        return rows |> Seq.tryHead |> Option.map (fun r -> r.verdict, Option.ofObj r.reason, r.cache_scope)
+    }
+
+    /// Gets the `reason` column of the most recently written llm_verdict_cache row (tests reset
+    /// the cache before each run, so "most recent" is unambiguous within a single test).
+    member this.GetLatestLlmVerdictCacheReason() = task {
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        //language=postgresql
+        let sql = "SELECT reason FROM llm_verdict_cache ORDER BY created_at DESC LIMIT 1"
+        let! values = conn.QueryAsync<string>(sql)
+        return values |> Seq.tryHead |> Option.bind Option.ofObj
     }
 
     /// Wipes the LLM verdict cache table. The cache is now GLOBAL for SPAM/SKIP (keyed on text

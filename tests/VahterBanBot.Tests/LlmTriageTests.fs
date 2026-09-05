@@ -130,6 +130,67 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         Assert.False(System.String.IsNullOrEmpty(promptHash.Value), "promptHash should not be empty")
     }
 
+    // ── D3: reason surfacing ─────────────────────────────────────────────────
+
+    [<Fact>]
+    let ``LLM triage SPAM verdict reason appears in the LlmClassified event, the cache row, and the detected-spam channel message`` () = task {
+        do! fixture.ClearLlmVerdictCache()
+        do! fixture.ClearFakeCalls()
+        let spammer = Tg.user(firstName = "kill reason-surface")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! reason = fixture.TryGetLlmClassifiedReason msgUpdate.Message.Value
+        Assert.Equal(Some "keyword match: kill", reason)
+
+        let! cachedReason = fixture.GetLatestLlmVerdictCacheReason()
+        Assert.Equal(Some "keyword match: kill", cachedReason)
+
+        let! sends = fixture.GetFakeCalls "sendMessage"
+        let toDetected = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.DetectedSpamChannel.Id}")
+        Assert.NotEmpty(toDetected)
+        Assert.True(
+            toDetected |> Array.exists (fun c -> c.Body.Contains "LLM: keyword match: kill"),
+            "detected-spam channel message should render the LLM reason")
+    }
+
+    [<Fact>]
+    let ``LLM triage SKIP verdict reason appears in the LlmClassified event and the potential-spam channel message`` () = task {
+        do! fixture.ClearLlmVerdictCache()
+        do! fixture.ClearFakeCalls()
+        let spammer = Tg.user(firstName = "spam reason-surface")
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = spammer)
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! reason = fixture.TryGetLlmClassifiedReason msgUpdate.Message.Value
+        Assert.Equal(Some "keyword match: spam", reason)
+
+        let! sends = fixture.GetFakeCalls "sendMessage"
+        let toPotential = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.PotentialSpamChannel.Id}")
+        Assert.NotEmpty(toPotential)
+        Assert.True(
+            toPotential |> Array.exists (fun c -> c.Body.Contains "LLM: keyword match: spam"),
+            "potential-spam channel message should render the LLM reason")
+    }
+
+    [<Fact>]
+    let ``LLM triage response without a reason field still yields a usable verdict`` () = task {
+        do! fixture.ClearLlmVerdictCache()
+        let noReasonResponse: AzureScriptedResponse =
+            { status = 200
+              body = """{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"{\"verdict\":\"NOT_SPAM\"}","role":"assistant"}}],"created":1774736361,"id":"chatcmpl-fake-noreason","model":"gpt-4o-mini-2024-07-18","object":"chat.completion","usage":{"completion_tokens":4,"prompt_tokens":200,"total_tokens":204}}"""
+              delayMs = 0
+              errorMode = "" }
+        do! fixture.SetAzureLlmScript [| noReasonResponse |]
+        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77")
+        let! _ = fixture.SendMessage msgUpdate
+
+        let! verdict = fixture.TryGetLlmTriageVerdict msgUpdate.Message.Value
+        Assert.Equal(Some "NOT_SPAM", verdict)
+        let! reason = fixture.TryGetLlmClassifiedReason msgUpdate.Message.Value
+        Assert.Equal(None, reason)
+    }
+
     [<Fact>]
     let ``Old user with many messages is spared from ML and LLM triage`` () = task {
         // ML_OLD_USER_MSG_COUNT is set to 10 in test settings.

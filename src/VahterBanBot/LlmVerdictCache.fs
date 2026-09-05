@@ -9,10 +9,11 @@ open Dapper
 type CachedVerdict =
     { Verdict:   string
       Reason:    string option
-      ModelName: string option }
+      ModelName: string option
+      CreatedAt: DateTime }
 
 [<CLIMutable>]
-type private LlmVerdictCacheRow = { verdict: string; reason: string; model_name: string }
+type private LlmVerdictCacheRow = { verdict: string; reason: string; model_name: string; created_at: DateTime }
 
 [<AllowNullLiteral>]
 type ILlmVerdictCache =
@@ -29,7 +30,7 @@ type LlmVerdictCacheRepository(connString: string) =
             //language=postgresql
             let sql =
                 """
-SELECT verdict, reason, model_name FROM llm_verdict_cache
+SELECT verdict, reason, model_name, created_at FROM llm_verdict_cache
 WHERE cache_key = @cacheKey AND created_at > NOW() - make_interval(secs => @maxAgeSeconds)
                 """
 
@@ -42,7 +43,8 @@ WHERE cache_key = @cacheKey AND created_at > NOW() - make_interval(secs => @maxA
                 |> Option.map (fun r ->
                     { Verdict   = r.verdict
                       Reason    = Option.ofObj r.reason
-                      ModelName = Option.ofObj r.model_name })
+                      ModelName = Option.ofObj r.model_name
+                      CreatedAt = r.created_at })
         }
 
         member _.Save(cacheKey, verdict, reason, modelName) = task {

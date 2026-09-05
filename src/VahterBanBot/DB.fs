@@ -534,14 +534,26 @@ FROM expanded;
 
     /// Records an LlmClassified event.
     member _.RecordLlmClassified
-        (chatId: int64, messageId: int64, verdict: string,
+        (chatId: int64, messageId: int64, verdict: string, reason: string option,
          promptTokens: int, completionTokens: int, latencyMs: int,
          modelName: string option, promptHash: string option) : Task<unit> =
         task {
             let! _ = EventStore.appendEvent store $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
-                [ LlmClassified {| chatId = chatId; messageId = messageId; verdict = verdict
+                [ LlmClassified {| chatId = chatId; messageId = messageId; verdict = verdict; reason = reason
                                    promptTokens = promptTokens; completionTokens = completionTokens; latencyMs = latencyMs
                                    modelName = modelName; promptHash = promptHash |} ])
+            return ()
+        }
+
+    /// Records an LlmVerdictCacheHit event (D4), so DB analyses stay complete even without
+    /// an Azure call. `cacheScope` is "global"|"sender" (the tier that hit).
+    member _.RecordLlmVerdictCacheHit
+        (chatId: int64, messageId: int64, verdict: string, reason: string option,
+         cacheScope: string, cachedAt: DateTime, modelName: string option) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
+                [ LlmVerdictCacheHit {| chatId = chatId; messageId = messageId; verdict = verdict; reason = reason
+                                        cacheScope = cacheScope; cachedAt = cachedAt; modelName = modelName |} ])
             return ()
         }
 

@@ -62,6 +62,13 @@ type LlmVerdictCacheGlobalFlagTests(fixture: LlmVerdictCacheGlobalDisabledTestCo
 
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
+
+        let! cacheHit = fixture.TryGetLlmVerdictCacheHit m2.Message.Value
+        Assert.Equal(Some ("SPAM", Some "keyword match: kill", "sender"), cacheHit)
+
+        let! sends = fixture.GetFakeCalls "sendMessage"
+        let toDetected = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.DetectedSpamChannel.Id}")
+        Assert.True(toDetected |> Array.exists (fun c -> c.Body.Contains "cached/sender"), "sender-tier cache hit must be marked in the channel text")
     }
 
     interface IClassFixture<MlAwaitFixture>
