@@ -276,7 +276,7 @@ module Handlers =
   }}
 }}"""
                 else
-                    let verdict =
+                    let verdict, reason =
                         try
                             use doc = JsonDocument.Parse(body)
                             let msgs = doc.RootElement.GetProperty("messages")
@@ -292,16 +292,16 @@ module Handlers =
                                     | _ -> None)
                                 |> Option.bind Option.ofObj
                                 |> Option.defaultValue ""
-                            if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM"
-                            elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP"
-                            else "NOT_SPAM"
-                        with _ -> "NOT_SPAM"
+                            if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM", "keyword match: kill"
+                            elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP", "keyword match: spam"
+                            else "NOT_SPAM", "keyword match: none"
+                        with _ -> "NOT_SPAM", "keyword match: none"
                     $"""{{
   "choices": [{{
     "finish_reason": "stop",
     "index": 0,
     "message": {{
-      "content": "{{\"verdict\":\"{verdict}\"}}",
+      "content": "{{\"verdict\":\"{verdict}\",\"reason\":\"{reason}\"}}",
       "role": "assistant"
     }}
   }}],

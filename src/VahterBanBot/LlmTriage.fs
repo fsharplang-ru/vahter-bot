@@ -22,6 +22,7 @@ open Microsoft.Extensions.Options
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
 open VahterBanBot.Utils
+open VahterBanBot.Metrics
 open VahterBanBot.LlmVerdictCache
 open VahterBanBot.ProfileFetcher
 open BotInfra
@@ -109,7 +110,7 @@ type private ChatClientCache(retryPolicy: ClientRetryPolicy) =
 // ── Response-format schemas (strict JSON) ─────────────────────────────────────
 
 let private spamVerdictSchema =
-    BinaryData.FromString """{"type":"object","properties":{"verdict":{"type":"string","enum":["SPAM","SKIP","NOT_SPAM"]}},"required":["verdict"],"additionalProperties":false}"""
+    BinaryData.FromString """{"type":"object","properties":{"verdict":{"type":"string","enum":["SPAM","SKIP","NOT_SPAM"]},"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}"""
 
 let private reactionVerdictSchema =
     BinaryData.FromString """{"type":"object","properties":{"verdict":{"type":"string","enum":["BAN","SPAM","NOT_SPAM","UNSURE"]},"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}"""
@@ -118,25 +119,20 @@ let private reactionVerdictSchema =
 // The SDK hands back the assistant message text; with json_schema strict mode that text IS the
 // verdict object, so we only parse the inner JSON (no chat-completions envelope to unwrap anymore).
 
-let private parseVerdict (logger: ILogger) (content: string) =
-    try
-        use inner = JsonDocument.Parse(content)
-        Some (inner.RootElement.GetProperty("verdict").GetString())
-    with ex ->
-        logger.LogWarning(ex, "Failed to parse LLM triage content. Raw: {Body}", content)
-        None
-
+/// Shared by text and reaction triage. Missing/blank `reason` is None, not a parse failure —
+/// the verdict alone is still usable (e.g. an old cached row, or a model that omits it).
 let private parseVerdictAndReason (logger: ILogger) (content: string) =
     try
         use inner = JsonDocument.Parse(content)
         let verdict = inner.RootElement.GetProperty("verdict").GetString()
         let reason =
             match inner.RootElement.TryGetProperty("reason") with
-            | true, r when r.ValueKind = JsonValueKind.String -> Some (r.GetString())
+            | true, r when r.ValueKind = JsonValueKind.String && not (String.IsNullOrWhiteSpace(r.GetString())) ->
+                Some (r.GetString())
             | _ -> None
         Some (verdict, reason)
     with ex ->
-        logger.LogWarning(ex, "Failed to parse reaction-triage content. Raw: {Body}", content)
+        logger.LogWarning(ex, "Failed to parse LLM triage content. Raw: {Body}", content)
         None
 
 // ── content_filter detection (shared by both triage paths) ────────────────────
@@ -343,7 +339,7 @@ let formatRepetitionLine (textLength: int) (repetition: MessageRepetition option
 /// selection logic is unit-testable without a live SDK options object.
 type LlmRequestParams =
     { Temperature: float32 option
-      /// Bumped from 20 to 100 unconditionally — the old cap was too close to observed completion sizes.
+      /// Bumped 20 -> 100 -> 200 unconditionally — 200 leaves room for the `reason` field (D3).
       MaxOutputTokenCount: int
       ReasoningEffort: string option }
 
@@ -353,9 +349,9 @@ type LlmRequestParams =
 /// precedent for the same class of model on a different provider.
 let selectLlmRequestParams (reasoningEffort: string) : LlmRequestParams =
     if String.IsNullOrEmpty reasoningEffort then
-        { Temperature = Some 0.0f; MaxOutputTokenCount = 100; ReasoningEffort = None }
+        { Temperature = Some 0.0f; MaxOutputTokenCount = 200; ReasoningEffort = None }
     else
-        { Temperature = None; MaxOutputTokenCount = 100; ReasoningEffort = Some reasoningEffort }
+        { Temperature = None; MaxOutputTokenCount = 200; ReasoningEffort = Some reasoningEffort }
 
 // ── Interface + implementation ────────────────────────────────────────────────
 
@@ -416,7 +412,9 @@ Classify the message as exactly one of:
 
 In case of doubt, select SKIP.
 
-Respond with exactly: {"verdict":"SPAM"} or {"verdict":"SKIP"} or {"verdict":"NOT_SPAM"}"""
+Also give a `reason`: one short English phrase, max ~12 words, no PII.
+
+Respond with exactly: {"verdict":"SPAM","reason":"..."} or {"verdict":"SKIP","reason":"..."} or {"verdict":"NOT_SPAM","reason":"..."}"""
 
     let promptHash =
         SHA256.HashData(Encoding.UTF8.GetBytes(staticSystemPrompt))
@@ -429,6 +427,12 @@ Respond with exactly: {"verdict":"SPAM"} or {"verdict":"SKIP"} or {"verdict":"NO
     // is retried next time rather than pinned.
     let classifyUncached (msg: TgMessage) (userMsgCount: int64) (cacheRouting: CacheRouting) (ct: CancellationToken) = task {
         use activity = botActivity.StartActivity("llmTriage")
+        let missScope =
+            match cacheRouting with
+            | NoCache -> "none"
+            | SingleKey _ -> "sender"
+            | SplitByVerdict _ -> "global"
+        llmVerdictCacheTotalCounter.Add(1L, tagsForLlmVerdictCache "miss" missScope)
 
         // endpoint/key/deployment are hot-reloadable — read live for this call.
         let modelName = botConf.Value.AzureOpenAiDeployment
@@ -506,8 +510,8 @@ Message:
             let! result = chatClient.CompleteChatAsync(messages, options, ct)
             sw.Stop()
             let content = result.Value.Content.[0].Text
-            match parseVerdict logger content with
-            | Some verdictStr ->
+            match parseVerdictAndReason logger content with
+            | Some (verdictStr, reason) ->
                 let promptTokens     = result.Value.Usage.InputTokenCount
                 let completionTokens = result.Value.Usage.OutputTokenCount
                 if not (isNull activity) then
@@ -517,22 +521,26 @@ Message:
                         .SetTag("total_tokens", promptTokens + completionTokens)
                         .SetTag("chat_id",      msg.ChatId)
                         .SetTag("user_id",      msg.SenderId)
+                        .SetTag("llm.cache",    "miss")
+                        .SetTag("llm.reason",   Option.toObj reason)
+                logger.LogInformation(
+                    "LLM triage classified: verdict={Verdict} reason={Reason} latencyMs={LatencyMs} cacheResult={CacheResult} cacheScope={CacheScope}",
+                    verdictStr, reason, sw.ElapsedMilliseconds, "miss", missScope)
                 do! db.RecordLlmClassified(
-                        msg.ChatId, msg.MessageId, verdictStr,
+                        msg.ChatId, msg.MessageId, verdictStr, reason,
                         promptTokens, completionTokens, int sw.ElapsedMilliseconds,
                         Some modelName, Some promptHash)
                 match cacheRouting with
                 | NoCache -> ()
-                | SingleKey k -> do! cache.Save(k, verdictStr, None, Some modelName)
+                | SingleKey k -> do! cache.Save(k, verdictStr, reason, Some modelName)
                 | SplitByVerdict (globalKey, senderKey) ->
                     // SPAM/SKIP are safe to share cross-sender (no exoneration to leak) → global key.
                     // NOT_SPAM (and any unexpected value — schema enforces the 3 verdicts, so this is
                     // defensive only) stays sender-scoped, never shared.
                     let key = match verdictStr with "SPAM" | "SKIP" -> globalKey | _ -> senderKey
-                    do! cache.Save(key, verdictStr, None, Some modelName)
-                return LlmVerdict.FromString verdictStr
+                    do! cache.Save(key, verdictStr, reason, Some modelName)
+                return LlmVerdict.FromString(verdictStr, reason, None)
             | None ->
-                // warning already logged in parseVerdict
                 return LlmVerdict.Error
         with
         | :? ClientResultException as ex ->
@@ -571,12 +579,35 @@ Message:
             return LlmVerdict.Error
     }
 
+    let recordCacheHit (msg: TgMessage) (scope: string) (cv: CachedVerdict) = task {
+        use activity = botActivity.StartActivity("llmTriage")
+        if not (isNull activity) then
+            %activity
+                .SetTag("llm.cache",       "hit")
+                .SetTag("llm.cache_scope", scope)
+                .SetTag("llm.verdict",     cv.Verdict)
+                .SetTag("llm.reason",      Option.toObj cv.Reason)
+                .SetTag("llm.cached_at",   cv.CreatedAt)
+                .SetTag("chat_id",         msg.ChatId)
+                .SetTag("user_id",         msg.SenderId)
+        llmVerdictCacheTotalCounter.Add(1L, tagsForLlmVerdictCache "hit" scope)
+        // Never let a DB error on this write block returning the already-known verdict.
+        try
+            do! db.RecordLlmVerdictCacheHit(msg.ChatId, msg.MessageId, cv.Verdict, cv.Reason, scope, cv.CreatedAt, cv.ModelName)
+        with ex ->
+            logger.LogWarning(ex, "Failed to record LlmVerdictCacheHit event (cacheScope={CacheScope})", scope)
+        logger.LogInformation(
+            "LLM triage cache hit: verdict={Verdict} reason={Reason} cacheScope={CacheScope} cachedAt={CachedAt} chatId={ChatId} userId={UserId}",
+            cv.Verdict, cv.Reason, scope, cv.CreatedAt, msg.ChatId, msg.SenderId)
+        return LlmVerdict.FromString(cv.Verdict, cv.Reason, Some scope)
+    }
+
     interface ILlmTriage with
         member _.ModelName  = botConf.Value.AzureOpenAiDeployment
         member _.PromptHash = promptHash
 
         member _.Classify(msg: TgMessage, userMsgCount: int64, ct: CancellationToken) = task {
-            if not botConf.Value.LlmTriageEnabled then return LlmVerdict.Skip
+            if not botConf.Value.LlmTriageEnabled then return LlmVerdict.Skip (None, None)
             else
 
             // Photo-only / empty-text messages have no stable text key → classify directly, no cache.
@@ -607,13 +638,13 @@ Message:
                     // Tier 1, always checked first (see module doc comment for the full precedence
                     // rationale): this sender's own prior verdict for this exact text always wins.
                     match! cache.TryGet(senderKey, ttl) with
-                    | Some cv -> return LlmVerdict.FromString cv.Verdict
+                    | Some cv -> return! recordCacheHit msg "sender" cv
                     | None ->
                         if botConf.Value.LlmVerdictCacheGlobalEnabled then
                             // Tier 2: any sender's prior SPAM/SKIP for this exact text.
                             let globalKey = sprintf "text:global:%s" hash
                             match! cache.TryGet(globalKey, ttl) with
-                            | Some cv -> return LlmVerdict.FromString cv.Verdict
+                            | Some cv -> return! recordCacheHit msg "global" cv
                             | None -> return! classifyUncached msg userMsgCount (SplitByVerdict(globalKey, senderKey)) ct
                         else
                             // Feature flag OFF: revert to the pre-PR behavior — one key, one tier,

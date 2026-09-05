@@ -259,7 +259,10 @@ module private BotHelpers =
         // Same "score: x" shape as MlSpam — the actor prefix (already "LLM/{modelName}, " via
         // Actor.LLM.DisplayName) is what tells a human this was the LLM's own kill call, not a
         // plain ML-threshold verdict; formatReasonStr keeps that wording stable on purpose.
-        | AutoDeleteReason.LlmSpam r          -> $"{prefix}score: {r.score}"
+        | AutoDeleteReason.LlmSpam r when r.reason.IsSome && r.cacheScope.IsSome ->
+            $"{prefix}score: {r.score}, LLM (cached/{r.cacheScope.Value}): {r.reason.Value}"
+        | AutoDeleteReason.LlmSpam r when r.reason.IsSome -> $"{prefix}score: {r.score}, LLM: {r.reason.Value}"
+        | AutoDeleteReason.LlmSpam r -> $"{prefix}score: {r.score}"
         | AutoDeleteReason.ReactionSpam r     -> $"{prefix}reactions: {r.reactionCount}"
         | AutoDeleteReason.InvisibleMention   -> $"{prefix}invisible mention"
         | AutoDeleteReason.SuspiciousAttachment -> $"{prefix}suspicious attachment"
@@ -280,9 +283,9 @@ module private BotHelpers =
 /// which are private to this file — so the 2026-08-18 misattribution incident (an LLM kill
 /// recorded/rendered as a plain `MlSpam` verdict) is unit-testable without a container: see
 /// VahterBanBot.Unit.Tests/SpamDeleteReasonTests.fs.
-let spamDeleteReason (score: float) (actor: Actor) : AutoDeleteReason =
+let spamDeleteReason (score: float) (actor: Actor) (reason: string option) (cacheScope: string option) : AutoDeleteReason =
     match actor with
-    | Actor.LLM l -> AutoDeleteReason.LlmSpam {| score = score; modelName = l.modelName |}
+    | Actor.LLM l -> AutoDeleteReason.LlmSpam {| score = score; modelName = l.modelName; reason = reason; cacheScope = cacheScope |}
     | _           -> AutoDeleteReason.MlSpam {| score = score |}
 
 /// True if the message's first token is the "/vahter_report" command (mention-tolerant,
@@ -1234,15 +1237,15 @@ type BotService(
                 logger.LogInformation logMsg
                 return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.ML))
             elif prediction.Score >= botConfig.Value.MlSpamThreshold then
-                return Some (AutoVerdict.Spam (float prediction.Score, Actor.ML))
+                return Some (AutoVerdict.Spam (float prediction.Score, Actor.ML, None, None))
             elif prediction.Score >= botConfig.Value.MlWarningThreshold then
                 use cts = new CancellationTokenSource(TimeSpan.FromSeconds 60.)
                 let! llmVerdict = llmTriage.Classify(msg, int64 usrMsgCount, cts.Token)
                 match llmVerdict with
-                | LlmVerdict.Kill ->
+                | LlmVerdict.Kill (reason, cacheScope) ->
                     let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
-                    return Some (AutoVerdict.Spam (float prediction.Score, actor))
-                | LlmVerdict.NotSpam ->
+                    return Some (AutoVerdict.Spam (float prediction.Score, actor, reason, cacheScope))
+                | LlmVerdict.NotSpam _ ->
                     return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}))
                 | LlmVerdict.ContentFiltered triggers when botConfig.Value.LlmContentFilterIsSpam ->
                     // Azure's RAI policy rejected the prompt as severely harmful, on a message the
@@ -1254,8 +1257,10 @@ type BotService(
                     // ContentFiltered branch below instead.
                     let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
                     return Some (AutoVerdict.ContentFilterSpam (float prediction.Score, actor, triggers))
-                | LlmVerdict.Skip | LlmVerdict.Error | LlmVerdict.ContentFiltered _ ->
-                    return Some (AutoVerdict.Uncertain (float prediction.Score))
+                | LlmVerdict.Skip (reason, cacheScope) ->
+                    return Some (AutoVerdict.Uncertain (float prediction.Score, reason, cacheScope))
+                | LlmVerdict.Error | LlmVerdict.ContentFiltered _ ->
+                    return Some (AutoVerdict.Uncertain (float prediction.Score, None, None))
             else
                 return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.ML))
     }
@@ -1499,22 +1504,26 @@ type BotService(
                             do! this.EnforceOrDemote(msg, actor, reason, user)
                         }
                         match autoVerdict with
-                        | Some (AutoVerdict.Spam (score, actor)) ->
+                        | Some (AutoVerdict.Spam (score, actor, reason, cacheScope)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "spam")
                             // The LLM itself said SPAM (LlmVerdict.Kill) vs. crossing the ML score
                             // threshold on its own — attribute the reason accordingly (2026-08-18
                             // incident: an LLM kill was mislabeled as a plain MlSpam verdict).
-                            do! enforceSpam actor (spamDeleteReason score actor)
+                            do! enforceSpam actor (spamDeleteReason score actor reason cacheScope)
                         | Some (AutoVerdict.ContentFilterSpam (score, actor, triggers)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "contentFilterSpam")
                             %mlActivity.SetTag("contentFilterTriggers", triggers)
                             do! enforceSpam actor (AutoDeleteReason.ContentFilterSpam {| score = score; triggers = triggers |})
-                        | Some (AutoVerdict.Uncertain score) ->
+                        | Some (AutoVerdict.Uncertain (score, reason, cacheScope)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "uncertain")
-                            do! this.ReportPotentialSpam(msg, MlSpam {| score = score |})
+                            let uncertainReason =
+                                match reason with
+                                | Some r -> LlmSpam {| score = score; modelName = llmTriage.ModelName; reason = Some r; cacheScope = cacheScope |}
+                                | None   -> MlSpam {| score = score |}
+                            do! this.ReportPotentialSpam(msg, uncertainReason)
                         | Some (AutoVerdict.NotSpam (score, _)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "notSpam")

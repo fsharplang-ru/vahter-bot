@@ -75,6 +75,16 @@ let spamTextCacheHitsCounter =
 let tagsForSpamTextCacheMode (mode: SpamTextCacheMode) =
     [| KeyValuePair("mode", box (caseName mode)) |]
 
+let llmVerdictCacheTotalCounter =
+    meter.CreateCounter<int64>(
+        "vahter_llm_verdict_cache_total",
+        "lookups",
+        "Total number of LLM verdict cache lookups, tagged by hit/miss and which tier (result=hit|miss, scope=global|sender|none)"
+    )
+
+let tagsForLlmVerdictCache (result: string) (scope: string) =
+    [| KeyValuePair("result", box result); KeyValuePair("scope", box scope) |]
+
 let tagsForChat (chatId: int64) (chatUsername: string) =
     [|
         KeyValuePair("chat_id", box chatId)

@@ -53,9 +53,11 @@ type BannedBy =
 
 [<RequireQualifiedAccess>]
 type LlmVerdict =
-    | Kill
-    | NotSpam
-    | Skip    // LLM "SPAM" verdict — message goes to human triage
+    /// `cacheScope` is None for a fresh Azure call, Some "global"|"sender" when served from the
+    /// verdict cache (D4) — carried through so Bot.fs can mark cached verdicts in channel text.
+    | Kill of reason: string option * cacheScope: string option
+    | NotSpam of reason: string option * cacheScope: string option
+    | Skip of reason: string option * cacheScope: string option    // LLM "SPAM" verdict — message goes to human triage
     | Error   // HTTP failure or parse error — falls back to human triage
     /// Azure OpenAI rejected the triage request itself with HTTP 400 `content_filter` — its RAI
     /// policy judged the (already ML-flagged) prompt severely harmful, e.g. incident
@@ -69,11 +71,11 @@ type LlmVerdict =
     /// when LLM_CONTENT_FILTER_IS_SPAM is true (default); false reverts to the same Uncertain
     /// fallback as Error.
     | ContentFiltered of triggers: string
-    static member FromString(verdictStr: string) =
+    static member FromString(verdictStr: string, reason: string option, cacheScope: string option) =
         match verdictStr with
-        | "SPAM"     -> LlmVerdict.Kill
-        | "NOT_SPAM" -> LlmVerdict.NotSpam
-        | "SKIP"     -> LlmVerdict.Skip
+        | "SPAM"     -> LlmVerdict.Kill (reason, cacheScope)
+        | "NOT_SPAM" -> LlmVerdict.NotSpam (reason, cacheScope)
+        | "SKIP"     -> LlmVerdict.Skip (reason, cacheScope)
         | _          -> LlmVerdict.Error
 
 /// Verdict for the reaction-spam triage pipeline (separate from LlmVerdict because the
@@ -251,8 +253,9 @@ type AutoDeleteReason =
     /// (@AvaloniaRU msg 217142): an innocent caption-less sticker was auto-deleted with
     /// `reason = MlSpam` even though the LLM, not the ML threshold, made the kill call.
     /// `score` is still the ML score that triggered LLM escalation (for the same human-facing
-    /// "score: x" rendering as MlSpam); `modelName` names which deployment decided.
-    | LlmSpam of {| score: float; modelName: string |}
+    /// "score: x" rendering as MlSpam); `modelName` names which deployment decided. `cacheScope`
+    /// (D4) is None for a fresh call, Some "global"|"sender" when the verdict was cache-served.
+    | LlmSpam of {| score: float; modelName: string; reason: string option; cacheScope: string option |}
     | ReactionSpam of {| reactionCount: int |}
     | InvisibleMention
     /// Deterministic attachment-extension delete (SUSPICIOUS_ATTACHMENT_EXTENSIONS). Delete only, no ban.
@@ -290,8 +293,9 @@ type SpamTextCacheMode =
 /// Result of automated spam triage (ML + optional LLM).
 [<RequireQualifiedAccess>]
 type AutoVerdict =
-    /// Spam detected — delete message, reduce karma, check autoban
-    | Spam of score: float * actor: Actor
+    /// Spam detected — delete message, reduce karma, check autoban. `reason`/`cacheScope` are the
+    /// LLM's verdict phrase / cache tier when `actor` is `Actor.LLM` (both None otherwise).
+    | Spam of score: float * actor: Actor * reason: string option * cacheScope: string option
     /// Azure OpenAI's content_filter rejected the triage prompt as severely harmful (see
     /// LlmVerdict.ContentFiltered / LLM_CONTENT_FILTER_IS_SPAM). Takes the EXACT SAME
     /// delete/report/karma/autoban enforcement action as Spam (same score+actor shape, so
@@ -302,8 +306,9 @@ type AutoVerdict =
     | ContentFilterSpam of score: float * actor: Actor * triggers: string
     /// Not spam — no action
     | NotSpam of score: float * actor: Actor
-    /// Uncertain — route to human triage channel
-    | Uncertain of score: float
+    /// Uncertain — route to human triage channel. `reason` is the LLM's SKIP phrase, when any;
+    /// `cacheScope` (D4) is Some "global"|"sender" when the verdict was cache-served.
+    | Uncertain of score: float * reason: string option * cacheScope: string option
 
 type ModerationEvent =
     | VahterActed      of {| vahterId: int64; actionType: VahterAction; targetUserId: int64; chatId: int64; messageId: int64 |}
@@ -369,12 +374,15 @@ type Callback =
 
 type DetectionEvent =
     | MlScoredMessage              of {| chatId: int64; messageId: int64; score: float; isSpam: bool |}
-    | LlmClassified                of {| chatId: int64; messageId: int64; verdict: string; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
+    | LlmClassified                of {| chatId: int64; messageId: int64; verdict: string; reason: string option; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
     | InvisibleMentionDetected     of {| chatId: int64; messageId: int64; userId: int64 |}
     /// Verdict from the reaction-spam triage classifier (vision LLM evaluating profile photo + bio + history).
     /// Recorded in BOTH shadow mode (ignored for action) AND autonomous mode (load-bearing). The presence
     /// of this event for a given (userId, chatId) means a reaction-spam threshold tripped.
     | LlmReactionTriageClassified  of {| chatId: int64; userId: int64; verdict: string; reason: string option; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option; shadowMode: bool |}
+    /// Recorded on every LLM verdict cache hit (D4), so DB analyses stay complete. `cacheScope`
+    /// is "global"|"sender" (the tier that hit); `cachedAt` is the cached row's `created_at`.
+    | LlmVerdictCacheHit           of {| chatId: int64; messageId: int64; verdict: string; reason: string option; cacheScope: string; cachedAt: DateTime; modelName: string option |}
 
 type Detection =
     { MlScore:                  float option
@@ -387,6 +395,7 @@ type Detection =
         | LlmClassified e               -> { state with LlmVerdict = Some e.verdict }
         | InvisibleMentionDetected _    -> state
         | LlmReactionTriageClassified e -> { state with LlmReactionTriageVerdict = Some e.verdict }
+        | LlmVerdictCacheHit e          -> { state with LlmVerdict = Some e.verdict }
 
 // ---------------------------------------------------------------------------
 

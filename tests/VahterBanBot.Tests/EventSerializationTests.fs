@@ -37,7 +37,7 @@ let ``LlmClassified with modelName and promptHash deserializes correctly`` () =
 [<Fact>]
 let ``LlmClassified serialization round-trip preserves optional fields`` () =
     let original =
-        LlmClassified {| chatId = 100L; messageId = 42; verdict = "SPAM"
+        LlmClassified {| chatId = 100L; messageId = 42; verdict = "SPAM"; reason = Some "advertising link in bio"
                          promptTokens = 100; completionTokens = 5; latencyMs = 300
                          modelName = Some "gpt-4o-mini"; promptHash = Some "deadbeef" |}
     let json = JsonSerializer.Serialize(original, eventJsonOpts)
@@ -47,7 +47,39 @@ let ``LlmClassified serialization round-trip preserves optional fields`` () =
         Assert.Equal(Some "gpt-4o-mini", e.modelName)
         Assert.Equal(Some "deadbeef", e.promptHash)
         Assert.Equal("SPAM", e.verdict)
+        Assert.Equal(Some "advertising link in bio", e.reason)
     | other -> Assert.Fail $"Expected LlmClassified but got {other}"
+
+[<Fact>]
+let ``LlmClassified without reason (pre-D3 event) deserializes reason as None`` () =
+    let json =
+        """{"Case":"LlmClassified","chatId":100,"messageId":42,"verdict":"SPAM","promptTokens":200,"completionTokens":5,"latencyMs":350}"""
+    let event = JsonSerializer.Deserialize<DetectionEvent>(json, eventJsonOpts)
+    match event with
+    | LlmClassified e ->
+        Assert.Equal(None, e.reason)
+        Assert.Equal("SPAM", e.verdict)
+    | other -> Assert.Fail $"Expected LlmClassified but got {other}"
+
+[<Fact>]
+let ``LlmVerdictCacheHit round-trips chatId/messageId/verdict/reason/cacheScope/cachedAt/modelName`` () =
+    let cachedAt = DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc)
+    let original =
+        LlmVerdictCacheHit
+            {| chatId = -666L; messageId = 42L; verdict = "SPAM"; reason = Some "advertising link in bio"
+               cacheScope = "global"; cachedAt = cachedAt; modelName = Some "gpt-4o-mini" |}
+    let json = JsonSerializer.Serialize(original, eventJsonOpts)
+    let roundtripped = JsonSerializer.Deserialize<DetectionEvent>(json, eventJsonOpts)
+    match roundtripped with
+    | LlmVerdictCacheHit e ->
+        Assert.Equal(-666L, e.chatId)
+        Assert.Equal(42L, e.messageId)
+        Assert.Equal("SPAM", e.verdict)
+        Assert.Equal(Some "advertising link in bio", e.reason)
+        Assert.Equal("global", e.cacheScope)
+        Assert.Equal(cachedAt, e.cachedAt)
+        Assert.Equal(Some "gpt-4o-mini", e.modelName)
+    | other -> Assert.Fail $"Expected LlmVerdictCacheHit but got {other}"
 
 [<Fact>]
 let ``Old BannedByAI event deserializes with backward compat`` () =
@@ -200,9 +232,9 @@ let ``LlmReactionTriageClassified round-trips with reason and shadowMode`` () =
 // ---------------------------------------------------------------------------
 
 [<Fact>]
-let ``New BotAutoDeleted with LlmSpam reason round-trips with score and modelName`` () =
+let ``New BotAutoDeleted with LlmSpam reason round-trips with score, modelName and reason`` () =
     let original =
-        BotAutoDeleted {| chatId = -666L; messageId = 217142L; userId = 8931498652L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini" |} |}
+        BotAutoDeleted {| chatId = -666L; messageId = 217142L; userId = 8931498652L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini"; reason = Some "advertising link in bio"; cacheScope = None |} |}
     let json = JsonSerializer.Serialize(original, eventJsonOpts)
     let roundtripped = JsonSerializer.Deserialize<ModerationEvent>(json, eventJsonOpts)
     match roundtripped with
@@ -213,6 +245,48 @@ let ``New BotAutoDeleted with LlmSpam reason round-trips with score and modelNam
         | AutoDeleteReason.LlmSpam r ->
             Assert.Equal(0.31478, r.score)
             Assert.Equal("gpt-4o-mini", r.modelName)
+            Assert.Equal(Some "advertising link in bio", r.reason)
+        | other -> Assert.Fail $"Expected AutoDeleteReason.LlmSpam but got {other}"
+    | other -> Assert.Fail $"Expected BotAutoDeleted but got {other}"
+
+[<Fact>]
+let ``Old BotAutoDeleted with LlmSpam (pre-D3, no reason) deserializes reason as None`` () =
+    let json =
+        """{"Case":"BotAutoDeleted","chatId":-666,"messageId":217142,"userId":8931498652,"reason":{"Case":"LlmSpam","score":0.31478,"modelName":"gpt-4o-mini"}}"""
+    let event = JsonSerializer.Deserialize<ModerationEvent>(json, eventJsonOpts)
+    match event with
+    | BotAutoDeleted e ->
+        match e.reason with
+        | AutoDeleteReason.LlmSpam r ->
+            Assert.Equal(0.31478, r.score)
+            Assert.Equal(None, r.reason)
+        | other -> Assert.Fail $"Expected AutoDeleteReason.LlmSpam but got {other}"
+    | other -> Assert.Fail $"Expected BotAutoDeleted but got {other}"
+
+[<Fact>]
+let ``New BotAutoDeleted with LlmSpam cacheScope round-trips (cache-served verdict)`` () =
+    let original =
+        BotAutoDeleted {| chatId = -666L; messageId = 217142L; userId = 8931498652L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini"; reason = Some "advertising link in bio"; cacheScope = Some "global" |} |}
+    let json = JsonSerializer.Serialize(original, eventJsonOpts)
+    let roundtripped = JsonSerializer.Deserialize<ModerationEvent>(json, eventJsonOpts)
+    match roundtripped with
+    | BotAutoDeleted e ->
+        match e.reason with
+        | AutoDeleteReason.LlmSpam r -> Assert.Equal(Some "global", r.cacheScope)
+        | other -> Assert.Fail $"Expected AutoDeleteReason.LlmSpam but got {other}"
+    | other -> Assert.Fail $"Expected BotAutoDeleted but got {other}"
+
+[<Fact>]
+let ``Old BotAutoDeleted with LlmSpam (pre-D4, no cacheScope) deserializes cacheScope as None`` () =
+    let json =
+        """{"Case":"BotAutoDeleted","chatId":-666,"messageId":217142,"userId":8931498652,"reason":{"Case":"LlmSpam","score":0.31478,"modelName":"gpt-4o-mini","reason":"advertising link in bio"}}"""
+    let event = JsonSerializer.Deserialize<ModerationEvent>(json, eventJsonOpts)
+    match event with
+    | BotAutoDeleted e ->
+        match e.reason with
+        | AutoDeleteReason.LlmSpam r ->
+            Assert.Equal(Some "advertising link in bio", r.reason)
+            Assert.Equal(None, r.cacheScope)
         | other -> Assert.Fail $"Expected AutoDeleteReason.LlmSpam but got {other}"
     | other -> Assert.Fail $"Expected BotAutoDeleted but got {other}"
 
@@ -234,13 +308,13 @@ let ``Old BotAutoDeleted event with reason.Case=MlSpam (pre-LlmSpam) still deser
 let ``BotAutoDeleted with LlmSpam reason folds into Moderation and FoldTimeline just like MlSpam`` () =
     let llmDeleted =
         FromModeration (
-            BotAutoDeleted {| chatId = -1L; messageId = 1; userId = 5L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini" |} |})
+            BotAutoDeleted {| chatId = -1L; messageId = 1; userId = 5L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini"; reason = None; cacheScope = None |} |})
     let recv = FromMessage (MessageReceived {| chatId = -1L; messageId = 1; userId = 5L; text = Some "x"; rawMessage = "{}" |})
     let m = [ recv; llmDeleted ] |> List.fold (fun s e -> Message.FoldTimeline(s, e)) Message.Zero
     Assert.Equal(SpamClassification.Spam, m.Classification)
 
     let moderation =
-        [ BotAutoDeleted {| chatId = -1L; messageId = 1; userId = 5L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini" |} |} ]
+        [ BotAutoDeleted {| chatId = -1L; messageId = 1; userId = 5L; reason = AutoDeleteReason.LlmSpam {| score = 0.31478; modelName = "gpt-4o-mini"; reason = None; cacheScope = None |} |} ]
         |> List.fold (fun s e -> Moderation.Fold(s, e)) Moderation.Zero
     Assert.Equal(1, moderation.BotAutoDeletedCount)
 
