@@ -68,6 +68,13 @@ type CleanupService(
         if expiredSeeds > 0 then
             %sb.AppendLine $"Deleted {expiredSeeds} expired spam-text cache seeds"
 
+        // D5: sweep llm_verdict_cache rows past D1's widest TTL + 1 day slack.
+        let llmVerdictCacheMaxAge =
+            TimeSpan.FromMinutes(float botConf.Value.LlmVerdictCacheLongTextTtlMinutes) + TimeSpan.FromDays 1.0
+        let! expiredLlmVerdicts = db.DeleteExpiredLlmVerdictCache(llmVerdictCacheMaxAge)
+        if expiredLlmVerdicts > 0 then
+            %sb.AppendLine $"Deleted {expiredLlmVerdicts} expired LLM verdict cache rows"
+
         let msg = sb.ToString()
         if msg.Length > 0 then
             do! tg.CallExn(Req.SendMessage.Make(botConf.Value.AllLogsChannelId, msg)) |> taskIgnore

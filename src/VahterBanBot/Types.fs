@@ -514,6 +514,12 @@ type BotConfiguration =
       /// it is tunable by SQL and hot-reloadable, and a missing row falls back to the default
       /// rather than being silently wrong — see Program.fs's buildBotConf.
       LlmVerdictCacheGlobalEnabled: bool
+      /// D1: normalized-text length (chars) at/above which a SPAM (global) / NOT_SPAM (per-sender)
+      /// verdict gets the long TTL below instead of LlmVerdictCacheTtlMinutes; SKIP always short.
+      LlmVerdictCacheLongTextMinChars: int
+      /// D1: long TTL (minutes) for cached SPAM/NOT_SPAM verdicts at/above the length above —
+      /// production data shows longer text has a far lower verdict-conflict rate. bot_setting-backed.
+      LlmVerdictCacheLongTextTtlMinutes: int
       /// When true (default), an Azure OpenAI `content_filter` rejection of the triage request
       /// (LlmVerdict.ContentFiltered — see LlmTriage.fs) is treated as a high-confidence SPAM
       /// signal by Bot.fs's GetAutoVerdict, since it only fires on messages the ML model already

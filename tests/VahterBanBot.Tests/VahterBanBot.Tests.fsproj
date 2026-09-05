@@ -29,6 +29,7 @@
         <Compile Include="LlmTriageTests.fs" />
         <Compile Include="LlmTriageResilienceTests.fs" />
         <Compile Include="LlmVerdictCacheGlobalFlagTests.fs" />
+        <Compile Include="LlmVerdictCacheTieredTtlTests.fs" />
         <Compile Include="LlmContentFilterTests.fs" />
         <Compile Include="OcrCacheTests.fs" />
         <Compile Include="OcrShortCircuitTests.fs" />

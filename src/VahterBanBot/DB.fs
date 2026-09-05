@@ -18,6 +18,13 @@ type UserMessage =
     { chat_id: int64
       message_id: int64 }
 
+/// Lightweight DTO for TryGetMessageTextAndSender (D2 cache invalidation on the admin-command
+/// correction paths, which only have a chat/message reference, not the original TgMessage).
+[<CLIMutable>]
+type private MessageTextAndSender =
+    { text: string
+      user_id: int64 }
+
 /// Lightweight DTO for the reaction-spam triage dossier (recent activity from one user).
 [<CLIMutable>]
 type DossierEvent =
@@ -424,6 +431,23 @@ WHERE event_type = 'MessageReceived'
                 if state.Classification = SpamClassification.Spam then []  // already spam
                 else [ MessageMarkedSpam {| chatId = chatId; messageId = messageId; markedBy = markedBy |} ])
             return ()
+        }
+
+    /// Looks up (text, senderId) from snapshot_message for the /vahter unmarkspam/markspam admin
+    /// commands (D2), which only have a chat/message reference, not the original TgMessage.
+    member _.TryGetMessageTextAndSender(chatId: int64, messageId: int64) : Task<(string * int64) option> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+
+            //language=postgresql
+            let sql =
+                """
+SELECT text, user_id FROM snapshot_message
+WHERE chat_id = @chatId AND message_id = @messageId AND text IS NOT NULL
+                """
+
+            let! rows = conn.QueryAsync<MessageTextAndSender>(sql, {| chatId = chatId; messageId = messageId |})
+            return rows |> Seq.tryHead |> Option.map (fun r -> r.text, r.user_id)
         }
 
     /// Returns the number of distinct text-md5s recorded for the user, capped at `cap`.
@@ -1337,6 +1361,17 @@ RETURNING job_name;
         task {
             use conn = new NpgsqlConnection(connString)
             let! rowsAffected = conn.ExecuteAsync("DELETE FROM spam_text_seed WHERE expires_at <= @now", {| now = utcNow() |})
+            return rowsAffected
+        }
+
+    /// Sweeps llm_verdict_cache rows older than `maxAge` (D5; piggybacks on the daily cleanup job).
+    member _.DeleteExpiredLlmVerdictCache(maxAge: TimeSpan) : Task<int> =
+        task {
+            use conn = new NpgsqlConnection(connString)
+            let! rowsAffected =
+                conn.ExecuteAsync(
+                    "DELETE FROM llm_verdict_cache WHERE created_at <= @cutoff",
+                    {| cutoff = utcNow() - maxAge |})
             return rowsAffected
         }
 
