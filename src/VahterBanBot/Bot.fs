@@ -1265,7 +1265,12 @@ type BotService(
                 | LlmVerdict.Kill (reason, cacheScope) ->
                     let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
                     return Some (AutoVerdict.Spam (float prediction.Score, actor, reason, cacheScope))
-                | LlmVerdict.NotSpam _ ->
+                | LlmVerdict.NotSpam (reason, _) ->
+                    // A warning-band NOT_SPAM overrides the ML warning (the injection payoff path) — must stay visible in logs.
+                    let msgLength = if isNull msg.Text then 0 else msg.Text.Length
+                    logger.LogInformation(
+                        "LLM triage NOT_SPAM in ML warning band — message passes (chat {ChatId}, user {UserId}, ML score {MlScore}, msg length {MsgLength}, reason {Reason})",
+                        msg.ChatId, msg.SenderId, prediction.Score, msgLength, reason)
                     return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}))
                 | LlmVerdict.ContentFiltered triggers when botConfig.Value.LlmContentFilterIsSpam ->
                     // Azure's RAI policy rejected the prompt as severely harmful, on a message the
