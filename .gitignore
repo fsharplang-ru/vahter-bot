@@ -14,3 +14,4 @@ test-artifacts/
 tmp/
 test-output.txt
 .claude/settings.local.json
+.agent-out/
