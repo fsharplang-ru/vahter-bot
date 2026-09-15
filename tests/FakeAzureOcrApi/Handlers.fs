@@ -5,6 +5,7 @@ open System.Net
 open System.Text
 open System.Text.Json
 open System.Text.Json.Nodes
+open System.Text.RegularExpressions
 open System.Threading.Tasks
 open Microsoft.AspNetCore.Http
 
@@ -292,8 +293,12 @@ module Handlers =
                                     | _ -> None)
                                 |> Option.bind Option.ofObj
                                 |> Option.defaultValue ""
-                            if userContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM", "keyword match: kill"
-                            elif userContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP", "keyword match: spam"
+                            // Route on the fenced <untrusted-*> block only — the trailing instruction itself says "SPAM".
+                            let routingContent =
+                                let m = Regex.Match(userContent, @"<untrusted-[0-9a-f]{8}>(.*)</untrusted-[0-9a-f]{8}>", RegexOptions.Singleline)
+                                if m.Success then m.Groups[1].Value else userContent
+                            if routingContent.Contains("kill", StringComparison.OrdinalIgnoreCase) then "SPAM", "keyword match: kill"
+                            elif routingContent.Contains("spam", StringComparison.OrdinalIgnoreCase) then "SKIP", "keyword match: spam"
                             else "NOT_SPAM", "keyword match: none"
                         with _ -> "NOT_SPAM", "keyword match: none"
                     $"""{{
