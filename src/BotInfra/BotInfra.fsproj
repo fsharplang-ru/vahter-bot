@@ -19,6 +19,7 @@
     <Compile Include="DapperSetup.fs" />
     <Compile Include="JsonLogging.fs" />
     <Compile Include="Observability.fs" />
+    <Compile Include="TelegramMessage.fs" />
     <Compile Include="TelegramApi.fs" />
     <Compile Include="ScheduledJobs.fs" />
     <Compile Include="WebhookHost.fs" />
