@@ -15,6 +15,19 @@ open Serilog.Formatting.Compact
 /// Shared observability setup for all bots.
 module Observability =
 
+    /// True for a URL path segment that looks like a Telegram bot token (digits:secret).
+    let private isTokenSegment (segment: string) = segment.Contains(':')
+
+    /// Rebuilds a Telegram API URL with every token-shaped path segment replaced by
+    /// `<redacted>` and the query string dropped, for use in trace/span attributes.
+    let redactTelegramUrl (uri: Uri) =
+        let segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
+        let redactedPath =
+            segs
+            |> Array.map (fun s -> if isTokenSegment s then "<redacted>" else s)
+            |> String.concat "/"
+        $"{uri.Scheme}://{uri.Host}/{redactedPath}"
+
     /// Configures Serilog with structured JSON logging and trace correlation.
     let configureSerilog (hostBuilder: Microsoft.Extensions.Hosting.IHostBuilder) =
         %hostBuilder.UseSerilog(fun context _services configuration ->
@@ -56,7 +69,7 @@ module Observability =
                                     // segment, the call is a file download; otherwise pick the
                                     // first non-token segment as the method name.
                                     let segs = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                                    let nonTokenSegs = segs |> Array.filter (fun s -> not (s.Contains(':')))
+                                    let nonTokenSegs = segs |> Array.filter (isTokenSegment >> not)
                                     let displayName =
                                         if Array.contains "file" nonTokenSegs then
                                             "tg:fileDownload"
@@ -66,6 +79,10 @@ module Observability =
                                             |> Option.map (fun m -> $"tg:{m}")
                                             |> Option.defaultValue "tg:?"
                                     activity.DisplayName <- displayName
+                                    // The instrumentation also stamps the raw URL as url.full/http.url.
+                                    let redacted = redactTelegramUrl uri
+                                    activity.SetTag("url.full", redacted) |> ignore
+                                    activity.SetTag("http.url", redacted) |> ignore
                                 elif host.EndsWith("cognitiveservices.azure.com") then
                                     activity.DisplayName <- $"azure-ocr {methodName}"
                                 elif host.EndsWith("openai.azure.com") then
