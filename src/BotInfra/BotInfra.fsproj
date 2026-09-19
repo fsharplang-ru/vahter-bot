@@ -23,6 +23,7 @@
     <Compile Include="TelegramApi.fs" />
     <Compile Include="ScheduledJobs.fs" />
     <Compile Include="WebhookHost.fs" />
+    <Compile Include="WebhookRegistration.fs" />
   </ItemGroup>
 
   <ItemGroup>
