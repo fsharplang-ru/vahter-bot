@@ -19,6 +19,9 @@
     <!-- Azure AI Vision (OCR via the Image Analysis "read" feature; SDK-native retry) -->
     <PackageVersion Include="Azure.AI.Vision.ImageAnalysis" Version="1.0.0" />
 
+    <!-- Kubernetes (Fizruk: scale Deployments, read pods/nodes/logs) -->
+    <PackageVersion Include="KubernetesClient" Version="19.0.2" />
+
     <!-- Database -->
     <PackageVersion Include="Dapper" Version="2.1.72" />
     <PackageVersion Include="Dapper.FSharp" Version="4.10.0" />
