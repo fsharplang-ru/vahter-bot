@@ -8,6 +8,7 @@
     <Compile Include="Utils.fs" />
     <Compile Include="Time.fs" />
     <Compile Include="JsonSetup.fs" />
+    <Compile Include="EventSnapshot.fs" />
     <Compile Include="EventStore.fs" />
     <Compile Include="LiveOptions.fs" />
     <Compile Include="OcrService.fs" />

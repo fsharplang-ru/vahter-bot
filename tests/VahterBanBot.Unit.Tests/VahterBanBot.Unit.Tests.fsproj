@@ -24,6 +24,7 @@
     <Compile Include="TtlCacheTests.fs" />
     <Compile Include="ReadinessTests.fs" />
     <Compile Include="RedactTelegramUrlTests.fs" />
+    <Compile Include="UserSnapshotTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
