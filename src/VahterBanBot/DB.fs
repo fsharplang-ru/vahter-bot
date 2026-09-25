@@ -1383,6 +1383,13 @@ RETURNING job_name;
     /// recomputed from both its streams, so it serializes safely with concurrent live writes.
     /// Paged by stream-id prefix (keyset over idx_event_stream). `onProgress` (optional) is called at
     /// phase boundaries and every ~5000 streams. Returns the number of streams processed.
+    /// Exclusive index bounds for a `"name:%"` stream prefix. Non-C collations ignore punctuation at
+    /// the first level, so the upper bound bumps the last letter of the name, never the `:`.
+    static member StreamPrefixRange(likePrefix: string) : string * string =
+        let lower = likePrefix.TrimEnd('%')
+        let name = lower.TrimEnd(':')
+        lower, name.Substring(0, name.Length - 1) + string (char (int name[name.Length - 1] + 1))
+
     member _.RebuildSnapshots(?batchSize: int, ?onProgress: string -> unit, ?usersOnly: bool) : Task<int> =
         let batch = defaultArg batchSize 500
         let report = defaultArg onProgress ignore
@@ -1391,28 +1398,29 @@ RETURNING job_name;
         task {
             let mutable grandTotal = 0
 
-            // `totalSql` returns the denominator for progress; @prefix is supplied but may be unused.
+            // `totalSql` returns the denominator for progress; @prefix/@lower/@upper are supplied but may be unused.
             let rebuildPrefix (prefix: string) (phase: string) (totalSql: string)
                               (handle: string -> NpgsqlConnection -> NpgsqlTransaction -> Task) =
                 task {
                     use conn = new NpgsqlConnection(connString)
                     do! conn.OpenAsync()
+                    let lower, upper = DbService.StreamPrefixRange prefix
                     let! total =
                         task {
-                            try return! conn.ExecuteScalarAsync<int64>(totalSql, {| prefix = prefix |})
+                            try return! conn.ExecuteScalarAsync<int64>(totalSql, {| prefix = prefix; lower = lower; upper = upper |})
                             with _ -> return -1L
                         }
                     let totalStr = if total < 0L then "?" else string total
                     report $"{phase}: starting ({totalStr} streams)"
                     //language=postgresql
                     let listSql =
-                        "SELECT DISTINCT stream_id FROM event WHERE stream_id LIKE @prefix AND stream_id > @cursor ORDER BY stream_id LIMIT @n"
-                    let mutable cursor = ""
+                        "SELECT DISTINCT stream_id FROM event WHERE stream_id LIKE @prefix AND stream_id > @cursor AND stream_id < @upper ORDER BY stream_id LIMIT @n"
+                    let mutable cursor = lower
                     let mutable processed = 0
                     let mutable lastReported = 0
                     let mutable go = true
                     while go do
-                        let! idsSeq = conn.QueryAsync<string>(listSql, {| prefix = prefix; cursor = cursor; n = batch |})
+                        let! idsSeq = conn.QueryAsync<string>(listSql, {| prefix = prefix; cursor = cursor; upper = upper; n = batch |})
                         let ids = List.ofSeq idsSeq
                         if ids.IsEmpty then go <- false
                         else
@@ -1435,7 +1443,8 @@ RETURNING job_name;
                 let parts = sid.Split(':')
                 int64 parts.[1], int parts.[2]
 
-            let countDistinctSql = "SELECT count(DISTINCT stream_id) FROM event WHERE stream_id LIKE @prefix"
+            let countDistinctSql =
+                "SELECT count(DISTINCT stream_id) FROM event WHERE stream_id LIKE @prefix AND stream_id > @lower AND stream_id < @upper"
 
             do! rebuildPrefix "user:%" "users" countDistinctSql (fun sid conn tx ->
                 task {
