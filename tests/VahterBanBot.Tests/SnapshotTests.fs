@@ -135,6 +135,27 @@ type SnapshotTests(fixture: MlDisabledVahterTestContainers) =
         Assert.True(msgSnap.IsNone, "scope=users must not run the message phase")
     }
 
+    [<Fact>]
+    let ``rebuild page bounds cover exactly each prefix's streams under the database collation`` () = task {
+        do! fixture.InsertRawEvent("user:1", 1, UsernameChanged {| userId = 1L; username = Some "a" |}, t 0)
+        do! fixture.InsertRawEvent("user:99999999999", 1, UsernameChanged {| userId = 99999999999L; username = Some "z" |}, t 0)
+        do! fixture.InsertRawEvent("message:-97200:1", 1, received -97200L 1 1L, t 0)
+        do! fixture.InsertRawEvent("moderation:-97200:1", 1,
+                BotAutoDeleted {| chatId = -97200L; messageId = 1; userId = 1L; reason = MlSpam {| score = 4.0 |} |}, t 1)
+        use conn = new Npgsql.NpgsqlConnection(fixture.DbConnectionString)
+        for prefix in [ "user:%"; "message:%"; "moderation:%" ] do
+            let lower, upper = VahterBanBot.DbService.StreamPrefixRange prefix
+            let! all =
+                Dapper.SqlMapper.ExecuteScalarAsync<int64>(conn,
+                    "SELECT count(DISTINCT stream_id) FROM event WHERE stream_id LIKE @prefix", {| prefix = prefix |})
+            let! bounded =
+                Dapper.SqlMapper.ExecuteScalarAsync<int64>(conn,
+                    "SELECT count(DISTINCT stream_id) FROM event WHERE stream_id LIKE @prefix AND stream_id > @lower AND stream_id < @upper",
+                    {| prefix = prefix; lower = lower; upper = upper |})
+            Assert.True(all > 0L, prefix)
+            Assert.True((all = bounded), $"{prefix}: {bounded} of {all} streams inside ({lower}, {upper})")
+    }
+
     // ---- spam_status folded from BOTH streams (controlled-timeline raw events + rebuild) ----
     // The pure verdict logic is covered by Message.FoldTimeline tests; these verify the snapshot
     // projection/rebuild actually fold both streams into snapshot_message.spam_status.
