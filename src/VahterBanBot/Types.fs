@@ -168,6 +168,10 @@ type User =
     static member Zero =
         { Id = 0L; Banned = None; Username = None; ReactionCount = 0; NotSpamUntil = None
           SpamProtectionUntil = None; SpamProtectionHits = 0 }
+    /// SchemaVersion MUST be bumped on any change to User's fields or to Fold's behaviour —
+    /// UserSnapshotTests pins both and fails until it is.
+    static member SnapshotPolicy : SnapshotPolicy =
+        { StateType = "User"; SchemaVersion = 1; SnapshotEvery = 20 }
     static member Fold (state: User, event: UserEvent) : User =
         match event with
         | UsernameChanged e          -> { state with Id = e.userId; Username = e.username }

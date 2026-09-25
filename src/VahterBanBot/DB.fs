@@ -66,7 +66,7 @@ type SpamOrHamDb =
 
 type DbService(connString: string, timeProvider: TimeProvider) =
     let utcNow () = timeProvider.GetUtcNow().UtcDateTime
-    let store = EventStore(connString, "event", eventJsonOpts)
+    let store = EventStore(connString, "event", eventJsonOpts, "event_snapshot")
 
     // -----------------------------------------------------------------------
     // Snapshot read-model upserts (run in the SAME TX as the event append).
@@ -153,7 +153,7 @@ UPDATE snapshot_message
     // Append wrappers: fold the new events to final state, serialize the snapshot DTO,
     // and attach the matching upsert as the in-TX projection.
     let appendUserEvents (userId: int64) (decide: User -> UserEvent list) : Task<UserEvent list * User> =
-        EventStore.appendEventWithProjection store $"user:{userId}" (fun (state: User) ->
+        EventStore.appendSnapshottedEventWithProjection store User.SnapshotPolicy $"user:{userId}" (fun (state: User) ->
             match decide state with
             | [] -> [], None
             | evts ->
@@ -323,11 +323,9 @@ ON CONFLICT DO NOTHING
 
     member _.GetUserById(userId: int64) : Task<User option> =
         task {
-            let! events = store.GetEventsForStream<UserEvent>($"user:{userId}")
-            if events.Length = 0 then return None
-            else
-                let state = (User.Zero, events) ||> Array.fold (fun s e -> User.Fold(s, e))
-                return Some { state with Id = userId }
+            let! (state, version) = EventStore.loadSnapshottedState<UserEvent, User> store User.SnapshotPolicy $"user:{userId}"
+            if version = 0 then return None
+            else return Some { state with Id = userId }
         }
 
     // -----------------------------------------------------------------------
