@@ -318,20 +318,25 @@ SettingsDump.mapConfigDumpEndpoint
         SettingsDump.toJson eventJsonOpts live)
     app
 
-// One-off backfill of the snapshot_* read models from the event log. Idempotent; run manually
-// after deploy. Not auto-run on boot — the event table is too large to rescan every start.
+// Backfill/repair of the snapshot_* read models and aggregate snapshots from the event log.
+// Idempotent; run manually. `?scope=users` limits it to user streams (skips the message pass).
 %app.MapPost("/rebuild-snapshots", Func<HttpContext, Task<IResult>>(fun ctx ->
     task {
         if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
             return Results.Text("Access Denied", statusCode = 401)
         else
-            let db = ctx.RequestServices.GetRequiredService<DbService>()
-            let logger = ctx.RequestServices.GetRequiredService<ILogger<Root>>()
-            logger.LogInformation "Snapshot rebuild starting"
-            let onProgress (msg: string) = logger.LogInformation("Snapshot rebuild progress: {Progress}", msg)
-            let! count = db.RebuildSnapshots(onProgress = onProgress)
-            logger.LogInformation("Snapshot rebuild done: {Count} streams", count)
-            return Results.Ok $"Rebuilt {count} snapshots"
+            match string ctx.Request.Query["scope"] with
+            | "" | "users" as scope ->
+                let db = ctx.RequestServices.GetRequiredService<DbService>()
+                let logger = ctx.RequestServices.GetRequiredService<ILogger<Root>>()
+                let usersOnly = scope = "users"
+                logger.LogInformation("Snapshot rebuild starting (usersOnly={UsersOnly})", usersOnly)
+                let onProgress (msg: string) = logger.LogInformation("Snapshot rebuild progress: {Progress}", msg)
+                let! count = db.RebuildSnapshots(onProgress = onProgress, usersOnly = usersOnly)
+                logger.LogInformation("Snapshot rebuild done: {Count} streams", count)
+                return Results.Ok $"Rebuilt {count} snapshots"
+            | other ->
+                return Results.BadRequest $"unknown scope '{other}' (expected: users)"
     }))
 
 // Main webhook endpoint with bot-specific update handling

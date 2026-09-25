@@ -107,6 +107,34 @@ type SnapshotTests(fixture: MlDisabledVahterTestContainers) =
         Assert.Equal("rebuild me one", snap2.Value.text)
     }
 
+    [<Fact>]
+    let ``rebuild with scope=users backfills aggregate user snapshots and leaves message snapshots alone`` () = task {
+        let userId, chat, mId = 9_700_001L, -97100L, 1
+        let sid = $"user:{userId}"
+        do! fixture.InsertRawEvent(sid, 1, UsernameChanged {| userId = userId; username = Some "heavy" |}, t 0)
+        for v in 2 .. 26 do
+            do! fixture.InsertRawEvent(sid, v,
+                    UserReactionRecorded {| userId = userId; chatId = Some chat; messageId = Some v; emoji = Some "🔥"; delta = 1 |}, t v)
+        do! fixture.InsertRawEvent($"message:{chat}:{mId}", 1, received chat mId userId, t 30)
+
+        let! resp = fixture.BotHttp.PostAsync("/rebuild-snapshots?scope=users", null)
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
+
+        use conn = new Npgsql.NpgsqlConnection(fixture.DbConnectionString)
+        let! row =
+            Dapper.SqlMapper.QuerySingleOrDefaultAsync<struct (int * string)>(conn,
+                "SELECT stream_version, state::TEXT FROM event_snapshot WHERE stream_id = @sid AND state_type = 'User'",
+                {| sid = sid |})
+        let struct (version, state) = row
+        Assert.Equal(26, version)
+        let user = JsonSerializer.Deserialize<User>(state, eventJsonOpts)
+        Assert.Equal(25, user.ReactionCount)
+        Assert.Equal(Some "heavy", user.Username)
+
+        let! msgSnap = fixture.TryGetSnapshotMessage(chat, mId)
+        Assert.True(msgSnap.IsNone, "scope=users must not run the message phase")
+    }
+
     // ---- spam_status folded from BOTH streams (controlled-timeline raw events + rebuild) ----
     // The pure verdict logic is covered by Message.FoldTimeline tests; these verify the snapshot
     // projection/rebuild actually fold both streams into snapshot_message.spam_status.
