@@ -1383,9 +1383,10 @@ RETURNING job_name;
     /// recomputed from both its streams, so it serializes safely with concurrent live writes.
     /// Paged by stream-id prefix (keyset over idx_event_stream). `onProgress` (optional) is called at
     /// phase boundaries and every ~5000 streams. Returns the number of streams processed.
-    member _.RebuildSnapshots(?batchSize: int, ?onProgress: string -> unit) : Task<int> =
+    member _.RebuildSnapshots(?batchSize: int, ?onProgress: string -> unit, ?usersOnly: bool) : Task<int> =
         let batch = defaultArg batchSize 500
         let report = defaultArg onProgress ignore
+        let usersOnly = defaultArg usersOnly false
         let reportEvery = 5000
         task {
             let mutable grandTotal = 0
@@ -1439,31 +1440,32 @@ RETURNING job_name;
             do! rebuildPrefix "user:%" "users" countDistinctSql (fun sid conn tx ->
                 task {
                     let userId = sid.Substring("user:".Length) |> int64
-                    let! state = store.FoldEvents((fun s e -> User.Fold(s, e)), User.Zero, sid)
+                    let! (state, _) = store.RebuildSnapshot((fun s e -> User.Fold(s, e)), User.Zero, User.SnapshotPolicy, sid)
                     let json = JsonSerializer.Serialize(userSnapshot { state with Id = userId }, snapshotJsonOpts)
                     do! upsertUserSnapshot userId json conn tx
                 } :> Task)
 
-            // Each message row is recomputed from BOTH streams by upsertMessageSnapshot.
-            // one MessageReceived per message stream — cheaper than count(DISTINCT) via the type index.
-            do! rebuildPrefix "message:%" "messages" "SELECT count(*) FROM event WHERE event_type = 'MessageReceived'" (fun sid conn tx ->
-                task {
-                    let chatId, messageId = parseChatMsg sid
-                    do! upsertMessageSnapshot chatId messageId conn tx
-                } :> Task)
-
-            // Moderation streams whose message sibling exists were already covered above; only handle
-            // orphan moderation (a bot/vahter action on a message that was never recorded).
-            do! rebuildPrefix "moderation:%" "moderation (orphans)" countDistinctSql (fun sid conn tx ->
-                task {
-                    let chatId, messageId = parseChatMsg sid
-                    let! hasMsg =
-                        conn.ExecuteScalarAsync<bool>(
-                            "SELECT EXISTS(SELECT 1 FROM event WHERE stream_id = @sid)",
-                            {| sid = $"message:{chatId}:{messageId}" |}, tx)
-                    if not hasMsg then
+            if not usersOnly then
+                // Each message row is recomputed from BOTH streams by upsertMessageSnapshot.
+                // one MessageReceived per message stream — cheaper than count(DISTINCT) via the type index.
+                do! rebuildPrefix "message:%" "messages" "SELECT count(*) FROM event WHERE event_type = 'MessageReceived'" (fun sid conn tx ->
+                    task {
+                        let chatId, messageId = parseChatMsg sid
                         do! upsertMessageSnapshot chatId messageId conn tx
-                } :> Task)
+                    } :> Task)
+
+                // Moderation streams whose message sibling exists were already covered above; only handle
+                // orphan moderation (a bot/vahter action on a message that was never recorded).
+                do! rebuildPrefix "moderation:%" "moderation (orphans)" countDistinctSql (fun sid conn tx ->
+                    task {
+                        let chatId, messageId = parseChatMsg sid
+                        let! hasMsg =
+                            conn.ExecuteScalarAsync<bool>(
+                                "SELECT EXISTS(SELECT 1 FROM event WHERE stream_id = @sid)",
+                                {| sid = $"message:{chatId}:{messageId}" |}, tx)
+                        if not hasMsg then
+                            do! upsertMessageSnapshot chatId messageId conn tx
+                    } :> Task)
 
             return grandTotal
         }

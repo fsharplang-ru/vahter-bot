@@ -681,6 +681,27 @@ ORDER BY stream_id, stream_version
             return unbox<'State> loaded.State, loaded.Version
         }
 
+    /// Replays the whole log (ignoring any stored snapshot) and force-writes the snapshot when the
+    /// stream has at least `policy.SnapshotEvery` events — backfill and repair for admin rebuilds.
+    member _.RebuildSnapshot<'TEvent, 'State>
+            (fold: 'State -> 'TEvent -> 'State, zero: 'State, policy: SnapshotPolicy, streamId: string)
+            : Task<'State * int> =
+        task {
+            validatePolicy policy
+            use activity = EventStoreTelemetry.activitySource.StartActivity("eventStore.snapshotRebuild")
+            use conn = new NpgsqlConnection(connString)
+            let! raws = conn.QueryAsync<RawEvent>(selectAllSql, {| streamId = streamId |})
+            let raws = List.ofSeq raws
+            let state =
+                raws |> List.fold (fun s r -> fold s (JsonSerializer.Deserialize<'TEvent>(r.data, jsonOptions))) zero
+            let version = raws |> List.tryLast |> Option.map _.stream_version |> Option.defaultValue 0
+            if version >= policy.SnapshotEvery then
+                let! _ = tryWriteSnapshot conn activity policy true streamId version state
+                ()
+            cacheEvict streamId
+            return state, version
+        }
+
     /// Snapshot-aware `TransactWithProjection`. The snapshot refresh runs after the commit, so a
     /// failing snapshot write can never roll back the appended events.
     member this.TransactWithProjection<'TEvent, 'State>

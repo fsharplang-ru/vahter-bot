@@ -218,7 +218,10 @@ Rules the implementation guarantees:
   concurrency is unchanged: expected version = snapshot version + tail length.
 - **Write cadence.** A snapshot is written when a load or a committed append
   leaves at least `SnapshotEvery` events past the stored one — frozen streams
-  get snapshotted lazily on their first slow load, no backfill needed.
+  get snapshotted lazily on their first slow load. To backfill or repair
+  eagerly, `store.RebuildSnapshot` replays the full log (ignoring the stored
+  snapshot) and force-writes it; vahter exposes this as
+  `POST /rebuild-snapshots?scope=users`.
 - **Request scope.** `BeginRequestScope` caches snapshot-loaded states next to
   raw streams; every committed append (through any API) drops both cached views
   of that stream, then the appending path re-populates its own. A load only
