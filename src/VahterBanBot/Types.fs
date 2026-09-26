@@ -21,15 +21,6 @@ open BotInfra
 // Shared value types
 // ---------------------------------------------------------------------------
 
-// [<RequireQualifiedAccess>] is applied selectively — only to DUs whose case names could
-// shadow common F# identifiers (Error, Ok, None, Some), per AGENTS.md's F# Conventions.
-// LlmVerdict and LlmReactionVerdict below carry it because both have an `Error` case.
-// Audited for #283: no other DU in this file has a case matching Error/Ok/None/Some, so
-// blanket-applying the attribute to every DU (as an earlier TODO here suggested) would only
-// force call sites to qualify case names (e.g. VahterAction.PotentialKill,
-// MessageEvent.MessageReceived) that read fine unqualified and don't collide with any
-// built-in — churn with no readability payoff.
-
 /// Represents WHO made a decision (ban, unban, triage, etc.)
 [<RequireQualifiedAccess>]
 type Actor =
