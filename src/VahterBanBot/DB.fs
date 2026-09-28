@@ -496,21 +496,25 @@ bot_deletions AS (
 expanded AS (
     SELECT m.text, m.chat_id, m.message_id,
            d.message_id IS NOT NULL AS banned_by_bot,
+           -- OFFSET 0 keeps EXISTS correlated, avoiding global event scans for a small message window.
            EXISTS(
                SELECT 1 FROM event e2
                WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
                  AND e2.event_type = 'VahterActed'
                  AND e2.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')
+               OFFSET 0
            ) AS banned_by_vahter,
            EXISTS(
                SELECT 1 FROM event e3
                WHERE e3.event_type = 'MessageMarkedHam'
                  AND e3.data->>'text' = m.text
+               OFFSET 0
            ) AS is_ham,
            EXISTS(
                SELECT 1 FROM event e4
                WHERE e4.stream_id = 'message:' || m.chat_id || ':' || m.message_id
                  AND e4.event_type = 'MessageMarkedSpam'
+               OFFSET 0
            ) AS is_spam
     FROM user_messages m
     LEFT JOIN bot_deletions d ON m.chat_id = d.chat_id AND m.message_id = d.message_id
