@@ -3,6 +3,10 @@ name: "Bot: Build"
 on:
   workflow_call:
     inputs:
+      runner:
+        type: string
+        default: ubuntu-22.04-arm
+        description: "Runner image for build and tests"
       test-command:
         required: true
         type: string
@@ -24,7 +28,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-arm
+    runs-on: ${{ inputs.runner }}
 
     steps:
     - uses: actions/checkout@v4
