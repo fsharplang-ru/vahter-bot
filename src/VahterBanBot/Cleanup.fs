@@ -19,7 +19,8 @@ type CleanupService(
     tg: ITelegramApi,
     botConf: IOptions<BotConfiguration>,
     ml: MachineLearning,
-    db: DbService
+    db: DbService,
+    quality: ModerationQualityHistory
 ) =
     let podId = getEnvOr "POD_NAME" Environment.MachineName
     let mutable cts: CancellationTokenSource = null
@@ -121,6 +122,10 @@ type CleanupService(
             try
                 // Check scheduled jobs
                 do! tryRunJob "daily_cleanup" (TimeSpan.FromHours botConf.Value.CleanupScheduledHour) runCleanup
+                do! tryRunJob "moderation_quality_daily" (TimeSpan.FromHours botConf.Value.CleanupScheduledHour) (fun () -> task {
+                    let! _ = quality.Run(QualityHistoryMode.Daily, ct)
+                    ()
+                })
                 do! tryRunJob "daily_stats" (TimeSpan.FromHours botConf.Value.StatsScheduledHour) runStats
 
                 if botConf.Value.MlEnabled && botConf.Value.MlRetrainScheduledEnabled then
