@@ -222,6 +222,8 @@ WebhookHost.configureSharedServices webhookCfg builder
 
 %builder.Services
     .AddSingleton<IOptions<BotConfiguration>>(botConfOptions)
+    .AddSingleton<ModerationQualityHistory>(fun sp ->
+        ModerationQualityHistory(connString, sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILogger<ModerationQualityHistory>>()))
     .AddSingleton<DbService>(fun sp ->
         DbService(connString, sp.GetRequiredService<TimeProvider>()))
     .AddSingleton<IOcrCache>(fun _ -> OcrCacheRepository(connString) :> IOcrCache)
@@ -317,6 +319,31 @@ SettingsDump.mapConfigDumpEndpoint
         let live = app.Services.GetRequiredService<IOptions<BotConfiguration>>().Value
         SettingsDump.toJson eventJsonOpts live)
     app
+
+let parseQualityHistoryMode (ctx: HttpContext) =
+    let raw = string ctx.Request.Query["day"]
+    let parsed = DateTime.TryParseExact(raw, "yyyy-MM-dd", Globalization.CultureInfo.InvariantCulture,
+                                       Globalization.DateTimeStyles.AssumeUniversal ||| Globalization.DateTimeStyles.AdjustToUniversal)
+    match string ctx.Request.Query["mode"], raw, parsed with
+    | ("" | "daily"), "", _ -> Some QualityHistoryMode.Daily
+    | "backfill", "", _ -> Some QualityHistoryMode.Backfill
+    | ("" | "rebuild"), _, (true, day) -> Some (QualityHistoryMode.Rebuild day)
+    | _ -> None
+
+%app.MapPost("/quality-history", Func<HttpContext, Task<IResult>>(fun ctx -> task {
+    if not (WebhookHost.validateApiKey webhookCfg.SecretToken ctx) then
+        return Results.Text("Access Denied", statusCode = 401)
+    else
+        match parseQualityHistoryMode ctx with
+        | Some mode ->
+            try
+                let! count = ctx.RequestServices.GetRequiredService<ModerationQualityHistory>().Run(mode, ctx.RequestAborted)
+                return Results.Ok {| completedDays = count |}
+            with
+            | :? ArgumentException as ex -> return Results.BadRequest ex.Message
+            | :? InvalidOperationException as ex -> return Results.Conflict ex.Message
+        | None -> return Results.BadRequest "Use mode=daily, mode=backfill, or day=yyyy-MM-dd"
+}))
 
 // Backfill/repair of the snapshot_* read models and aggregate snapshots from the event log.
 // Idempotent; run manually. `?scope=users` limits it to user streams (skips the message pass).
