@@ -83,10 +83,12 @@ module Observability =
                                     let redacted = redactTelegramUrl uri
                                     activity.SetTag("url.full", redacted) |> ignore
                                     activity.SetTag("http.url", redacted) |> ignore
-                                elif host.EndsWith("cognitiveservices.azure.com") then
-                                    activity.DisplayName <- $"azure-ocr {methodName}"
-                                elif host.EndsWith("openai.azure.com") then
+                                elif host.EndsWith(".openai.azure.com", StringComparison.OrdinalIgnoreCase)
+                                     || (host.EndsWith(".cognitiveservices.azure.com", StringComparison.OrdinalIgnoreCase)
+                                         && uri.AbsolutePath.StartsWith("/openai/", StringComparison.OrdinalIgnoreCase)) then
                                     activity.DisplayName <- $"azure-openai {methodName}"
+                                elif host.EndsWith(".cognitiveservices.azure.com", StringComparison.OrdinalIgnoreCase) then
+                                    activity.DisplayName <- $"azure-ocr {methodName}"
                                 else
                                     activity.DisplayName <- $"{methodName} {host}"
                     )
