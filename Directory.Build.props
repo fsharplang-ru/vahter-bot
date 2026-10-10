@@ -11,4 +11,8 @@
     <PackageReference Include="FSharp.Core" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <SixLaborsLicenseKey Condition="'$(SixLaborsLicenseKey)' == ''">$(SIXLABORS_LICENSE_KEY)</SixLaborsLicenseKey>
+  </PropertyGroup>
+
 </Project>

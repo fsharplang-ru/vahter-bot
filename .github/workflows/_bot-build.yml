@@ -26,6 +26,10 @@ on:
           regex narrows further to per-bot relevance. Manual triggers always
           run the full build regardless.
 
+    secrets:
+      SIXLABORS_LICENSE_KEY:
+        required: false
+
 jobs:
   build:
     runs-on: ${{ inputs.runner }}
@@ -93,6 +97,8 @@ jobs:
 
     - name: Tests
       if: steps.should-run.outputs.yes == 'true'
+      env:
+        SIXLABORS_LICENSE_KEY: ${{ secrets.SIXLABORS_LICENSE_KEY }}
       run: ${{ inputs.test-command }}
 
     - name: Upload dotnet test results

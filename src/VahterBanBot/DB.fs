@@ -18,6 +18,12 @@ type UserMessage =
     { chat_id: int64
       message_id: int64 }
 
+[<CLIMutable>]
+type TriageHistoryMessage =
+    { chat_id: int64
+      text: string | null
+      created_at: DateTime }
+
 /// Lightweight DTO for TryGetMessageTextAndSender (D2 cache invalidation on the admin-command
 /// correction paths, which only have a chat/message reference, not the original TgMessage).
 [<CLIMutable>]
@@ -360,6 +366,29 @@ ON CONFLICT DO NOTHING
             (Option.ofObj msg.SenderUsername)
             (Option.ofObj msg.Text)
             (utcNow())
+
+    member _.GetTriageHistory(userId: int64, chatId: int64, messageId: int64, ct: System.Threading.CancellationToken) : Task<int64 * TriageHistoryMessage array> = task {
+        use conn = new NpgsqlConnection(connString)
+        let sql = """
+SELECT COUNT(*) FROM snapshot_message
+WHERE user_id = @userId
+  AND (chat_id, message_id) <> (@chatId, @messageId)
+  AND created_at < @now;
+SELECT chat_id, LEFT(text, 1001) AS text, created_at
+FROM snapshot_message
+WHERE user_id = @userId
+  AND (chat_id, message_id) <> (@chatId, @messageId)
+  AND created_at < @now
+ORDER BY created_at DESC, chat_id DESC, message_id DESC
+LIMIT 4
+"""
+        use! results = conn.QueryMultipleAsync(CommandDefinition(
+            sql, {| userId = userId; chatId = chatId; messageId = messageId; now = utcNow() |},
+            cancellationToken = ct, commandTimeout = 2))
+        let! count = results.ReadSingleAsync<int64>()
+        let! rows = results.ReadAsync<TriageHistoryMessage>()
+        return count, Array.ofSeq rows
+    }
 
     member _.GetUserMessages(userId: int64) : Task<UserMessage array> =
         task {

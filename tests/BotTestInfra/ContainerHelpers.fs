@@ -2,6 +2,7 @@ module BotTestInfra.ContainerHelpers
 
 open System
 open System.IO
+open System.Diagnostics
 open System.Threading.Tasks
 open DotNet.Testcontainers.Builders
 open DotNet.Testcontainers.Configurations
@@ -79,6 +80,46 @@ let getOrCreateImageSpec (imageName: string) (mk: unit -> IFutureDockerImage * S
 let buildImageOncePerProcess (imageName: string) (artifactsDir: string) (name: string) (image: IFutureDockerImage) (logger: StringLogger) : Task =
     imageBuilds.GetOrAdd(imageName, fun _ ->
         Lazy<Task>(fun () -> buildImageWithLogs artifactsDir name image logger)).Value
+
+/// Uses the container CLI so build secrets remain outside image layers and build arguments.
+let buildBotImageOncePerProcess (solutionDir: string) (project: string) (imageName: string) (artifactsDir: string) : Task =
+    imageBuilds.GetOrAdd(imageName, fun _ ->
+        Lazy<Task>(fun () -> (task {
+            let engine =
+                match Environment.GetEnvironmentVariable("BOT_CONTAINER_ENGINE") with
+                | null | "" ->
+                    let hasDocker =
+                        Environment.GetEnvironmentVariable("PATH").Split(Path.PathSeparator)
+                        |> Array.exists (fun dir -> File.Exists(Path.Combine(dir, "docker")))
+                    if hasDocker then "docker" else "podman"
+                | value -> value
+            let start = ProcessStartInfo(engine, WorkingDirectory = solutionDir, UseShellExecute = false,
+                                         RedirectStandardOutput = true, RedirectStandardError = true)
+            start.Environment["DOCKER_BUILDKIT"] <- "1"
+            for arg in [ "build"; "--file"; "src/Dockerfile.bot"; "--tag"; imageName;
+                         "--build-arg"; $"BOT_PROJECT={project}";
+                         "--build-arg"; $"RESOURCE_REAPER_SESSION_ID={ResourceReaper.DefaultSessionId:D}";
+                         "--label"; $"org.testcontainers.resource-reaper-session={ResourceReaper.DefaultSessionId:D}" ] do
+                start.ArgumentList.Add(arg)
+            if project = "CouponHubBot" then
+                if String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SIXLABORS_LICENSE_KEY")) then
+                    failwith "Set SIXLABORS_LICENSE_KEY to build CouponHubBot test containers."
+                start.ArgumentList.Add("--secret")
+                start.ArgumentList.Add("id=sixlabors-license,env=SIXLABORS_LICENSE_KEY")
+            start.ArgumentList.Add(".")
+            use proc = new Process(StartInfo = start)
+            if not (proc.Start()) then failwith "Could not start the container image builder."
+            let output = proc.StandardOutput.ReadToEndAsync()
+            let errors = proc.StandardError.ReadToEndAsync()
+            do! proc.WaitForExitAsync()
+            let! stdout = output
+            let! stderr = errors
+            let logs = stdout + stderr
+            Directory.CreateDirectory(artifactsDir) |> ignore
+            File.WriteAllText(Path.Combine(artifactsDir, "bot-build.log"), logs)
+            if proc.ExitCode <> 0 then
+                failwith $"Container image build failed for {project} (exit {proc.ExitCode}):\n{logs}"
+        } :> Task))).Value
 
 // ── Container factories ──────────────────────────────────────────────────────
 

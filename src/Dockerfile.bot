@@ -16,7 +16,8 @@ RUN dotnet restore src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj
 
 COPY src/BotInfra/ src/BotInfra/
 COPY src/${BOT_PROJECT}/ src/${BOT_PROJECT}/
-RUN dotnet publish src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj -c Release -o /publish
+RUN --mount=type=secret,id=sixlabors-license \
+    SixLaborsLicenseFile=/run/secrets/sixlabors-license dotnet publish src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj -c Release -o /publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.3-noble AS runtime
 ARG BOT_PROJECT

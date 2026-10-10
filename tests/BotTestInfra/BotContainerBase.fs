@@ -34,12 +34,8 @@ type BotContainerConfig =
       /// so this is scoped to Alita alone.
       PostgresImage: string }
 
-/// Shared container lifecycle for bot integration tests.
-/// Orchestrates: network, postgres, init.sql, flyway, fake TG API, fake Azure OCR, N app
-/// containers from ONE cached image spec (ContainerHelpers.getOrCreateImageSpec /
-/// buildImageOncePerProcess — a per-instance rebuild of the same tag races and 409s on podman).
-/// Subclasses provide bot-specific DB seeding and domain helpers.
-///
+/// Shared database, fake services, and bot containers for integration tests.
+/// Each bot image is built once per process and shared by all instances.
 /// COMPAT: `instanceCount` defaults to 1. Every pre-existing public singular member (BotHttp,
 /// SendUpdate, RestartBotApp, GetBotLogs(), the "bot"-named log dump, etc.) delegates to
 /// instance 0 with byte-identical behavior, so the 10 pre-existing single-pod fixtures need
@@ -81,25 +77,9 @@ type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
             buildImageSpec solutionDir "./tests/Dockerfile.fake" $"{config.AppImageName}-fake-azure-ocr" true true ["FAKE_PROJECT", "FakeAzureOcrApi"; "FAKE_PORT", "8081"])
     let fakeAzureContainer = createFakeAzureOcrContainer fakeAzureImage network fakeAzureAlias
 
-    let botImage, botBuildLogger =
-        getOrCreateImageSpec config.AppImageName (fun () ->
-            let logger = StringLogger()
-            let img =
-                ImageFromDockerfileBuilder()
-                    .WithDockerfileDirectory(solutionDir, String.Empty)
-                    .WithDockerfile("./src/Dockerfile.bot")
-                    .WithName(config.AppImageName)
-                    .WithBuildArgument("BOT_PROJECT", config.BotProject)
-                    .WithBuildArgument("RESOURCE_REAPER_SESSION_ID", ResourceReaper.DefaultSessionId.ToString("D"))
-                    .WithDeleteIfExists(true)
-                    .WithCleanUp(true)
-                    .WithLogger(logger)
-                    .Build()
-            (img, logger))
-
     let makeBotContainer () =
         let mutable b =
-            ContainerBuilder(botImage)
+            ContainerBuilder(config.AppImageName)
                 .WithNetwork(network)
                 .WithPortBinding(80, true)
                 .WithEnvironment("DATABASE_URL", internalConnectionString)
@@ -113,8 +93,7 @@ type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
         b.WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(80))
             .Build()
 
-    // N app containers built from the SAME cached image spec above — never a per-instance
-    // rebuild (Array.init only creates N *container* handles, not N image builds).
+    // Each instance uses the image built once per process.
     let botContainers: IContainer[] = Array.init n (fun _ -> makeBotContainer())
 
     /// Override to seed the database after migrations run and before any instance starts.
@@ -160,7 +139,7 @@ type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
 
                 // build images in parallel (each image name at most once per process — the
                 // parallel-initializing fixtures share the same image names)
-                let botBuildTask = buildImageOncePerProcess config.AppImageName testArtifactsDir "bot" botImage botBuildLogger
+                let botBuildTask = buildBotImageOncePerProcess solutionDirPath config.BotProject config.AppImageName testArtifactsDir
                 let fakeTgBuildTask = buildImageOncePerProcess $"{config.AppImageName}-fake-tg-api" testArtifactsDir "fake-tg-api" fakeTgImage fakeTgBuildLogger
                 let fakeAzureBuildTask =
                     if config.OcrEnabled then buildImageOncePerProcess $"{config.AppImageName}-fake-azure-ocr" testArtifactsDir "fake-azure-ocr" fakeAzureImage fakeAzureBuildLogger
