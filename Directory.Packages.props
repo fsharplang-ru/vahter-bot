@@ -53,9 +53,9 @@
     <PackageVersion Include="Microsoft.ML" Version="5.0.0" />
 
     <!-- Image processing -->
-    <PackageVersion Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageVersion Include="SixLabors.ImageSharp" Version="4.1.3" />
     <PackageVersion Include="ZXing.Net" Version="0.16.11" />
-    <PackageVersion Include="ZXing.Net.Bindings.ImageSharp.V3" Version="0.16.18" />
+    <PackageVersion Include="ZXing.Net.Bindings.ImageSharp.V4" Version="0.16.20" />
     <PackageVersion Include="ZXingCpp" Version="0.5.3" />
 
     <!-- Testing -->
