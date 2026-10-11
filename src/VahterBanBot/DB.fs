@@ -506,57 +506,17 @@ SELECT COUNT(*)::INT FROM (
             //language=postgresql
             let sql =
                 """
-WITH user_messages AS (
-    SELECT data->>'text'             AS text,
-           (data->>'chatId')::BIGINT AS chat_id,
-           (data->>'messageId')::BIGINT AS message_id,
-           created_at
-    FROM event
-    WHERE event_type = 'MessageReceived'
-      AND (data->>'userId')::BIGINT = @userId
-),
-bot_deletions AS (
-    SELECT (data->>'chatId')::BIGINT AS chat_id,
-           (data->>'messageId')::BIGINT AS message_id
-    FROM event
-    WHERE event_type = 'BotAutoDeleted'
-      AND (data->>'userId')::BIGINT = @userId
-),
-expanded AS (
-    SELECT m.text, m.chat_id, m.message_id,
-           d.message_id IS NOT NULL AS banned_by_bot,
-           -- OFFSET 0 keeps EXISTS correlated, avoiding global event scans for a small message window.
-           EXISTS(
-               SELECT 1 FROM event e2
-               WHERE e2.stream_id = 'moderation:' || m.chat_id || ':' || m.message_id
-                 AND e2.event_type = 'VahterActed'
-                 AND e2.data->'actionType'->>'Case' IN ('PotentialKill', 'ManualBan')
-               OFFSET 0
-           ) AS banned_by_vahter,
-           EXISTS(
-               SELECT 1 FROM event e3
-               WHERE e3.event_type = 'MessageMarkedHam'
-                 AND e3.data->>'text' = m.text
-               OFFSET 0
-           ) AS is_ham,
-           EXISTS(
-               SELECT 1 FROM event e4
-               WHERE e4.stream_id = 'message:' || m.chat_id || ':' || m.message_id
-                 AND e4.event_type = 'MessageMarkedSpam'
-               OFFSET 0
-           ) AS is_spam
-    FROM user_messages m
-    LEFT JOIN bot_deletions d ON m.chat_id = d.chat_id AND m.message_id = d.message_id
-    ORDER BY m.created_at DESC
+WITH recent_messages AS (
+    SELECT spam_status
+    FROM snapshot_message
+    WHERE user_id = @userId
+      AND message_data->>'received' = 'true'
+    ORDER BY created_at DESC, chat_id DESC, message_id DESC
     LIMIT @n
 )
-SELECT COUNT(*) FILTER (WHERE CASE WHEN is_ham THEN TRUE
-                                    ELSE NOT (banned_by_bot OR banned_by_vahter OR is_spam)
-                               END) AS good,
-       COUNT(*) FILTER (WHERE CASE WHEN is_ham THEN FALSE
-                                    ELSE (banned_by_bot OR banned_by_vahter OR is_spam)
-                               END) AS bad
-FROM expanded;
+SELECT COUNT(*) FILTER (WHERE spam_status <> 'Spam') AS good,
+       COUNT(*) FILTER (WHERE spam_status = 'Spam') AS bad
+FROM recent_messages;
                 """
 
             let! result = conn.QuerySingleAsync<UserStats>(sql, {| userId = userId; n = n |})

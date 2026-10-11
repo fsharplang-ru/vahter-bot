@@ -134,15 +134,15 @@ type SpamWarningMlTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwait
 
         // Same "66666666" / 4-consecutive-spam karma-autoban shape as MLBanTests.
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+        let spam () = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
         for _ in 1..3 do
-            let! _ = fixture.SendMessage spam
+            let! _ = fixture.SendMessage(spam ())
             ()
         let! bannedYet = fixture.UserBannedByBot user.Id
         Assert.False(bannedYet, "Sanity: user should not be auto-banned after only 3 spam messages")
 
         do! fixture.ClearFakeCalls()
-        let! _ = fixture.SendMessage spam
+        let! _ = fixture.SendMessage(spam ())
         let! banned = fixture.UserBannedByBot user.Id
         Assert.True(banned, "Sanity: 4th spam message should trigger karma autoban")
 

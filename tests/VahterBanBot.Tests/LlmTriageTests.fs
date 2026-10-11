@@ -7,9 +7,6 @@ open Xunit
 open BotInfra
 
 /// LLM triage tests share the ML-enabled container (which also has LLM_TRIAGE_ENABLED=true).
-/// Test names start with "LLM triage" so they sort after "I" (inline keyboard, if-message tests)
-/// but before "M"/"P" tests that insert "77" into false_positive_messages — avoiding DB contamination.
-///
 /// "77" scores in the ML warning range (>= ML_WARNING_THRESHOLD=0.0, < ML_SPAM_THRESHOLD=1.0).
 /// The fake Azure OpenAI handler uses three-way routing on the user message content (role="user" only):
 ///   firstName containing "kill"  → SPAM     (delete + reduce karma)
