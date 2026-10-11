@@ -376,20 +376,9 @@ WHERE event_type = 'CallbackCreated'
     }
 
     member this.IsMessageFalsePositive(msg: TgMsg) = task {
-        match msg.Text with
-        | Some text when not (String.IsNullOrWhiteSpace text) ->
-            use conn = new NpgsqlConnection(this.DbConnectionString)
-            //language=postgresql
-            let sql =
-                """
-SELECT EXISTS (
-    SELECT 1 FROM event
-    WHERE event_type = 'MessageMarkedHam'
-      AND data->>'text' = @text
-)
-                """
-            return! conn.QuerySingleAsync<bool>(sql, {| text = text |})
-        | _ -> return false
+        use conn = new NpgsqlConnection(this.DbConnectionString)
+        let sql = "SELECT EXISTS (SELECT 1 FROM snapshot_message WHERE chat_id = @chatId AND message_id = @messageId AND spam_status = 'Ham')"
+        return! conn.QuerySingleAsync<bool>(sql, {| chatId = msg.Chat.Id; messageId = msg.MessageId |})
     }
 
     member this.UserBannedByBot(userId: int64) = task {

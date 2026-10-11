@@ -104,7 +104,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     }
     
     [<Fact>]
-    let ``Message is NOT autobanned if it is a known false-positive spam`` () = task {
+    let ``Ham training example is not auto-deleted`` () = task {
         // record a message, where 3 is in a training set as spam word
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "a")
         let! _ = fixture.SendMessage msgUpdate
@@ -165,10 +165,6 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // The exact flow vahters reported: a NOT-a-spam click was wrong, and they want
         // to reverse it by forwarding the resulting false-positive log post and
         // replying /vahter markspam to it.
-        // NOTE: uses "77777777" (8 sevens, spam-trained per test_seed.sql) and not the
-        // usual "7777777": this test marks the text ham via the NotASpam click, and
-        // IsMessageFalsePositive matches MessageMarkedHam events by text — reusing
-        // "7777777" would contaminate the other false-positive button tests.
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77777777")
         let! _ = fixture.SendMessage msgUpdate
         let! msgDeleted = fixture.MessageIsAutoDeleted msgUpdate.Message.Value
@@ -296,102 +292,109 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     
     [<Fact>]
     let ``User will be autobanned after consecutive spam`` () = task {
-        // record a message, where 2 is in a training set as spam word
-        // ChatsToMonitor[0] doesn't have stopwords
         let user = Tg.user()
-        let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
-        
-        // 1 - no ban
-        let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
-        Assert.False msgBanned
-        
-        // 2 - no ban
-        let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
-        Assert.False msgBanned
-        
-        // 3 - no ban
-        let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
-        Assert.False msgBanned
-        
-        // 4 - ban (depends on the ML_SPAM_AUTOBAN_SCORE_THRESHOLD)
-        let! _ = fixture.SendMessage msgUpdate
-        let! msgBanned = fixture.MessageBanned msgUpdate.Message.Value
-        Assert.True msgBanned
+        for index in 1 .. 4 do
+            let update = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+            use! response = fixture.SendMessage update
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned update.Message.Value
+            Assert.Equal((index = 4), banned)
     }
-    
+
     [<Fact>]
-    let ``User can recover from autoban by sending good messages`` () = task {
-        // record a message, where 2 is in a training set as spam word
-        // ChatsToMonitor[0] doesn't have stopwords
+    let ``Repeated delivery of one spam message counts once for autoban`` () = task {
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
-        let notSpam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "b", from = user)
-        
-        // 1 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
-        
-        // 1.5 - no ban
-        let! _ = fixture.SendMessage notSpam
-        let! msgBanned = fixture.MessageBanned notSpam.Message.Value
-        Assert.False msgBanned
-        
-        // 2 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
-        
-        // 3 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
-        
-        // 4 - no ban (as user posted 1 good message in beetween)
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
+        let update = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+        for _ in 1 .. 5 do
+            use! response = fixture.SendMessage update
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        let! banned = fixture.MessageBanned update.Message.Value
+        Assert.False banned
+        for index in 1 .. 3 do
+            let next = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+            use! response = fixture.SendMessage next
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned next.Message.Value
+            Assert.Equal((index = 3), banned)
     }
-    
+
     [<Fact>]
-    let ``User can be saved from auto ban by vahter marking it false-positive`` () = task {
-        // record a message, where 777777777777777777 is in a training set as spam word
-        // ChatsToMonitor[0] doesn't have stopwords
+    let ``Good messages offset spam in autoban karma`` () = task {
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "777777777777777777", from = user)
-        
-        // 1 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        let! msgDeleted = fixture.MessageIsAutoDeleted spam.Message.Value
-        Assert.True msgDeleted
-        Assert.False msgBanned
-        
-        // 1.5 - vahter marked as false-positive via button
-        // send a callback to mark it as false-positive
-        let! callbackId = fixture.GetCallbackId spam.Message.Value "NotASpam"
-        let msgCallback = Tg.callback(string callbackId, from = fixture.Vahters[0])
-        let! _ = fixture.SendMessage msgCallback
-        
-        // 2 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
-        
-        // 3 - no ban
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
-        
-        // 4 - no ban (as vahter marked this as false positive)
-        let! _ = fixture.SendMessage spam
-        let! msgBanned = fixture.MessageBanned spam.Message.Value
-        Assert.False msgBanned
+        let good = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "b", from = user)
+        use! response = fixture.SendMessage good
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        for index in 1 .. 5 do
+            let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+            use! response = fixture.SendMessage spam
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned spam.Message.Value
+            Assert.Equal((index = 5), banned)
     }
-    
+
+    [<Fact>]
+    let ``Autoban uses only the last ten messages`` () = task {
+        let user = Tg.user()
+        for _ in 1 .. 10 do
+            let good = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "b", from = user)
+            use! response = fixture.SendMessage good
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        for index in 1 .. 7 do
+            let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+            use! response = fixture.SendMessage spam
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned spam.Message.Value
+            Assert.Equal((index = 7), banned)
+    }
+
+    [<Fact>]
+    let ``Ham correction restores only the corrected message and never another sender`` () = task {
+        let user = Tg.user()
+        let text = "777777777777777777"
+        let corrected = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = user)
+        use! response = fixture.SendMessage corrected
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        let! deleted = fixture.MessageIsAutoDeleted corrected.Message.Value
+        Assert.True deleted
+        let! callbackId = fixture.GetCallbackId corrected.Message.Value "NotASpam"
+        use! response = fixture.SendMessage(Tg.callback(string callbackId, from = fixture.Vahters[0]))
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+
+        let other = Tg.user()
+        for index in 1 .. 4 do
+            let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[1], text = text, from = other)
+            use! response = fixture.SendMessage spam
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned spam.Message.Value
+            Assert.Equal((index = 4), banned)
+
+        for index in 1 .. 5 do
+            let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = user)
+            use! response = fixture.SendMessage spam
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned spam.Message.Value
+            Assert.Equal((index = 5), banned)
+    }
+
+    [<Fact>]
+    let ``Spam verdict after ham correction counts as bad again`` () = task {
+        let user = Tg.user()
+        let corrected = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "777777777777777777", from = user)
+        use! response = fixture.SendMessage corrected
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        let! callbackId = fixture.GetCallbackId corrected.Message.Value "NotASpam"
+        use! response = fixture.SendMessage(Tg.callback(string callbackId, from = fixture.Vahters[0]))
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        use! response = fixture.SendMessage corrected
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        for index in 1 .. 3 do
+            let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
+            use! response = fixture.SendMessage spam
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned spam.Message.Value
+            Assert.Equal((index = 3), banned)
+    }
+
     [<Fact>]
     let ``Message with spam in photo caption also triggers auto-delete`` () = task {
         // record a message, where 2222222 is in a training set as spam word
@@ -580,10 +583,6 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // - After 3rd: score=-3, -3 > -4 → no ban
         // - After 4th: score=-4, -4 <= -4 → BAN!
         //
-        // NOTE: Uses "33" instead of "77" to avoid false_positive_messages contamination
-        // from the "Potential spam NOT SPAM button does not ban user" test which inserts "77"
-        // into false_positive_messages. The "3" family is in the training set as false negatives
-        // so "33" triggers ML detection as potential spam just like "77" does.
         // firstName contains "spam" so the fake LLM returns SKIP → routes to human triage (potential spam channel)
         // Global SPAM/SKIP verdict cache (keyed on text "33" here) — see the "Potential spam card..."
         // test above for why this must be cleared first.
@@ -801,11 +800,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // ignoring subsequent UserUnbanned events. After auto-ban + unban,
         // new messages were silently deleted instead of processed normally.
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
 
         // Trigger auto-ban: 4 consecutive spam messages hit karma threshold
         for _ in 1..4 do
-            let! _ = fixture.SendMessage spam
+            let! _ = fixture.SendMessage(Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user))
             ()
 
         let! userBanned = fixture.UserBannedByBot user.Id
@@ -834,11 +832,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         // gap between AllLogs and Detected Spam. With the fix, auto-bans (Actor.ML/LLM/Bot)
         // leave cards in place so they remain as audit trail and age out via cleanup.
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
 
         // 3 spam messages — each posts a Detected Spam card; social score = -3 > -4, no ban yet
         for _ in 1..3 do
-            let! _ = fixture.SendMessage spam
+            let! _ = fixture.SendMessage(Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user))
             ()
 
         let! userBannedYet = fixture.UserBannedByBot user.Id
@@ -847,7 +844,7 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         do! fixture.ClearFakeCalls()
 
         // 4th spam → social score -4 ≤ threshold -4.0 → CheckAndAutoBan fires TotalBan(Actor.ML)
-        let! _ = fixture.SendMessage spam
+        let! _ = fixture.SendMessage(Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user))
 
         let! userBanned = fixture.UserBannedByBot user.Id
         Assert.True(userBanned, "User should be auto-banned after 4 spam messages")
@@ -895,11 +892,10 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
     [<Fact>]
     let ``Expired ban does not suppress messages`` () = task {
         let user = Tg.user()
-        let spam = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user)
 
         // Trigger auto-ban: 4 consecutive spam messages hit karma threshold
         for _ in 1..4 do
-            let! _ = fixture.SendMessage spam
+            let! _ = fixture.SendMessage(Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "66666666", from = user))
             ()
 
         let! userBanned = fixture.UserBannedByBot user.Id

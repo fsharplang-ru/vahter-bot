@@ -214,6 +214,14 @@ type SpamProtectionBudgetTests(fixture: MlEnabledVahterTestContainers, _unused: 
                 c.Body.Contains $"\"chat_id\":{fixture.ChatsToMonitor[0].Id}"
                 && c.Body.Contains $"\"receiver_user_id\":{user.Id}")
         Assert.Equal(1, warnings.Length)
+
+        for index in 1 .. 5 do
+            let update = spamUpdate ()
+            use! response = fixture.SendMessage update
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode)
+            let! banned = fixture.MessageBanned update.Message.Value
+            Assert.Equal((index = 5), banned)
+
     }
 
     interface IAsyncDisposable with
@@ -221,19 +229,7 @@ type SpamProtectionBudgetTests(fixture: MlEnabledVahterTestContainers, _unused: 
 
     interface IClassFixture<MlAwaitFixture>
 
-/// Test item 4: SpamTextCacheHit is a carve-out — a protected user's cache-hit deletion is
-/// NEVER demoted, even with protection active.
-///
-/// IMPORTANT: SpamTextCacheEnforceTestContainers is an ASSEMBLY-SHARED fixture (see Program.fs's
-/// `[<assembly: AssemblyFixture(typeof<SpamTextCacheEnforceTestContainers>)>]`) — ONE database
-/// shared by every test CLASS that takes it as a constructor param (this class, plus
-/// SpamTextCacheTests' own SpamTextCacheEnforceTests and SpamWarningTests' SpamWarningCacheHitTests).
-/// DB.fs's GetUserStatsByLastNMessages computes `is_ham` by matching MessageMarkedHam.text
-/// GLOBALLY (not scoped to chat/user) — ham-marking a fixed, reused literal like "2222222" here
-/// would poison SpamTextCacheTests' karma-autoban test for every OTHER user who ever sends that
-/// exact text (confirmed root cause of a real CI failure — see PR history). Grant protection via
-/// direct event injection (GrantSpamProtection) instead of a real ham-mark round trip, so this
-/// test never writes a MessageMarkedHam event for any shared/reused text at all.
+/// Spam-text cache hits enforce deletion even for protected users.
 type SpamProtectionCarveOutTests(fixture: SpamTextCacheEnforceTestContainers, _unused: MlAwaitFixture) =
 
     [<Fact>]
