@@ -1,19 +1,10 @@
 module VahterBanBot.Tests.LlmVerdictCacheGlobalFlagTests
 
 open VahterBanBot.Tests.ContainerTestBase
+open VahterBanBot.LlmVerdictCache
 open BotTestInfra
 open Xunit
 
-/// Exercises the LLM_VERDICT_CACHE_GLOBAL_ENABLED=false escape hatch against a SEPARATE
-/// container (LlmVerdictCacheGlobalDisabledTestContainers), since the flag is fixed for the
-/// whole container's lifetime via a seeded bot_setting row rather than being flipped mid-run.
-/// (The flag itself is a hot-reloadable bot_setting in production — see Program.fs's
-/// buildBotConf — this test just avoids racing it against other tests sharing a container.)
-///
-/// With the flag off, the verdict cache reverts fully to its pre-PR behavior: every verdict,
-/// including SPAM/SKIP, is scoped per-sender only — two different senders with identical text
-/// are NEVER deduped. This is exactly the property LlmTriageResilienceTests narrows to NOT_SPAM
-/// only when the flag is on (default).
 type LlmVerdictCacheGlobalFlagTests(fixture: LlmVerdictCacheGlobalDisabledTestContainers, _ml: MlAwaitFixture) =
 
     let resetFakes () = task {
@@ -45,8 +36,6 @@ type LlmVerdictCacheGlobalFlagTests(fixture: LlmVerdictCacheGlobalDisabledTestCo
 
     [<Fact>]
     let ``LLM verdict cache global flag off: the same sender's repeated identical text is still cached`` () = task {
-        // The per-sender tier itself must keep working with the flag off — this is a sanity check
-        // that "flag off" means "revert to legacy scoping", not "cache disabled entirely".
         do! resetFakes ()
         let a = Tg.user(firstName = "kill flagoff-repeat")
 
@@ -69,6 +58,22 @@ type LlmVerdictCacheGlobalFlagTests(fixture: LlmVerdictCacheGlobalDisabledTestCo
         let! sends = fixture.GetFakeCalls "sendMessage"
         let toDetected = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.DetectedSpamChannel.Id}")
         Assert.True(toDetected |> Array.exists (fun c -> c.Body.Contains "cached/sender"), "sender-tier cache hit must be marked in the channel text")
+    }
+
+    [<Fact>]
+    let ``LLM verdict cache global flag off: repeated NOT_SPAM is reclassified`` () = task {
+        do! resetFakes ()
+        let sender = Tg.user()
+        let text = "77"
+        let cache = LlmVerdictCacheRepository(fixture.DbConnectionString) :> ILlmVerdictCache
+        do! cache.Save(senderKey sender.Id text, "NOT_SPAM", None, None)
+        for chat in fixture.ChatsToMonitor |> List.take 2 do
+            let msg = Tg.quickMsg(chat = chat, text = text, from = sender)
+            let! _ = fixture.SendMessage msg
+            let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
+            Assert.False(deleted)
+        let! calls = fixture.GetAzureLlmCalls()
+        Assert.Equal(2, calls.Length)
     }
 
     interface IClassFixture<MlAwaitFixture>

@@ -20,12 +20,10 @@ type CachedVerdict =
 let textHash (text: string) : string =
     MD5.HashData(Encoding.UTF8.GetBytes(normalize text)) |> Convert.ToHexString |> _.ToLower()
 
-/// Global (cross-sender) cache key for a text — SPAM/SKIP verdicts only, see LlmTriage.fs's
-/// module doc comment for the safety argument.
+/// Global cache key for SPAM/SKIP text verdicts.
 let globalKey (text: string) : string = sprintf "text:global:%s" (textHash text)
 
-/// Per-sender cache key for a text — NOT_SPAM verdicts (or every verdict when the global-cache
-/// flag is off).
+/// Sender-scoped cache key for SPAM/SKIP when global caching is disabled.
 let senderKey (senderId: int64) (text: string) : string = sprintf "text:%d:%s" senderId (textHash text)
 
 [<CLIMutable>]
@@ -35,7 +33,7 @@ type private LlmVerdictCacheRow = { verdict: string; reason: string; model_name:
 type ILlmVerdictCache =
     /// Returns the cached verdict for this key if it was stored within `maxAge`, else None.
     abstract member TryGet: cacheKey: string * maxAge: TimeSpan -> Task<CachedVerdict option>
-    /// Stores (or refreshes) the verdict for this key. Only successful verdicts should be cached.
+    /// Stores (or refreshes) the verdict for this key. Only SPAM/SKIP verdicts should be cached.
     abstract member Save: cacheKey: string * verdict: string * reason: string option * modelName: string option -> Task<unit>
     /// Deletes the row for `cacheKey`, optionally only when it currently holds `verdict` (None =
     /// any). Idempotent — a missing/non-matching row is not an error (D2 human-correction invalidation).

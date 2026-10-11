@@ -500,20 +500,11 @@ type BotConfiguration =
       /// Minutes a cached LLM verdict (text or reaction triage) is reused before re-asking
       /// the model. Dedups identical spam across channels and absorbs rate-limit bursts.
       LlmVerdictCacheTtlMinutes: int
-      /// When true (default), SPAM/SKIP text-triage verdicts are cached GLOBALLY (by text hash
-      /// alone, across all senders) instead of per-sender — a spam campaign spraying identical
-      /// text across many accounts is deduped after the first classification instead of once per
-      /// account. NOT_SPAM always stays per-sender regardless of this flag (see LlmTriage.fs's
-      /// module doc comment for the safety argument). Escape hatch to revert to fully per-sender
-      /// caching for every verdict without a redeploy; bot_setting-backed with a code default, so
-      /// it is tunable by SQL and hot-reloadable, and a missing row falls back to the default
-      /// rather than being silently wrong — see Program.fs's buildBotConf.
+      /// Shares SPAM/SKIP by text across senders when enabled; otherwise caches per sender.
       LlmVerdictCacheGlobalEnabled: bool
-      /// D1: normalized-text length (chars) at/above which a SPAM (global) / NOT_SPAM (per-sender)
-      /// verdict gets the long TTL below instead of LlmVerdictCacheTtlMinutes; SKIP always short.
+      /// Normalized text length at which cached SPAM gets the long TTL; SKIP stays short.
       LlmVerdictCacheLongTextMinChars: int
-      /// D1: long TTL (minutes) for cached SPAM/NOT_SPAM verdicts at/above the length above —
-      /// production data shows longer text has a far lower verdict-conflict rate. bot_setting-backed.
+      /// Long TTL in minutes for cached SPAM at or above the length threshold.
       LlmVerdictCacheLongTextTtlMinutes: int
       /// When true (default), an Azure OpenAI `content_filter` rejection of the triage request
       /// (LlmVerdict.ContentFiltered — see LlmTriage.fs) is treated as a high-confidence SPAM
