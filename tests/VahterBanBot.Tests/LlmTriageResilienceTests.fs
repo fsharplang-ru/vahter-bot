@@ -2,20 +2,12 @@ module VahterBanBot.Tests.LlmTriageResilienceTests
 
 open System
 open System.Threading.Tasks
+open System.Text.Json
+open VahterBanBot.LlmVerdictCache
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open Xunit
 
-/// Thorough LLM-triage tests for the verdict cache, concurrent single-flight dedup, and 429
-/// retry/backoff. They assert ONLY on observable outcomes — the exact number of Azure
-/// chat-completion calls, auto-deletion, the recorded verdict, and whether a message leaked to
-/// the vahter action channel — so the same tests are meaningful on the un-fixed master branch,
-/// where they go red:
-///   • dedup / single-flight tests  → master makes N Azure calls, the fix makes 1.
-///   • 429-retry tests              → master makes 1 call then leaks to the action channel;
-///                                    the fix retries (>=2 calls) and handles the message.
-///
-/// Test names start with "LLM triage" to share the ML-enabled container's name-ordering band.
 type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture) =
 
     // One scripted Azure rate-limit response. The bot does not parse a non-2xx body, so its
@@ -137,8 +129,6 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
 
-        // NOT_SPAM (the other same-sender cache case) posts no channel message to check, so this
-        // SKIP case is the stand-in coverage for a cache-served report's channel-text annotation.
         let! sends = fixture.GetFakeCalls "sendMessage"
         let toPotential = sends |> Array.filter (fun c -> c.Body.Contains $"\"chat_id\":{fixture.PotentialSpamChannel.Id}")
         Assert.True(toPotential |> Array.exists (fun c -> c.Body.Contains "cached/global"), "cache-served SKIP report must be marked in the channel text")
@@ -146,9 +136,6 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
 
     [<Fact>]
     let ``LLM triage does NOT dedup different senders' NOT_SPAM: a second sender with identical text still gets its own Azure call`` () = task {
-        // The safety property the split cache depends on: NOT_SPAM stays per-sender, so sharing it
-        // across senders can never let a spammer inherit an innocent user's clean verdict just by
-        // reposting their exact text. Neither user's firstName contains "kill"/"spam" → NOT_SPAM.
         do! resetFakes ()
         let a = Tg.user()
         let b = Tg.user()
@@ -170,23 +157,52 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
     }
 
     [<Fact>]
-    let ``LLM triage caches NOT_SPAM per-sender even with the global flag ON: the same sender's repeat is Tier-1 sender-first`` () = task {
+    let ``LLM triage reassesses repeated cleared messages with updated cross-chat history`` () = task {
         do! resetFakes ()
-        let a = Tg.user()
+        let sender = Tg.user()
+        let text = String.replicate 17 "77 " |> _.TrimEnd()
+        let response verdict : AzureScriptedResponse =
+            { status = 200
+              body = JsonSerializer.Serialize({|
+                  choices = [| {| finish_reason = "stop"; index = 0
+                                  message = {| role = "assistant"; content = JsonSerializer.Serialize({| verdict = verdict; reason = "scripted verdict" |}) |} |} |]
+                  created = 1774736361; id = "chatcmpl-reassessment"; model = "fake"; ``object`` = "chat.completion"
+                  usage = {| completion_tokens = 10; prompt_tokens = 200; total_tokens = 210 |} |})
+              delayMs = 0; errorMode = "" }
+        do! fixture.SetAzureLlmScript [| response "NOT_SPAM"; response "NOT_SPAM"; response "SPAM" |]
+        let messages =
+            [| for i in 0..2 -> Tg.quickMsg(chat = fixture.ChatsToMonitor[i % 2], text = text, from = sender) |]
+        for i in 0..2 do
+            let! _ = fixture.SendMessage messages[i]
+            let! deleted = fixture.MessageIsAutoDeleted messages[i].Message.Value
+            Assert.Equal((i = 2), deleted)
+        let! calls = fixture.GetAzureLlmCalls()
+        Assert.Equal(3, calls.Length)
+        for i in 0..2 do
+            use body = JsonDocument.Parse(calls[i].Body)
+            let prompt = body.RootElement.GetProperty("messages").[1].GetProperty("content").GetString()
+            Assert.Contains($"Total messages seen from this user: {i} ", prompt)
+            if i > 0 then
+                Assert.Contains($"Identical message seen earlier: {i} times", prompt)
+                Assert.Contains($"Chat {messages[i-1].Message.Value.Chat.Id},", prompt)
+    }
 
-        let m1 = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = a)
-        let! _ = fixture.SendMessage m1
-        let! v1 = fixture.TryGetLlmTriageVerdict m1.Message.Value
-        Assert.Equal(Some "NOT_SPAM", v1)
-
-        let m2 = Tg.quickMsg(chat = fixture.ChatsToMonitor[1], text = "77", from = a)
-        let! _ = fixture.SendMessage m2
-
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    let ``LLM triage ignores persisted NOT_SPAM entries`` (globalEntry: bool) = task {
+        do! resetFakes ()
+        let sender = Tg.user(firstName = "kill persisted-clearance")
+        let text = "77"
+        let cache = LlmVerdictCacheRepository(fixture.DbConnectionString) :> ILlmVerdictCache
+        let key = if globalEntry then globalKey text else senderKey sender.Id text
+        do! cache.Save(key, "NOT_SPAM", Some "earlier clearance", None)
+        let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = sender)
+        let! _ = fixture.SendMessage msg
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
+        Assert.True(deleted)
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(1, calls.Length)
-
-        let! cacheHit = fixture.TryGetLlmVerdictCacheHit m2.Message.Value
-        Assert.Equal(Some ("NOT_SPAM", Some "keyword match: none", "sender"), cacheHit)
     }
 
     [<Fact>]
@@ -216,25 +232,22 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
     // ── Concurrency (single-flight) ───────────────────────────────────────────
 
     [<Fact>]
-    let ``LLM triage collapses a concurrent multi-channel burst into ONE Azure call`` () = task {
-        // The literal scenario: a spammer posts the same text to several channels at once and the
-        // webhooks arrive concurrently. Single-flight must coalesce them onto one Azure call.
-        // On master each of the 5 fires its own call.
+    let ``LLM triage classifies concurrent cleared copies independently`` () = task {
         do! resetFakes ()
-        let spammer = Tg.user(firstName = "kill concurrent-burst")
+        let sender = Tg.user()
+        let delayedResponse: AzureScriptedResponse =
+            { status = 200
+              body = """{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"{\"verdict\":\"NOT_SPAM\",\"reason\":\"no promotion\"}","role":"assistant"}}],"created":1774736361,"id":"chatcmpl-delayed","model":"fake","object":"chat.completion","usage":{"completion_tokens":10,"prompt_tokens":200,"total_tokens":210}}"""
+              delayMs = 1000; errorMode = "" }
+        do! fixture.SetAzureLlmScript(Array.create 5 delayedResponse)
         let msgs =
-            [ for i in 0 .. 4 -> Tg.quickMsg(chat = fixture.ChatsToMonitor[i % 2], text = "77", from = spammer) ]
-
-        // Fire all webhooks concurrently.
+            [ for i in 0 .. 4 -> Tg.quickMsg(chat = fixture.ChatsToMonitor[i % 2], text = "77", from = sender) ]
         let! _ = Task.WhenAll(msgs |> List.map (fun m -> fixture.SendMessage m))
-
         let! calls = fixture.GetAzureLlmCalls()
-        Assert.Equal(1, calls.Length)
-
-        // Every copy is still handled (deleted) from the shared verdict.
+        Assert.Equal(5, calls.Length)
         for m in msgs do
             let! deleted = fixture.MessageIsAutoDeleted m.Message.Value
-            Assert.True(deleted, "each concurrent copy should be auto-deleted")
+            Assert.False(deleted)
     }
 
     // ── Unhappy path: 429 retry ───────────────────────────────────────────────

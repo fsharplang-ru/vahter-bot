@@ -158,7 +158,7 @@ type LlmVerdictCacheTieredTtlTests(fixture: MlEnabledVahterTestContainers, _ml: 
     }
 
     [<Fact>]
-    let ``LLM verdict cache: /ban invalidates both the per-sender NOT_SPAM row and the global SKIP row`` () = task {
+    let ``LLM verdict cache: /ban invalidates the global SKIP row`` () = task {
         do! resetFakes ()
         let x = Tg.user()
         let y = Tg.user(firstName = "spam ban-inval-y")
@@ -192,7 +192,7 @@ type LlmVerdictCacheTieredTtlTests(fixture: MlEnabledVahterTestContainers, _ml: 
     }
 
     [<Fact>]
-    let ``LLM verdict cache: /vahter markspam invalidates both the per-sender NOT_SPAM row and the global SKIP row`` () = task {
+    let ``LLM verdict cache: /vahter markspam invalidates the global SKIP row`` () = task {
         do! resetFakes ()
         let x = Tg.user()
         let y = Tg.user(firstName = "spam markspam-inval-y")

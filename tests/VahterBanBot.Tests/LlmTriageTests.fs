@@ -59,10 +59,6 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
 
     [<Fact>]
     let ``LLM triage NOT_SPAM verdict takes no action`` () = task {
-        // Global SPAM/SKIP cache — see the SPAM test above. This sender is always fresh (random
-        // Guid firstName), so the risk here isn't cross-sender NOT_SPAM leakage (impossible — NOT_SPAM
-        // stays per-sender) but a STALE SPAM/SKIP entry from an earlier test's "77" leaking in via the
-        // global tier and pre-empting this message's own (correct) NOT_SPAM classification.
         do! fixture.ClearLlmVerdictCache()
         // Default user firstName is a Guid — no keywords → NOT_SPAM
         let msgUpdate = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77")

@@ -1064,10 +1064,7 @@ type MlPreloadedVahterTestContainers(extraEnvVars: (string * string) list, extra
 type MlEnabledVahterTestContainers() =
     inherit MlPreloadedVahterTestContainers([])
 
-/// Same container/settings as MlEnabledVahterTestContainers, except LLM_VERDICT_CACHE_GLOBAL_ENABLED
-/// is forced off — used to assert the escape hatch reverts the verdict cache fully to its pre-PR
-/// per-sender-for-every-verdict behavior (LlmVerdictCacheGlobalFlagTests). Now a bot_setting
-/// override (not an app env var) — LLM_VERDICT_CACHE_GLOBAL_ENABLED reads via getSettingOr.
+/// Runs cache tests with sender-scoped SPAM/SKIP caching.
 type LlmVerdictCacheGlobalDisabledTestContainers() =
     inherit MlPreloadedVahterTestContainers([], ["LLM_VERDICT_CACHE_GLOBAL_ENABLED", "false", "FEATURE_FLAG", "LLM"])
 
