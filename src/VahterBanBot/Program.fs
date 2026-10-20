@@ -70,6 +70,7 @@ let buildBotConf () =
       AdminChannelId = getSettingOr "ADMIN_CHANNEL_ID" "0" |> int64
       DetectedSpamCleanupAge = getSettingOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getRequiredSetting "CHATS_TO_MONITOR" |> fromJson
+      DeleteJoinMessagesInChats = getSettingOr "DELETE_JOIN_MESSAGES_IN_CHATS" "[]" |> fromJson
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse
