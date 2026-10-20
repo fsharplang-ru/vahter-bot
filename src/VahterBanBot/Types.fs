@@ -427,6 +427,7 @@ type BotConfiguration =
       AdminChannelId: int64
       DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
+      DeleteJoinMessagesInChats: int64[]
       AllowedUsers: Dictionary<string, int64>
       IgnoreSideEffects: bool
       UsePolling: bool

@@ -2690,6 +2690,11 @@ type BotService(
             do! this.OnCallback(callbackQuery)
         | None, Some reaction, _ ->
             do! this.OnMessageReaction(reaction)
+        | None, None, Some message
+            when message.NewChatMembers |> Option.exists (Array.isEmpty >> not)
+                 && botConfig.Value.ChatsToMonitor.ContainsValue message.Chat.Id
+                 && Array.contains message.Chat.Id botConfig.Value.DeleteJoinMessagesInChats ->
+            do! tg.CallExn(Req.DeleteMessage.Make(message.Chat.Id, message.MessageId)) |> taskIgnore
         | None, None, Some message ->
             let isEdit = update.EditedMessage.IsSome
             let msg = TgMessage.Create(message, isEdit = isEdit)
