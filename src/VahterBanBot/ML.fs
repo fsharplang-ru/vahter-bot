@@ -225,13 +225,13 @@ type MachineLearning(
                           moreThanNEmojisF = if emojiCount > botConf.Value.MlCustomEmojiThreshold then 1.0f else 0.0f
                           weight = 1.0f
                           createdAt = timeProvider.GetUtcNow().UtcDateTime })
-                |> Some
+                |> Ok
             | None ->
                 logger.LogInformation "Model not trained yet"
-                None
+                Error "model_not_ready"
         with ex ->
             logger.LogError(ex, "Error predicting")
-            None
+            Error "prediction_failed"
 
     /// Retrains the model from scratch and saves to DB.
     /// Called by the scheduler (CleanupService) as a daily job.

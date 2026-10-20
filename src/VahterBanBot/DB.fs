@@ -547,6 +547,13 @@ FROM recent_messages;
             return ()
         }
 
+    member _.RecordMlSkippedMessage(chatId: int64, messageId: int64, reason: string) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"detection:{chatId}:{messageId}" (fun (_: Detection) ->
+                [ MlSkippedMessage {| chatId = chatId; messageId = messageId; reason = reason |} ])
+            return ()
+        }
+
     /// Records an LlmClassified event.
     member _.RecordLlmClassified
         (chatId: int64, messageId: int64, verdict: string, reason: string option,

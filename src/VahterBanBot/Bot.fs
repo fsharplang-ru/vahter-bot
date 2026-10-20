@@ -1230,8 +1230,8 @@ type BotService(
         if isNull msg.Text then return None
         else
         match ml.Predict(msg.Text, usrMsgCount, msg.Entities) with
-        | None -> return None
-        | Some prediction ->
+        | Error _ -> return None
+        | Ok prediction ->
             // Old-user immunity: defer to GetAutoVerdict so the
             // "ML god shows mercy" log fires there exactly once.
             if prediction.Score > 0f && usrMsgCount >= botConfig.Value.MlOldUserMsgCount then
@@ -1246,8 +1246,10 @@ type BotService(
     /// Runs ML prediction + optional LLM triage, returns verdict.
     member private _.GetAutoVerdict(msg: TgMessage, usrMsgCount: int) = task {
         match ml.Predict(msg.Text, usrMsgCount, msg.Entities) with
-        | None -> return None
-        | Some prediction ->
+        | Error reason ->
+            do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, reason)
+            return None
+        | Ok prediction ->
             do! db.RecordMlScoredMessage(msg.ChatId, msg.MessageId, float prediction.Score, prediction.Score >= botConfig.Value.MlSpamThreshold)
 
             // Old user immunity: skip triage when ML score is positive but user has enough history
@@ -1443,28 +1445,30 @@ type BotService(
         elif botConfig.Value.MlEnabled && (msg.Text <> null || hasPendingAzureOcr || hasUnenrichedDocument) then
             use mlActivity = botActivity.StartActivity("mlPrediction")
 
-            let shouldBeSkipped =
-                // skip prediction for automatic forwards from linked channels
+            let skipReason =
                 if msg.IsAutomaticForward then
-                    true
-                // skip prediction for channel senders whose channel is in ChatsToMonitor
+                    Some "automatic_forward"
                 elif msg.IsChannelSender
                      && botConfig.Value.ChatsToMonitor.ContainsValue msg.SenderId then
-                    true
-                // skip prediction for vahters or local admins
-                elif botConfig.Value.AllowedUsers.ContainsValue msg.SenderId
-                     || UpdateChatAdmins.Admins.Contains msg.SenderId then
-                    true
+                    Some "monitored_channel"
+                elif botConfig.Value.AllowedUsers.ContainsValue msg.SenderId then
+                    Some "moderator"
+                elif UpdateChatAdmins.Admins.Contains msg.SenderId then
+                    Some "chat_admin"
                 else
+                    match botConfig.Value.MlStopWordsInChats.TryGetValue msg.ChatId with
+                    | true, stopWords when not (isNull msg.Text) ->
+                        if stopWords |> Seq.exists (fun sw -> msg.Text.Contains(sw, StringComparison.OrdinalIgnoreCase)) then
+                            Some "stop_word"
+                        else None
+                    | _ -> None
+            %mlActivity.SetTag("skipPrediction", skipReason.IsSome)
 
-                match botConfig.Value.MlStopWordsInChats.TryGetValue msg.ChatId with
-                | true, stopWords when not (isNull msg.Text) ->
-                    stopWords
-                    |> Seq.exists (fun sw -> msg.Text.Contains(sw, StringComparison.OrdinalIgnoreCase))
-                | _ -> false
-            %mlActivity.SetTag("skipPrediction", shouldBeSkipped)
-
-            if not shouldBeSkipped then
+            match skipReason with
+            | Some reason ->
+                do! recordMsg()
+                do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, reason)
+            | None ->
                 // ml.Predict only branches on usrMsgCount via two thresholds:
                 // `>= MlOldUserMsgCount` and `< MlTrainCriticalMsgCount`. Anything
                 // beyond the larger one is indistinguishable, so cap the read.
@@ -1494,6 +1498,10 @@ type BotService(
                 match spamCacheHit with
                 | Some hit ->
                     do! recordMsg()
+                    if spamCacheMode = SpamTextCacheMode.Shadow then
+                        do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, "spam_text_cache_shadow")
+                    elif not botConfig.Value.MlSpamDeletionEnabled then
+                        do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, "spam_text_cache_report")
                     do! this.SpamTextCacheAct(msg, spamCacheMode, hit)
                 | None ->
                     let! confidentSpam = this.PreOcrMlCheck(msg, usrMsgCount)
@@ -1555,6 +1563,11 @@ type BotService(
                         | None ->
                             %mlActivity.SetTag("autoVerdict", "noPrediction")
 
+        else
+            do! recordMsg()
+            let reason = if botConfig.Value.MlEnabled then "no_classifiable_content" else "ml_disabled"
+            do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, reason)
+
         // Catch-all: every message that reached ProcessMessage must be recorded.
         // Idempotent — already-recorded branches above no-op here.
         do! recordMsg()
@@ -1574,6 +1587,8 @@ type BotService(
             // produced — Azure OCR is deferred and won't run for banned users) and delete.
             if msg.IsEdit then do! db.EditMessage(msg)
             else do! db.InsertMessage(msg)
+
+            do! db.RecordMlSkippedMessage(msg.ChatId, msg.MessageId, "already_banned")
 
             // just delete message and move on
             let logMsg = $"Bot deleted message {msg.MessageId} from {prependUsername msg.SenderUsername}({msg.SenderId}) in {prependUsername msg.ChatUsername}({msg.ChatId}) because user was already banned\n{msgRefToken msg.ChatId msg.MessageId}"

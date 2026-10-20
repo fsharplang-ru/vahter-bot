@@ -368,6 +368,7 @@ type Callback =
 // ---------------------------------------------------------------------------
 
 type DetectionEvent =
+    | MlSkippedMessage             of {| chatId: int64; messageId: int64; reason: string |}
     | MlScoredMessage              of {| chatId: int64; messageId: int64; score: float; isSpam: bool |}
     | LlmClassified                of {| chatId: int64; messageId: int64; verdict: string; reason: string option; promptTokens: int; completionTokens: int; latencyMs: int; modelName: string option; promptHash: string option |}
     | InvisibleMentionDetected     of {| chatId: int64; messageId: int64; userId: int64 |}
@@ -386,6 +387,7 @@ type Detection =
     static member Zero = { MlScore = None; LlmVerdict = None; LlmReactionTriageVerdict = None }
     static member Fold (state: Detection, event: DetectionEvent) : Detection =
         match event with
+        | MlSkippedMessage _           -> state
         | MlScoredMessage e             -> { state with MlScore = Some e.score }
         | LlmClassified e               -> { state with LlmVerdict = Some e.verdict }
         | InvisibleMentionDetected _    -> state
