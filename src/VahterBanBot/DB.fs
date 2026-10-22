@@ -547,6 +547,14 @@ FROM recent_messages;
             return ()
         }
 
+    member _.RecordJoinNotificationDeleted(chatId: int64, messageId: int64) : Task<unit> =
+        task {
+            let! _ = EventStore.appendEvent store $"join-notification:{chatId}:{messageId}" (fun (state: JoinNotificationState) ->
+                if state.Deleted then []
+                else [ JoinNotificationDeleted {| chatId = chatId; messageId = messageId |} ])
+            return ()
+        }
+
     member _.RecordMlSkippedMessage(chatId: int64, messageId: int64, reason: string) : Task<unit> =
         task {
             let! _ = EventStore.appendEvent store $"detection:{chatId}:{messageId}" (fun (_: Detection) ->

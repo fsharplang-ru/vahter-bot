@@ -1452,7 +1452,7 @@ type BotService(
                      && botConfig.Value.ChatsToMonitor.ContainsValue msg.SenderId then
                     Some "monitored_channel"
                 elif botConfig.Value.AllowedUsers.ContainsValue msg.SenderId then
-                    Some "moderator"
+                    Some "vahter"
                 elif UpdateChatAdmins.Admins.Contains msg.SenderId then
                     Some "chat_admin"
                 else
@@ -2710,6 +2710,7 @@ type BotService(
                  && botConfig.Value.ChatsToMonitor.ContainsValue message.Chat.Id
                  && Array.contains message.Chat.Id botConfig.Value.DeleteJoinMessagesInChats ->
             do! tg.CallExn(Req.DeleteMessage.Make(message.Chat.Id, message.MessageId)) |> taskIgnore
+            do! db.RecordJoinNotificationDeleted(message.Chat.Id, message.MessageId)
         | None, None, Some message ->
             let isEdit = update.EditedMessage.IsSome
             let msg = TgMessage.Create(message, isEdit = isEdit)
