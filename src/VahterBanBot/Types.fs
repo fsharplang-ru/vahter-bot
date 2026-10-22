@@ -367,6 +367,16 @@ type Callback =
 
 // ---------------------------------------------------------------------------
 
+type JoinNotificationEvent =
+    | JoinNotificationDeleted of {| chatId: int64; messageId: int64 |}
+
+type JoinNotificationState =
+    { Deleted: bool }
+    static member Zero = { Deleted = false }
+    static member Fold (_: JoinNotificationState, event: JoinNotificationEvent) : JoinNotificationState =
+        match event with
+        | JoinNotificationDeleted _ -> { Deleted = true }
+
 type DetectionEvent =
     | MlSkippedMessage             of {| chatId: int64; messageId: int64; reason: string |}
     | MlScoredMessage              of {| chatId: int64; messageId: int64; score: float; isSpam: bool |}
