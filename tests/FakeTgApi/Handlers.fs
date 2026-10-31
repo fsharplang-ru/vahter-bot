@@ -21,7 +21,7 @@ module Handlers =
                 // for file uploads). Fold form fields into a JSON object so the JSON-based
                 // handlers below work for both encodings. Field values that parse as JSON
                 // (numbers, bools, nested objects like reply_markup) are embedded as-is;
-                // everything else becomes a JSON string. Uploaded files are ignored.
+                // everything else becomes a JSON string.
                 let! form = ctx.Request.ReadFormAsync()
                 let obj = Json.Nodes.JsonObject()
                 for kv in form do
@@ -30,6 +30,16 @@ module Handlers =
                         try Json.Nodes.JsonNode.Parse raw
                         with _ -> Json.Nodes.JsonValue.Create raw :> Json.Nodes.JsonNode
                     obj[kv.Key] <- node
+                let uploads = Json.Nodes.JsonArray()
+                for file in form.Files do
+                    use output = new IO.MemoryStream()
+                    do! file.CopyToAsync(output)
+                    let upload = Json.Nodes.JsonObject()
+                    upload["name"] <- Json.Nodes.JsonValue.Create file.Name
+                    upload["fileName"] <- Json.Nodes.JsonValue.Create file.FileName
+                    upload["contentBase64"] <- Json.Nodes.JsonValue.Create(Convert.ToBase64String(output.ToArray()))
+                    uploads.Add upload
+                if uploads.Count > 0 then obj["_files"] <- uploads
                 return obj.ToJsonString()
             else
                 use reader = new IO.StreamReader(ctx.Request.Body, Encoding.UTF8)
@@ -254,6 +264,7 @@ module Handlers =
             do! handleSimulatedError ctx
         | "sendMessage"      -> do! handleSendMessage ctx body
         | "sendPhoto"        -> do! handleSendPhoto ctx body
+        | "sendDocument"     -> do! handleSendMessage ctx body
         | "sendVoice"        -> do! handleSendVoice ctx body
         | "sendAudio"        -> do! handleSendAudio ctx body
         | "sendMediaGroup"   -> do! handleSendMediaGroup ctx body
