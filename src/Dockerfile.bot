@@ -7,6 +7,7 @@ LABEL "org.testcontainers.resource-reaper-session"=$RESOURCE_REAPER_SESSION_ID
 
 ARG BOT_PROJECT
 ARG FORCE_REBUILD
+ARG BUILD_CONFIGURATION=Release
 
 WORKDIR /repo
 COPY Directory.Build.props Directory.Packages.props global.json ./
@@ -17,7 +18,7 @@ RUN dotnet restore src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj
 COPY src/BotInfra/ src/BotInfra/
 COPY src/${BOT_PROJECT}/ src/${BOT_PROJECT}/
 RUN --mount=type=secret,id=sixlabors-license \
-    SixLaborsLicenseFile=/run/secrets/sixlabors-license dotnet publish src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj -c Release -o /publish
+    SixLaborsLicenseFile=/run/secrets/sixlabors-license dotnet publish src/${BOT_PROJECT}/${BOT_PROJECT}.fsproj -c ${BUILD_CONFIGURATION} -o /publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.3-noble AS runtime
 ARG BOT_PROJECT

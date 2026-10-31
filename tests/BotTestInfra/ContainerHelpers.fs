@@ -96,16 +96,25 @@ let buildBotImageOncePerProcess (solutionDir: string) (project: string) (imageNa
             let start = ProcessStartInfo(engine, WorkingDirectory = solutionDir, UseShellExecute = false,
                                          RedirectStandardOutput = true, RedirectStandardError = true)
             start.Environment["DOCKER_BUILDKIT"] <- "1"
+            let configuration =
+#if DEBUG
+                "Debug"
+#else
+                "Release"
+#endif
             for arg in [ "build"; "--file"; "src/Dockerfile.bot"; "--tag"; imageName;
                          "--build-arg"; $"BOT_PROJECT={project}";
+                         "--build-arg"; $"BUILD_CONFIGURATION={configuration}";
                          "--build-arg"; $"RESOURCE_REAPER_SESSION_ID={ResourceReaper.DefaultSessionId:D}";
                          "--label"; $"org.testcontainers.resource-reaper-session={ResourceReaper.DefaultSessionId:D}" ] do
                 start.ArgumentList.Add(arg)
             if project = "CouponHubBot" then
                 if String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SIXLABORS_LICENSE_KEY")) then
-                    failwith "Set SIXLABORS_LICENSE_KEY to build CouponHubBot test containers."
-                start.ArgumentList.Add("--secret")
-                start.ArgumentList.Add("id=sixlabors-license,env=SIXLABORS_LICENSE_KEY")
+                    if configuration = "Release" then
+                        failwith "Set SIXLABORS_LICENSE_KEY to build CouponHubBot test containers."
+                else
+                    start.ArgumentList.Add("--secret")
+                    start.ArgumentList.Add("id=sixlabors-license,env=SIXLABORS_LICENSE_KEY")
             start.ArgumentList.Add(".")
             use proc = new Process(StartInfo = start)
             if not (proc.Start()) then failwith "Could not start the container image builder."
