@@ -8,6 +8,7 @@ let app = builder.Build()
 
 // Telegram API emulation
 app.MapPost("/bot{token}/{method}", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleTelegramMethod ctx)) |> ignore
+app.MapGet("/bot{token}/getMe", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleTelegramMethod ctx)) |> ignore
 app.MapPost("/bot{token}/{method}/{rest}", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleTelegramMethod ctx)) |> ignore
 app.MapGet("/file/bot{token}/{*path}", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleFileDownload ctx)) |> ignore
 

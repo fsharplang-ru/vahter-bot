@@ -273,6 +273,7 @@ module Handlers =
         | "banChatMember" | "unbanChatMember" | "restrictChatMember" ->
             do! handleSimpleOk ctx
         | "getChatMember"    -> do! handleGetChatMember ctx body
+        | "getMe"           -> do! respondJson ctx 200 (okResult """{"id":123,"is_bot":true,"first_name":"Test bot","username":"coupon_test_bot"}""")
         | "getFile"          -> do! handleGetFile ctx body
         | "getUserProfilePhotos" -> do! handleGetUserProfilePhotos ctx
         | "getChat"          -> do! handleGetChat ctx body
