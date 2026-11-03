@@ -58,6 +58,7 @@ type SettingsListenerHostedService
             while not ct.IsCancellationRequested do
                 do! conn.WaitAsync(ct)
                 do! reload()
+                logger.LogInformation("SettingsListener: settings reloaded after notification on {Channel}", SettingsNotify.Channel)
         }
         :> Task
 
