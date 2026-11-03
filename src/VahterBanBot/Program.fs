@@ -132,6 +132,13 @@ let buildBotConf settings =
           match getSetting "LLM_TRIAGE_LAYERS" with
           | null -> LlmLayerOrder.Default
           | json -> json |> fromJson<string list> |> LlmLayerOrder.Parse
+      Jev = JevConfiguration.Parse(
+          getSettingOr "JEV_ENDPOINT" "https://api.typesafe.ai/v1/systemone",
+          getSettingOr "JEV_TIMEOUT_MS" "3000",
+          getSettingOr "JEV_MIN_CONFIDENCE" "0.50",
+          getSettingOr "JEV_MIN_PROBABILITY" "0.75",
+          getSettingOr "JEV_MIN_MARGIN" "0.30")
+      TypesafeApiKey = getEnvOr "TYPESAFE_APIKEY" ""
       AzureOpenAiEndpoint   = getSettingOr "AZURE_OPENAI_ENDPOINT" ""
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
@@ -271,7 +278,10 @@ WebhookHost.configureSharedServices webhookCfg builder
         sp.GetRequiredService<ILogger<AzureBotOcr>>(),
         null) :> IBotOcr)
 %builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
-%builder.Services.AddSingleton<AzureSol56Layer>()
+%builder.Services.AddHttpClient("typesafe-jev")
+    .ConfigurePrimaryHttpMessageHandler(fun () -> new System.Net.Http.HttpClientHandler(AllowAutoRedirect = false) :> System.Net.Http.HttpMessageHandler)
+%builder.Services.AddSingleton<ILlmTriageLayer, JevTriage.TypesafeJev114Layer>()
+%builder.Services.AddSingleton<ILlmTriageLayer, AzureSol56Layer>()
 %builder.Services.AddSingleton<LlmLayerFactory>()
 %builder.Services.AddSingleton<ILlmTriage, LayeredLlmTriage>()
 %builder.Services.AddSingleton<IReactionTriageClassifier, AzureReactionTriage>()

@@ -14,6 +14,7 @@ type LlmCacheVerdict =
     | Spam
     | NotSpam
     | Skip
+    static member All = [LlmCacheVerdict.Spam; LlmCacheVerdict.NotSpam; LlmCacheVerdict.Skip]
     member this.StoredValue =
         match this with
         | LlmCacheVerdict.Spam -> "SPAM"
