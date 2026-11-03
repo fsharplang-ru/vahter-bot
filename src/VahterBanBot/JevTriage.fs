@@ -127,68 +127,101 @@ let private evaluateAnswer (conf: JevConfiguration) (answer: JevChoice) =
     let verdict = if accepted then answer.Choice.ToVerdict(reason, None) else LlmVerdict.Skip(reason, None)
     verdict, chosen, chosen - other
 
+let private decodeResponse (body: string) =
+    JsonSerializer.Deserialize<JevResponse option>(body, wireJsonOptions)
+    |> Option.defaultWith (fun () -> raise (JsonException "Missing response"))
+
+let private createRequest (conf: BotConfiguration) (context: LlmTriageContext) =
+    let state = toJson {| chat_policy = context.ChatDescription; record = context.UserPrompt |}
+    let body = wireJson {| model = TypesafeJevModel; state = state; questions = questions context.ChatDescription |}
+    let request = new HttpRequestMessage(HttpMethod.Post, conf.Jev.Endpoint)
+    request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", conf.TypesafeApiKey)
+    request.Content <- new StringContent(body, Encoding.UTF8, "application/json")
+    request
+
+let private classificationResult (elapsed: TimeSpan) (usage: JevUsage option) verdict =
+    { Verdict = verdict
+      PromptTokens = usage |> Option.bind _.InputTokens |> Option.defaultValue 0 |> max 0
+      CompletionTokens = usage |> Option.bind _.OutputTokens |> Option.defaultValue 0 |> max 0
+      LatencyMs = int elapsed.TotalMilliseconds }
+
 type TypesafeJev114Layer(clients: IHttpClientFactory, logger: ILogger<TypesafeJev114Layer>, clock: TimeProvider) =
     let gate = obj()
     let mutable throttledUntil: (Uri * DateTimeOffset) option = None
 
+    let isThrottled endpoint =
+        lock gate (fun () ->
+            throttledUntil |> Option.exists (fun (uri, until) -> uri = endpoint && clock.GetUtcNow() < until))
+
+    let throttle endpoint (retryAfter: RetryConditionHeaderValue) =
+        let until =
+            if isNull retryAfter then clock.GetUtcNow().AddSeconds 1.0
+            elif retryAfter.Date.HasValue then retryAfter.Date.Value
+            elif retryAfter.Delta.HasValue then clock.GetUtcNow() + retryAfter.Delta.Value
+            else clock.GetUtcNow().AddSeconds 1.0
+        lock gate (fun () -> throttledUntil <- Some (endpoint, until))
+        logger.LogWarning("Jev throttled; skipping layer until {RetryAt}", until)
+
+    let readResponse endpoint (response: HttpResponseMessage) ct = task {
+        match response.StatusCode with
+        | HttpStatusCode.TooManyRequests ->
+            throttle endpoint response.Headers.RetryAfter
+            return None
+        | _ when not response.IsSuccessStatusCode ->
+            logger.LogError("Jev request failed with HTTP {Status}; skipping layer", int response.StatusCode)
+            return None
+        | _ ->
+            let! body = response.Content.ReadAsStringAsync(ct)
+            return Some (decodeResponse body)
+    }
+
+    let request (conf: BotConfiguration) context (ct: CancellationToken) = task {
+        try
+            use client = clients.CreateClient("typesafe-jev")
+            use request = createRequest conf context
+            use! response = client.SendAsync(request, ct)
+            return! readResponse conf.Jev.Endpoint response ct
+        with
+        | :? OperationCanceledException ->
+            logger.LogWarning("Jev request cancelled or timed out; skipping layer")
+            return None
+        | ex ->
+            logger.LogError("Jev request or response failed ({ErrorType}); skipping layer", ex.GetType().Name)
+            return None
+    }
+
+    let evaluate conf (response: JevResponse) =
+        try
+            match response.Model with
+            | TypesafeJevModel ->
+                let answer = response.Answers.Verdict
+                let verdict, probability, margin = evaluateAnswer conf answer
+                logger.LogInformation("Jev proposed={Proposed} decision={Decision} confidence={Confidence} probability={Probability} margin={Margin}",
+                                      answer.Choice.StoredValue, verdict, answer.Confidence, probability, margin)
+                verdict
+            | actual ->
+                logger.LogError("Jev returned model {ActualModel}, expected {ExpectedModel}; skipping layer", actual, TypesafeJevModel)
+                LlmVerdict.Error
+        with ex ->
+            logger.LogError("Jev answer validation failed ({ErrorType}); skipping layer", ex.GetType().Name)
+            LlmVerdict.Error
+
     let classify (conf: BotConfiguration) (context: LlmTriageContext) (ct: CancellationToken) = task {
         let sw = Stopwatch.StartNew()
-        let finish verdict inputTokens outputTokens =
-            { Verdict = verdict; PromptTokens = inputTokens; CompletionTokens = outputTokens; LatencyMs = int sw.ElapsedMilliseconds }
-        let throttled = lock gate (fun () ->
-            throttledUntil |> Option.exists (fun (endpoint, until) -> endpoint = conf.Jev.Endpoint && clock.GetUtcNow() < until))
         if String.IsNullOrWhiteSpace conf.TypesafeApiKey then
             logger.LogError("Jev layer is enabled but TYPESAFE_APIKEY is unavailable; skipping layer")
-            return finish LlmVerdict.Error 0 0
-        elif throttled then
+            return classificationResult sw.Elapsed None LlmVerdict.Error
+        elif isThrottled conf.Jev.Endpoint then
             logger.LogInformation("Jev layer is in Retry-After cooldown; skipping layer")
-            return finish LlmVerdict.Error 0 0
+            return classificationResult sw.Elapsed None LlmVerdict.Error
         else
             use deadline = CancellationTokenSource.CreateLinkedTokenSource(ct)
             deadline.CancelAfter conf.Jev.Timeout
-            try
-                use client = clients.CreateClient("typesafe-jev")
-                use request = new HttpRequestMessage(HttpMethod.Post, conf.Jev.Endpoint)
-                request.Headers.Authorization <- AuthenticationHeaderValue("Bearer", conf.TypesafeApiKey)
-                let state = toJson {| chat_policy = context.ChatDescription; record = context.UserPrompt |}
-                let body = wireJson {| model = TypesafeJevModel; state = state; questions = questions context.ChatDescription |}
-                request.Content <- new StringContent(body, Encoding.UTF8, "application/json")
-                use! response = client.SendAsync(request, deadline.Token)
-                if response.StatusCode = HttpStatusCode.TooManyRequests then
-                    let retryAfter = response.Headers.RetryAfter
-                    let until =
-                        if isNull retryAfter then clock.GetUtcNow().AddSeconds 1.0
-                        elif retryAfter.Date.HasValue then retryAfter.Date.Value
-                        elif retryAfter.Delta.HasValue then clock.GetUtcNow() + retryAfter.Delta.Value
-                        else clock.GetUtcNow().AddSeconds 1.0
-                    lock gate (fun () -> throttledUntil <- Some (conf.Jev.Endpoint, until))
-                    logger.LogWarning("Jev throttled; skipping layer until {RetryAt}", until)
-                    return finish LlmVerdict.Error 0 0
-                elif not response.IsSuccessStatusCode then
-                    logger.LogError("Jev request failed with HTTP {Status}; skipping layer", int response.StatusCode)
-                    return finish LlmVerdict.Error 0 0
-                else
-                    let! body = response.Content.ReadAsStringAsync(deadline.Token)
-                    let result = JsonSerializer.Deserialize<JevResponse>(body, wireJsonOptions)
-                    match result.Model with
-                    | TypesafeJevModel ->
-                        let answer = result.Answers.Verdict
-                        let verdict, probability, margin = evaluateAnswer conf.Jev answer
-                        let inputTokens = result.Usage |> Option.bind _.InputTokens |> Option.defaultValue 0 |> max 0
-                        let outputTokens = result.Usage |> Option.bind _.OutputTokens |> Option.defaultValue 0 |> max 0
-                        logger.LogInformation("Jev proposed={Proposed} decision={Decision} confidence={Confidence} probability={Probability} margin={Margin}",
-                                              answer.Choice.StoredValue, verdict, answer.Confidence, probability, margin)
-                        return finish verdict inputTokens outputTokens
-                    | actual ->
-                        logger.LogError("Jev returned model {ActualModel}, expected {ExpectedModel}; skipping layer", actual, TypesafeJevModel)
-                        return finish LlmVerdict.Error 0 0
-            with
-            | :? OperationCanceledException ->
-                logger.LogWarning("Jev request cancelled or timed out; skipping layer")
-                return finish LlmVerdict.Error 0 0
-            | ex ->
-                logger.LogError("Jev request or response failed ({ErrorType}); skipping layer", ex.GetType().Name)
-                return finish LlmVerdict.Error 0 0
+            let! response = request conf context deadline.Token
+            let usage = response |> Option.bind _.Usage
+            Metrics.recordJevUsage TypesafeJevModel (usage |> Option.bind _.InputTokens) (usage |> Option.bind _.OutputTokens)
+            let verdict = response |> Option.map (evaluate conf.Jev) |> Option.defaultValue LlmVerdict.Error
+            return classificationResult sw.Elapsed usage verdict
     }
 
     interface ILlmTriageLayer with

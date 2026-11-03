@@ -17,7 +17,7 @@ type JevTriageTests(fixture: JevVahterTestContainers) =
             | "SPAM" -> 0.9, 0.05, 0.05
             | "NOT_SPAM" -> 0.05, 0.9, 0.05
             | _ -> 0.05, 0.05, 0.9
-        JsonSerializer.Serialize {| model = "jev-1.14.0"; answers = {| verdict = {| ``type`` = "choice"; choice = label; confidence = 0.9; probabilities = {| SPAM = spam; NOT_SPAM = ham; SKIP = skip |} |}; review_focus = {| choice = "unclear" |} |} |}
+        JsonSerializer.Serialize {| model = "jev-1.14.0"; usage = {| input_tokens = 123; output_tokens = 45 |}; answers = {| verdict = {| ``type`` = "choice"; choice = label; confidence = 0.9; probabilities = {| SPAM = spam; NOT_SPAM = ham; SKIP = skip |} |}; review_focus = {| choice = "unclear" |} |} |}
     let script status body delay = task {
         let payload = {| responses = [| {| status = status; body = body; delayMs = delay; errorMode = "" |} |] |}
         use! response = fixture.FakeAzureHttp.PostAsJsonAsync("/test/mock/jev-script", payload)
@@ -74,6 +74,7 @@ type JevTriageTests(fixture: JevVahterTestContainers) =
     [<InlineData("skip", 200, 0)>]
     [<InlineData("uncertain", 200, 0)>]
     [<InlineData("malformed", 200, 0)>]
+    [<InlineData("invalid-choice", 200, 0)>]
     [<InlineData("unauthorized", 401, 0)>]
     [<InlineData("unavailable", 503, 0)>]
     [<InlineData("retired-model", 422, 0)>]
@@ -84,6 +85,7 @@ type JevTriageTests(fixture: JevVahterTestContainers) =
         let body =
             match outcome with
             | "skip" -> answer "SKIP"
+            | "invalid-choice" -> (answer "SPAM").Replace("\"choice\":\"SPAM\"", "\"choice\":\"UNKNOWN\"")
             | "uncertain" -> (answer "SPAM").Replace("\"confidence\":0.9", "\"confidence\":0.1")
             | "timeout" -> answer "NOT_SPAM"
             | "model-mismatch" -> (answer "SPAM").Replace("jev-1.14.0", "synthetic-model")
