@@ -85,6 +85,25 @@ let llmVerdictCacheTotalCounter =
 let tagsForLlmVerdictCache (result: string) (scope: string) =
     [| KeyValuePair("result", box result); KeyValuePair("scope", box scope) |]
 
+let jevTokensCounter =
+    meter.CreateCounter<int64>(
+        "vahter_jev_tokens_total",
+        description = "Input and output token usage reported by Jev (direction=input|output), including calls that fall through to another layer"
+    )
+
+let jevUsageUnavailableCounter =
+    meter.CreateCounter<int64>(
+        "vahter_jev_usage_unavailable_total",
+        description = "Jev request attempts without a valid token count for the tagged direction (input|output)"
+    )
+
+let recordJevUsage (model: string) (inputTokens: int option) (outputTokens: int option) =
+    for direction, count in [ "input", inputTokens; "output", outputTokens ] do
+        let tags = [| KeyValuePair("model", box model); KeyValuePair("direction", box direction) |]
+        match count with
+        | Some count when count >= 0 -> jevTokensCounter.Add(int64 count, tags)
+        | _ -> jevUsageUnavailableCounter.Add(1L, tags)
+
 let tagsForChat (chatId: int64) (chatUsername: string) =
     [|
         KeyValuePair("chat_id", box chatId)

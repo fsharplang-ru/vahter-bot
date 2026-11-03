@@ -224,3 +224,22 @@ let ``gate changes affect acceptance and invalidate cache identity`` confidence 
 [<InlineData("1.01")>]
 let ``invalid thresholds reject configuration`` value =
     %Assert.Throws<ArgumentException>(fun () -> %(configuration "3000" value "0.75" "0.30"))
+
+[<Theory>]
+[<InlineData("model", "\"unexpected-model\"")>]
+[<InlineData("confidence", "0.1")>]
+[<InlineData("confidence", "1.1")>]
+[<InlineData("type", "\"noul\"")>]
+let ``rejected response retains reported usage`` (field: string) value = task {
+    let body = JsonNode.Parse answer
+    let target = if field = "model" then body else body.["answers"].["verdict"]
+    target.[field] <- JsonNode.Parse(value: string)
+    let handler, layer = provider (fun _ _ -> Task.FromResult(response (body.ToJsonString())))
+    use _handler = handler
+    let! result = (layer.Configure(settings ())).Classify(context, CancellationToken.None)
+    match result.Verdict with
+    | LlmVerdict.Error | LlmVerdict.Skip _ -> ()
+    | verdict -> Assert.Fail($"Unexpected verdict {verdict}")
+    Assert.Equal(123, result.PromptTokens)
+    Assert.Equal(45, result.CompletionTokens)
+}
