@@ -25,7 +25,13 @@ After changing the setting, call the authenticated `POST /reload-settings` endpo
 
 ## Spam Detection
 
-Uses LLM-based spam detection (OpenAI API) with configurable verdicts: SPAM, NOT_SPAM, SKIP.
+LLM triage runs the ordered layer IDs in `bot_setting.LLM_TRIAGE_LAYERS`, a non-empty JSON array defaulting to `["azure-sol-5.6"]`. `azure-sol-5.6` selects the Sol 5.6 provider and prompt, using the configured Azure endpoint, deployment alias and reasoning effort. `LLM_TRIAGE_ENABLED` controls eligibility; changes take effect through authenticated `POST /reload-settings`.
+
+Each layer receives the same frozen evidence. SPAM or NOT_SPAM ends classification; SKIP, invalid output or service failure advances to the next layer. Exhaustion routes to human review. Azure content-filter handling follows `LLM_CONTENT_FILTER_IS_SPAM`. Unknown IDs and empty or duplicate orders fail settings loading before startup; rejected reloads retain the last valid configuration.
+
+Providers implement `ILlmTriageLayer`; versioned `LlmLayerId` cases resolve through an exhaustive factory. `LlmLayerOrder` preserves configured order and guarantees non-empty, unique, supported IDs. `Configure` binds a settings snapshot and supplies model/prompt metadata, a cache identity covering request and acceptance settings, and a classification function. Layers perform classification only; the pipeline owns final event recording and caching, and the bot owns moderation actions.
+
+SPAM/SKIP cache entries retain the deciding provider's metadata and match the ordered pipeline's configuration fingerprint. Layer order, model, prompt, reasoning effort or chat-policy changes require fresh classification. Cache scope, TTLs and human-correction invalidation use the existing text keys.
 
 ## Deployment
 

@@ -25,15 +25,18 @@ open VahterBanBot.Utils
 open VahterBanBot.Metrics
 open VahterBanBot.SpamTextCache
 open VahterBanBot.LlmVerdictCache
+open VahterBanBot.LlmTriagePipeline
+open VahterBanBot.LlmLayerConfiguration
 open VahterBanBot.ProfileFetcher
 open BotInfra
+open BotInfra.JsonSetup
 
 // Only SPAM/SKIP are reusable by text; clearances require current message context.
 
 /// SKIP keeps the short TTL; long SPAM text gets the long TTL.
-let selectCacheTtlMinutes (minChars: int) (shortTtlMinutes: int) (longTtlMinutes: int) (verdict: string) (normalizedTextLength: int) : int =
+let selectCacheTtlMinutes (minChars: int) (shortTtlMinutes: int) (longTtlMinutes: int) (verdict: LlmCacheVerdict) (normalizedTextLength: int) : int =
     match verdict with
-    | "SPAM" when normalizedTextLength >= minChars -> longTtlMinutes
+    | LlmCacheVerdict.Spam when normalizedTextLength >= minChars -> longTtlMinutes
     | _ -> shortTtlMinutes
 
 type private CacheRouting =
@@ -330,23 +333,8 @@ let selectLlmRequestParams (reasoningEffort: string) : LlmRequestParams =
 
 // ── Interface + implementation ────────────────────────────────────────────────
 
-type ILlmTriage =
-    abstract member ModelName:  string
-    abstract member PromptHash: string
-    abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmVerdict>
-
-type AzureLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<AzureLlmTriage>, db: DbService, cache: ILlmVerdictCache, profileFetcher: IUserProfileFetcher, timeProvider: TimeProvider) =
-
-    let utcNow () = timeProvider.GetUtcNow().UtcDateTime
-
-    // Coalesces duplicate deliveries of the same message and text.
-    let inflight = ConcurrentDictionary<string, Lazy<Task<LlmVerdict>>>()
-    // 3 attempts honoring Retry-After — message triage is deduped/single-flighted and can afford to wait.
+type AzureSol56Layer(logger: ILogger<AzureSol56Layer>) =
     let clientCache = ChatClientCache(ClientRetryPolicy 3)
-
-    // Untrusted-field caps (cost/latency + injection-payload room; bio cap is belt-and-braces, Telegram itself caps it ~140 chars).
-    let maxTriageMessageChars = 6000
-    let maxTriageBioChars = 1000
 
     let staticSystemPrompt =
         """You moderate messages for a Telegram community. Decide whether THIS message should be removed under the supplied chat policy.
@@ -386,8 +374,92 @@ Give one short English reason, at most about 12 words, describing observed evide
         |> Convert.ToHexString
         |> _.ToLower()
 
-    // Records fresh classifications and caches only SPAM/SKIP verdicts.
-    let classifyUncached (msg: TgMessage) (_userMsgCount: int64) (cacheRouting: CacheRouting) (ct: CancellationToken) = task {
+    let classify (conf: BotConfiguration) (context: LlmTriageContext) (ct: CancellationToken) = task {
+        use activity = botActivity.StartActivity("llmTriage.layer")
+        let modelName = conf.AzureOpenAiDeployment
+        let systemPrompt = staticSystemPrompt + context.ChatDescription
+        let userPrompt = context.UserPrompt
+        let reqParams = selectLlmRequestParams conf.LlmReasoningEffort
+        let options =
+            let o =
+                ChatCompletionOptions(
+                    MaxOutputTokenCount = Nullable reqParams.MaxOutputTokenCount,
+                    ResponseFormat      = ChatResponseFormat.CreateJsonSchemaFormat(
+                                            "spam_verdict", spamVerdictSchema, jsonSchemaIsStrict = Nullable true))
+            // Azure SDK sends legacy max_tokens unless opted in; gpt-5 family rejects it.
+            o.SetNewMaxCompletionTokensPropertyEnabled(true)
+            match reqParams.Temperature with
+            | Some t -> o.Temperature <- Nullable t
+            | None -> ()   // gpt-5-family rejects/ignores Temperature — omitted entirely, not sent as 0.
+            match reqParams.ReasoningEffort with
+            | Some effort -> o.ReasoningEffortLevel <- Nullable(ChatReasoningEffortLevel effort)
+            | None -> ()
+            o
+        let messages : ChatMessage[] =
+            [| SystemChatMessage(systemPrompt)
+               UserChatMessage(userPrompt) |]
+
+        let sw = Stopwatch.StartNew()
+        let finish verdict inputTokens outputTokens =
+            { Verdict = verdict; PromptTokens = inputTokens; CompletionTokens = outputTokens
+              LatencyMs = int sw.ElapsedMilliseconds }
+        try
+            let chatClient =
+                clientCache.Get(conf.AzureOpenAiEndpoint, conf.AzureOpenAiKey, modelName)
+            let! result = chatClient.CompleteChatAsync(messages, options, ct)
+            sw.Stop()
+            let content = result.Value.Content.[0].Text
+            match parseVerdictAndReason logger content with
+            | Some (verdictStr, reason) ->
+                let promptTokens     = result.Value.Usage.InputTokenCount
+                let completionTokens = result.Value.Usage.OutputTokenCount
+                return finish (LlmVerdict.FromString(verdictStr, reason, None)) promptTokens completionTokens
+            | None -> return finish LlmVerdict.Error 0 0
+        with
+        | :? ClientResultException as ex ->
+            let rawBody = tryGetRawResponseBody ex
+            if ex.Status = 429 then
+                logger.LogWarning(ex, "LLM triage throttled (429) after retries")
+                return finish LlmVerdict.Error 0 0
+            elif isContentFilterRejection ex.Status rawBody ex.Message then
+                let triggers = extractContentFilterTriggers rawBody
+                logContentFilterRejection activity logger "LLM triage" triggers rawBody
+                return finish (LlmVerdict.ContentFiltered triggers) 0 0
+            else
+                logger.LogError(ex, "LLM triage UNEXPECTED ERROR: HTTP {Status}", ex.Status)
+                return finish LlmVerdict.Error 0 0
+        | ex ->
+            logger.LogWarning(ex, "LLM triage call failed")
+            return finish LlmVerdict.Error 0 0
+    }
+
+    interface ILlmTriageLayer with
+        member _.Configure(conf) =
+            let requestParams = selectLlmRequestParams conf.LlmReasoningEffort
+            { Id = LlmLayerId.AzureSol56
+              Source = { ModelName = conf.AzureOpenAiDeployment; PromptHash = promptHash }
+              CacheIdentity = toJson (conf.AzureOpenAiEndpoint, conf.AzureOpenAiDeployment, promptHash, conf.LlmReasoningEffort, requestParams.MaxOutputTokenCount, spamVerdictSchema.ToString())
+              Classify = fun (context, ct) -> classify conf context ct }
+
+type LlmLayerFactory(azureSol56: AzureSol56Layer) =
+    member _.Configure(conf: BotConfiguration) =
+        conf.LlmTriageLayers.Layers
+        |> List.map (fun id ->
+            let layer =
+                match id with
+                | LlmLayerId.AzureSol56 -> azureSol56 :> ILlmTriageLayer
+            layer.Configure conf)
+
+type ILlmTriage =
+    abstract member Classify: msg: TgMessage * userMsgCount: int64 * ct: CancellationToken -> Task<LlmTriageResult>
+
+type LayeredLlmTriage(botConf: IOptions<BotConfiguration>, logger: ILogger<LayeredLlmTriage>, db: DbService, cache: ILlmVerdictCache, profileFetcher: IUserProfileFetcher, timeProvider: TimeProvider, layerFactory: LlmLayerFactory) =
+    let utcNow () = timeProvider.GetUtcNow().UtcDateTime
+    let inflight = ConcurrentDictionary<string, Lazy<Task<LlmTriageResult>>>()
+    let maxTriageMessageChars = 6000
+    let maxTriageBioChars = 1000
+
+    let classifyUncached (conf: BotConfiguration) configured policyHash (msg: TgMessage) (cacheRouting: CacheRouting) (ct: CancellationToken) = task {
         use activity = botActivity.StartActivity("llmTriage")
         let missScope =
             match cacheRouting with
@@ -395,41 +467,26 @@ Give one short English reason, at most about 12 words, describing observed evide
             | SingleKey _ -> "sender"
             | GlobalKey _ -> "global"
         llmVerdictCacheTotalCounter.Add(1L, tagsForLlmVerdictCache "miss" missScope)
-
-        // endpoint/key/deployment are hot-reloadable — read live for this call.
-        let modelName = botConf.Value.AzureOpenAiDeployment
-
         let chatDescLine =
-            match botConf.Value.LlmChatDescriptions.TryGetValue(msg.ChatId) with
+            match conf.LlmChatDescriptions.TryGetValue(msg.ChatId) with
             | true, d -> $"\nChat: {d}"
-            | _       -> ""
-
-        let systemPrompt =
-            $"""{staticSystemPrompt}{chatDescLine}"""
+            | _ -> ""
 
         let username    = if isNull msg.SenderUsername then "(none)" else $"@{msg.SenderUsername}"
         let displayName = msg.SenderDisplayName
 
-        // Fetched only here — at the point of actual LLM escalation, not for every message.
-        // IUserProfileFetcher.Fetch never throws (see ProfileFetcher.fs); an empty/missing bio
-        // still degrades to "(none)" below.
         let! profile = profileFetcher.Fetch(msg.SenderId)
         let bio = formatBioLine profile.Bio
         let truncatedBio =
             if bio.Length > maxTriageBioChars then bio.Substring(0, maxTriageBioChars) + "[truncated]"
             else bio
 
-        // See the module doc comment above `mediaPlaceholder`: this placeholder is rendered ONLY
-        // in the prompt string below — msg.Text itself is never touched, so the ML scorer / spam-
-        // text cache / verdict-cache key / deleted-spam channel post all keep seeing the real
-        // (empty) text.
         let messageBody = mediaPlaceholder msg |> Option.defaultValue msg.Text
         let truncatedMessageBody =
             if isNull messageBody then messageBody
             elif messageBody.Length > maxTriageMessageChars then messageBody.Substring(0, maxTriageMessageChars) + "[truncated]"
             else messageBody
 
-        // Keyed off RAW msg.Text length, not messageBody's placeholder-rendered length — see formatRepetitionLine.
         let textLength = if isNull msg.Text then 0 else msg.Text.Length
         let! repetition =
             if needsRepetitionLookup textLength then
@@ -455,10 +512,8 @@ Give one short English reason, at most about 12 words, describing observed evide
             | Some parent -> mediaPlaceholder parent |> Option.defaultValue parent.Text |> capContext
             | None -> "(unavailable)"
 
-        // Fence nonce — excluded from promptHash (static prompt only) and the cache key (msg.Text only, in Classify).
         let nonce = RandomNumberGenerator.GetHexString(8, lowercase = true)
 
-        // Fenced (untrusted): username/display name/bio/message body. Outside (trusted): message-count/repetition/chat-desc.
         let untrustedContent =
             $"""Username: {username}
 Display name: {displayName}
@@ -487,96 +542,38 @@ Classify only the current Message inside the <untrusted-{nonce}> markers above; 
             "LLM triage prompt (chat {ChatId}, msg {MessageId}): {UserPrompt}",
             msg.ChatId, msg.MessageId, userPrompt)
 
-        // gpt-5-family request parameters — see selectLlmRequestParams's doc comment.
-        let reqParams = selectLlmRequestParams botConf.Value.LlmReasoningEffort
-        let options =
-            let o =
-                ChatCompletionOptions(
-                    MaxOutputTokenCount = Nullable reqParams.MaxOutputTokenCount,
-                    ResponseFormat      = ChatResponseFormat.CreateJsonSchemaFormat(
-                                            "spam_verdict", spamVerdictSchema, jsonSchemaIsStrict = Nullable true))
-            // Azure SDK sends legacy max_tokens unless opted in; gpt-5 family rejects it.
-            o.SetNewMaxCompletionTokensPropertyEnabled(true)
-            match reqParams.Temperature with
-            | Some t -> o.Temperature <- Nullable t
-            | None -> ()   // gpt-5-family rejects/ignores Temperature — omitted entirely, not sent as 0.
-            match reqParams.ReasoningEffort with
-            | Some effort -> o.ReasoningEffortLevel <- Nullable(ChatReasoningEffortLevel effort)
-            | None -> ()
-            o
-        let messages : ChatMessage[] =
-            [| SystemChatMessage(systemPrompt)
-               UserChatMessage(userPrompt) |]
-
-        let sw = Stopwatch.StartNew()
+        let context = { ChatDescription = chatDescLine; UserPrompt = userPrompt }
+        let! pipelineResult = runLayers logger conf.LlmContentFilterIsSpam configured context ct
+        let result = pipelineResult.Classification
+        let verdictAndReason =
+            match result.Verdict with
+            | LlmVerdict.Kill (reason, _) -> Some (LlmCacheVerdict.Spam, reason)
+            | LlmVerdict.NotSpam (reason, _) -> Some (LlmCacheVerdict.NotSpam, reason)
+            | LlmVerdict.Skip (reason, _) -> Some (LlmCacheVerdict.Skip, reason)
+            | LlmVerdict.Error | LlmVerdict.ContentFiltered _ -> None
         try
-            let chatClient =
-                clientCache.Get(botConf.Value.AzureOpenAiEndpoint, botConf.Value.AzureOpenAiKey, modelName)
-            let! result = chatClient.CompleteChatAsync(messages, options, ct)
-            sw.Stop()
-            let content = result.Value.Content.[0].Text
-            match parseVerdictAndReason logger content with
-            | Some (verdictStr, reason) ->
-                let promptTokens     = result.Value.Usage.InputTokenCount
-                let completionTokens = result.Value.Usage.OutputTokenCount
+            match verdictAndReason, pipelineResult.Source with
+            | Some (verdict, reason), Some source ->
                 if not (isNull activity) then
-                    %activity
-                        .SetTag("verdict",      verdictStr)
-                        .SetTag("latency_ms",   sw.ElapsedMilliseconds)
-                        .SetTag("total_tokens", promptTokens + completionTokens)
-                        .SetTag("chat_id",      msg.ChatId)
-                        .SetTag("user_id",      msg.SenderId)
-                        .SetTag("llm.cache",    "miss")
-                        .SetTag("llm.reason",   Option.toObj reason)
+                    %activity.SetTag("verdict", verdict.StoredValue).SetTag("llm.reason", Option.toObj reason)
+                        .SetTag("llm.cache", "miss").SetTag("chat_id", msg.ChatId).SetTag("user_id", msg.SenderId)
+                        .SetTag("latency_ms", result.LatencyMs).SetTag("total_tokens", result.PromptTokens + result.CompletionTokens)
                 logger.LogInformation(
                     "LLM triage classified: verdict={Verdict} reason={Reason} latencyMs={LatencyMs} cacheResult={CacheResult} cacheScope={CacheScope}",
-                    verdictStr, reason, sw.ElapsedMilliseconds, "miss", missScope)
+                    verdict.StoredValue, reason, result.LatencyMs, "miss", missScope)
                 do! db.RecordLlmClassified(
-                        msg.ChatId, msg.MessageId, verdictStr, reason,
-                        promptTokens, completionTokens, int sw.ElapsedMilliseconds,
-                        Some modelName, Some promptHash)
-                match verdictStr, cacheRouting with
-                | ("SPAM" | "SKIP"), (SingleKey key | GlobalKey key) ->
-                    do! cache.Save(key, verdictStr, reason, Some modelName)
+                        msg.ChatId, msg.MessageId, verdict.StoredValue, reason,
+                        result.PromptTokens, result.CompletionTokens, result.LatencyMs,
+                        Some source.ModelName, Some source.PromptHash)
+                match verdict, cacheRouting with
+                | (LlmCacheVerdict.Spam | LlmCacheVerdict.Skip), (SingleKey key | GlobalKey key) ->
+                    do! cache.Save(key, verdict, reason, Some source, policyHash)
                 | _ -> ()
-                return LlmVerdict.FromString(verdictStr, reason, None)
-            | None ->
-                return LlmVerdict.Error
-        with
-        | :? ClientResultException as ex ->
-            // Retries are exhausted by the time the SDK throws (429s aside). Three outcomes:
-            //  - 429: expected sustained throttling — Error routes the message to human review.
-            //  - 400 content_filter: a HANDLED signal (see below), not a fault — ContentFiltered,
-            //    which Bot.fs's GetAutoVerdict turns into SPAM (or, with LLM_CONTENT_FILTER_IS_SPAM
-            //    off, the same human-review fallback as Error).
-            //  - anything else (other 400s, 401, 5xx, …): a real fault — Error routes the message
-            //    to human review, same as before.
-            sw.Stop()
-            let rawBody = tryGetRawResponseBody ex
-            if ex.Status = 429 then
-                // Expected: sustained throttling after the retry budget. Not actionable on its own.
-                logger.LogWarning(ex, "LLM triage throttled (429) after retries; routing to human review")
-                return LlmVerdict.Error
-            elif isContentFilterRejection ex.Status rawBody ex.Message then
-                // Azure's RAI policy rejected the PROMPT itself as severely harmful. LLM triage
-                // only runs when the ML score is already in the warning band, so this is
-                // corroboration, not noise — treat it as a high-confidence SPAM signal. Log once
-                // at Warning with the raw Azure response body verbatim (that's where
-                // content_filter_result/innererror — per-category severity, jailbreak/
-                // protected-material flags — live; the exception Message alone omits them).
-                let triggers = extractContentFilterTriggers rawBody
-                logContentFilterRejection activity logger "LLM triage" triggers rawBody
-                return LlmVerdict.ContentFiltered triggers
-            else
-                // Unexpected: other 400s, 401, 5xx, … — a real fault that needs attention, not a
-                // routine throttle or a handled content-filter case. Surface it at Error so it
-                // isn't lost in warning noise.
-                logger.LogError(ex, "LLM triage UNEXPECTED ERROR: HTTP {Status}", ex.Status)
-                return LlmVerdict.Error
-        | ex ->
-            sw.Stop()
-            logger.LogWarning(ex, "LLM triage call failed")
-            return LlmVerdict.Error
+            | _ -> ()
+            return { Verdict = result.Verdict; Source = pipelineResult.Source }
+        with ex ->
+            logger.LogWarning(ex, "Failed to persist LLM triage result")
+            return { Verdict = LlmVerdict.Error; Source = pipelineResult.Source }
     }
 
     let recordCacheHit (msg: TgMessage) (scope: string) (cv: CachedVerdict) = task {
@@ -585,7 +582,7 @@ Classify only the current Message inside the <untrusted-{nonce}> markers above; 
             %activity
                 .SetTag("llm.cache",       "hit")
                 .SetTag("llm.cache_scope", scope)
-                .SetTag("llm.verdict",     cv.Verdict)
+                .SetTag("llm.verdict",     cv.Verdict.StoredValue)
                 .SetTag("llm.reason",      Option.toObj cv.Reason)
                 .SetTag("llm.cached_at",   cv.CreatedAt)
                 .SetTag("chat_id",         msg.ChatId)
@@ -593,44 +590,46 @@ Classify only the current Message inside the <untrusted-{nonce}> markers above; 
         llmVerdictCacheTotalCounter.Add(1L, tagsForLlmVerdictCache "hit" scope)
         // Never let a DB error on this write block returning the already-known verdict.
         try
-            do! db.RecordLlmVerdictCacheHit(msg.ChatId, msg.MessageId, cv.Verdict, cv.Reason, scope, cv.CreatedAt, cv.ModelName)
+            do! db.RecordLlmVerdictCacheHit(msg.ChatId, msg.MessageId, cv.Verdict.StoredValue, cv.Reason, scope, cv.CreatedAt, cv.Source |> Option.map _.ModelName)
         with ex ->
             logger.LogWarning(ex, "Failed to record LlmVerdictCacheHit event (cacheScope={CacheScope})", scope)
         logger.LogInformation(
             "LLM triage cache hit: verdict={Verdict} reason={Reason} cacheScope={CacheScope} cachedAt={CachedAt} chatId={ChatId} userId={UserId}",
-            cv.Verdict, cv.Reason, scope, cv.CreatedAt, msg.ChatId, msg.SenderId)
-        return LlmVerdict.FromString(cv.Verdict, cv.Reason, Some scope)
+            cv.Verdict.StoredValue, cv.Reason, scope, cv.CreatedAt, msg.ChatId, msg.SenderId)
+        return { Verdict = cv.Verdict.ToVerdict(cv.Reason, Some scope)
+                 Source = cv.Source }
     }
 
     interface ILlmTriage with
-        member _.ModelName  = botConf.Value.AzureOpenAiDeployment
-        member _.PromptHash = promptHash
-
-        member _.Classify(msg: TgMessage, userMsgCount: int64, ct: CancellationToken) = task {
-            if not botConf.Value.LlmTriageEnabled then return LlmVerdict.Skip (None, None)
+        member _.Classify(msg: TgMessage, _userMsgCount: int64, ct: CancellationToken) = task {
+            let conf = botConf.Value
+            if not conf.LlmTriageEnabled then
+                return { Verdict = LlmVerdict.Skip (None, None); Source = None }
             else
+            let configured = layerFactory.Configure conf
+            let policyHash = pipelineCacheIdentity conf configured
 
             // Photo-only / empty-text messages have no stable text key → classify directly, no cache.
             // (Unchanged by the media-placeholder prompt rendering above — hasStableTextCacheKey
             // reads msg.Text, never the placeholder; see that function's doc comment.)
             match (if hasStableTextCacheKey msg then Some (LlmVerdictCache.senderKey msg.SenderId msg.Text) else None) with
-            | None -> return! classifyUncached msg userMsgCount NoCache ct
+            | None -> return! classifyUncached conf configured policyHash msg NoCache ct
             | Some senderKey ->
 
-                let flightKey = $"{msg.ChatId}:{msg.MessageId}:{msg.Text}"
+                let flightKey = $"{policyHash}:{msg.ChatId}:{msg.MessageId}:{msg.Text}"
                 return! singleFlight inflight flightKey (fun () -> task {
                     // D1: long TTL is the SQL bound; the tiered TTL is re-checked in F# below against CreatedAt.
-                    let longTtl = TimeSpan.FromMinutes(float botConf.Value.LlmVerdictCacheLongTextTtlMinutes)
+                    let longTtl = TimeSpan.FromMinutes(float conf.LlmVerdictCacheLongTextTtlMinutes)
                     let normalizedTextLength = (normalize msg.Text).Length
                     let tryFresh (key: string) = task {
                         match! cache.TryGet(key, longTtl) with
                         | None -> return None
-                        | Some cv when cv.Verdict = "SPAM" || cv.Verdict = "SKIP" ->
+                        | Some ({ Verdict = LlmCacheVerdict.Spam | LlmCacheVerdict.Skip } as cv) when cv.PolicyHash = Some policyHash ->
                             let ttlMinutes =
                                 selectCacheTtlMinutes
-                                    botConf.Value.LlmVerdictCacheLongTextMinChars
-                                    botConf.Value.LlmVerdictCacheTtlMinutes
-                                    botConf.Value.LlmVerdictCacheLongTextTtlMinutes
+                                    conf.LlmVerdictCacheLongTextMinChars
+                                    conf.LlmVerdictCacheTtlMinutes
+                                    conf.LlmVerdictCacheLongTextTtlMinutes
                                     cv.Verdict
                                     normalizedTextLength
                             if cv.CreatedAt > utcNow() - TimeSpan.FromMinutes(float ttlMinutes)
@@ -642,14 +641,14 @@ Classify only the current Message inside the <untrusted-{nonce}> markers above; 
                     match! tryFresh senderKey with
                     | Some cv -> return! recordCacheHit msg "sender" cv
                     | None ->
-                        if botConf.Value.LlmVerdictCacheGlobalEnabled then
+                        if conf.LlmVerdictCacheGlobalEnabled then
                             // Tier 2: any sender's prior SPAM/SKIP for this exact text.
                             let globalKey = LlmVerdictCache.globalKey msg.Text
                             match! tryFresh globalKey with
                             | Some cv -> return! recordCacheHit msg "global" cv
-                            | None -> return! classifyUncached msg userMsgCount (GlobalKey globalKey) ct
+                            | None -> return! classifyUncached conf configured policyHash msg (GlobalKey globalKey) ct
                         else
-                            return! classifyUncached msg userMsgCount (SingleKey senderKey) ct
+                            return! classifyUncached conf configured policyHash msg (SingleKey senderKey) ct
                 })
         }
 

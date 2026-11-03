@@ -10,6 +10,7 @@
     <Compile Include="RichMessageText.fs" />
     <Compile Include="StickerOcr.fs" />
     <Compile Include="TgMessage.fs" />
+    <Compile Include="LlmLayerConfiguration.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="Metrics.fs" />
     <Compile Include="SpamTextCache.fs" />
@@ -22,6 +23,7 @@
     <Compile Include="ML.fs" />
     <Compile Include="ComputerVision.fs" />
     <Compile Include="ProfileFetcher.fs" />
+    <Compile Include="LlmTriagePipeline.fs" />
     <Compile Include="LlmTriage.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />

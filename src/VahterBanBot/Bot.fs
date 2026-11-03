@@ -467,8 +467,8 @@ type BotService(
         | Actor.User _ when not (String.IsNullOrEmpty msg.Text) ->
             let banSenderKey = LlmVerdictCache.senderKey msg.SenderId msg.Text
             let banGlobalKey = LlmVerdictCache.globalKey msg.Text
-            do! invalidateVerdictCache "manualBan-sender" (fun () -> verdictCache.Invalidate(banSenderKey, Some "NOT_SPAM"))
-            do! invalidateVerdictCache "manualBan-global" (fun () -> verdictCache.Invalidate(banGlobalKey, Some "SKIP"))
+            do! invalidateVerdictCache "manualBan-sender" (fun () -> verdictCache.Invalidate(banSenderKey, Some LlmCacheVerdict.NotSpam))
+            do! invalidateVerdictCache "manualBan-global" (fun () -> verdictCache.Invalidate(banGlobalKey, Some LlmCacheVerdict.Skip))
         | _ -> ()
 
         // delete message
@@ -1262,32 +1262,27 @@ type BotService(
                 return Some (AutoVerdict.Spam (float prediction.Score, Actor.ML, None, None))
             elif prediction.Score >= botConfig.Value.MlWarningThreshold then
                 use cts = new CancellationTokenSource(TimeSpan.FromSeconds 60.)
-                let! llmVerdict = llmTriage.Classify(msg, int64 usrMsgCount, cts.Token)
-                match llmVerdict with
-                | LlmVerdict.Kill (reason, cacheScope) ->
-                    let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
+                let! llmResult = llmTriage.Classify(msg, int64 usrMsgCount, cts.Token)
+                match llmResult.Verdict, llmResult.Source with
+                | LlmVerdict.Kill (reason, cacheScope), Some source ->
+                    let actor = Actor.LLM {| modelName = source.ModelName; promptHash = source.PromptHash |}
                     return Some (AutoVerdict.Spam (float prediction.Score, actor, reason, cacheScope))
-                | LlmVerdict.NotSpam (reason, _) ->
+                | LlmVerdict.NotSpam (reason, _), Some source ->
                     // A warning-band NOT_SPAM overrides the ML warning (the injection payoff path) — must stay visible in logs.
                     let msgLength = if isNull msg.Text then 0 else msg.Text.Length
                     logger.LogInformation(
                         "LLM triage NOT_SPAM in ML warning band — message passes (chat {ChatId}, user {UserId}, ML score {MlScore}, msg length {MsgLength}, reason {Reason})",
                         msg.ChatId, msg.SenderId, prediction.Score, msgLength, reason)
-                    return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}))
-                | LlmVerdict.ContentFiltered triggers when botConfig.Value.LlmContentFilterIsSpam ->
-                    // Azure's RAI policy rejected the prompt as severely harmful, on a message the
-                    // ML model already flagged as suspicious — treat it as a high-confidence SPAM
-                    // signal, but as the DISTINCT ContentFilterSpam case (not Spam) so every
-                    // human-facing rendering says "Azure content filter" + which category fired,
-                    // instead of looking like an ordinary LLM SPAM verdict. Escape hatch:
-                    // LLM_CONTENT_FILTER_IS_SPAM=false falls through to the Skip/Error/
-                    // ContentFiltered branch below instead.
-                    let actor = Actor.LLM {| modelName = llmTriage.ModelName; promptHash = llmTriage.PromptHash |}
+                    return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.LLM {| modelName = source.ModelName; promptHash = source.PromptHash |}))
+                | LlmVerdict.ContentFiltered triggers, Some source ->
+                    // The pipeline applies LLM_CONTENT_FILTER_IS_SPAM from its settings snapshot.
+                    let actor = Actor.LLM {| modelName = source.ModelName; promptHash = source.PromptHash |}
                     return Some (AutoVerdict.ContentFilterSpam (float prediction.Score, actor, triggers))
-                | LlmVerdict.Skip (reason, cacheScope) ->
-                    return Some (AutoVerdict.Uncertain (float prediction.Score, reason, cacheScope))
-                | LlmVerdict.Error | LlmVerdict.ContentFiltered _ ->
-                    return Some (AutoVerdict.Uncertain (float prediction.Score, None, None))
+                | LlmVerdict.Skip (reason, cacheScope), source ->
+                    return Some (AutoVerdict.Uncertain (float prediction.Score, source |> Option.map _.ModelName, reason, cacheScope))
+                | (LlmVerdict.Error | LlmVerdict.ContentFiltered _), _
+                | (LlmVerdict.Kill _ | LlmVerdict.NotSpam _), None ->
+                    return Some (AutoVerdict.Uncertain (float prediction.Score, None, None, None))
             else
                 return Some (AutoVerdict.NotSpam (float prediction.Score, Actor.ML))
     }
@@ -1549,13 +1544,13 @@ type BotService(
                             %mlActivity.SetTag("autoVerdict", "contentFilterSpam")
                             %mlActivity.SetTag("contentFilterTriggers", triggers)
                             do! enforceSpam actor (AutoDeleteReason.ContentFilterSpam {| score = score; triggers = triggers |})
-                        | Some (AutoVerdict.Uncertain (score, reason, cacheScope)) ->
+                        | Some (AutoVerdict.Uncertain (score, modelName, reason, cacheScope)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
                             %mlActivity.SetTag("autoVerdict", "uncertain")
                             let uncertainReason =
-                                match reason with
-                                | Some r -> LlmSpam {| score = score; modelName = llmTriage.ModelName; reason = Some r; cacheScope = cacheScope |}
-                                | None   -> MlSpam {| score = score |}
+                                match reason, modelName with
+                                | Some r, Some model -> LlmSpam {| score = score; modelName = model; reason = Some r; cacheScope = cacheScope |}
+                                | _ -> MlSpam {| score = score |}
                             do! this.ReportPotentialSpam(msg, uncertainReason)
                         | Some (AutoVerdict.NotSpam (score, _)) ->
                             %mlActivity.SetTag("spamScoreMl", score)
@@ -1897,8 +1892,8 @@ type BotService(
                 do! invalidateVerdictCache $"markSpam-admin (chat={chatId}, msg={messageId})" (fun () -> task {
                     match! db.TryGetMessageTextAndSender(chatId, messageId) with
                     | Some(text, senderId) ->
-                        do! verdictCache.Invalidate(LlmVerdictCache.senderKey senderId text, Some "NOT_SPAM")
-                        do! verdictCache.Invalidate(LlmVerdictCache.globalKey text, Some "SKIP")
+                        do! verdictCache.Invalidate(LlmVerdictCache.senderKey senderId text, Some LlmCacheVerdict.NotSpam)
+                        do! verdictCache.Invalidate(LlmVerdictCache.globalKey text, Some LlmCacheVerdict.Skip)
                     | None -> ()
                 })
 
@@ -2428,8 +2423,8 @@ type BotService(
         if not (String.IsNullOrEmpty tgMsg.Text) then
             let softSpamSenderKey = LlmVerdictCache.senderKey tgMsg.SenderId tgMsg.Text
             let softSpamGlobalKey = LlmVerdictCache.globalKey tgMsg.Text
-            do! invalidateVerdictCache "softSpam-sender" (fun () -> verdictCache.Invalidate(softSpamSenderKey, Some "NOT_SPAM"))
-            do! invalidateVerdictCache "softSpam-global" (fun () -> verdictCache.Invalidate(softSpamGlobalKey, Some "SKIP"))
+            do! invalidateVerdictCache "softSpam-sender" (fun () -> verdictCache.Invalidate(softSpamSenderKey, Some LlmCacheVerdict.NotSpam))
+            do! invalidateVerdictCache "softSpam-global" (fun () -> verdictCache.Invalidate(softSpamGlobalKey, Some LlmCacheVerdict.Skip))
 
         // 2.5. A vahter spam verdict on a (possibly protected) message revokes protection
         // immediately, even though this path doesn't ban — the vahter just judged the user

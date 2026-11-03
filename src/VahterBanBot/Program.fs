@@ -16,6 +16,8 @@ open VahterBanBot.OcrCache
 open VahterBanBot.LlmVerdictCache
 open VahterBanBot.SpamTextCache
 open VahterBanBot.LlmTriage
+open VahterBanBot.LlmTriagePipeline
+open VahterBanBot.LlmLayerConfiguration
 open VahterBanBot.ProfileFetcher
 open VahterBanBot.Telemetry
 open VahterBanBot.Types
@@ -45,19 +47,15 @@ let loadDbSettings () =
 
 let mutable dbSettings = loadDbSettings()
 
-let getSetting key =
-    let accessor = DbSettings.BotSettingsAccessor(dbSettings)
-    accessor.GetSetting key
-
 let getSettingOr key def =
     let accessor = DbSettings.BotSettingsAccessor(dbSettings)
     accessor.GetSettingOr(key, def)
 
-let getRequiredSetting key =
-    let accessor = DbSettings.BotSettingsAccessor(dbSettings)
-    accessor.GetRequiredSetting key
-
-let buildBotConf () =
+let buildBotConf settings =
+    let accessor = DbSettings.BotSettingsAccessor(settings)
+    let getSetting key = accessor.GetSetting key
+    let getSettingOr key def = accessor.GetSettingOr(key, def)
+    let getRequiredSetting key = accessor.GetRequiredSetting key
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getSettingOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
@@ -130,6 +128,10 @@ let buildBotConf () =
       RichMessageSpamDetectionEnabled = getSettingOr "RICH_MESSAGE_SPAM_DETECTION_ENABLED" "true" |> bool.Parse
       // LLM shadow triage
       LlmTriageEnabled      = getSettingOr "LLM_TRIAGE_ENABLED" "false" |> bool.Parse
+      LlmTriageLayers =
+          match getSetting "LLM_TRIAGE_LAYERS" with
+          | null -> LlmLayerOrder.Default
+          | json -> json |> fromJson<string list> |> LlmLayerOrder.Parse
       AzureOpenAiEndpoint   = getSettingOr "AZURE_OPENAI_ENDPOINT" ""
       AzureOpenAiKey        = getEnvOr "AZURE_OPENAI_KEY" ""
       AzureOpenAiDeployment = getSettingOr "AZURE_OPENAI_DEPLOYMENT" "gpt-4o-mini"
@@ -194,12 +196,13 @@ let ocrConfigOf (c: BotConfiguration) =
       AzureOcrEndpoint    = c.AzureOcrEndpoint
       AzureOcrKey         = c.AzureOcrKey }
 
-let botConfOptions = LiveOptions(buildBotConf())
+let botConfOptions = LiveOptions(buildBotConf dbSettings)
 let botOcrOptions  = LiveOptions(ocrConfigOf botConfOptions.Value)
 
 let reloadSettings () =
-    dbSettings <- loadDbSettings()
-    let fresh = buildBotConf()
+    let settings = loadDbSettings()
+    let fresh = buildBotConf settings
+    dbSettings <- settings
     botConfOptions.Set(fresh)
     botOcrOptions.Set(ocrConfigOf fresh)
 
@@ -268,10 +271,9 @@ WebhookHost.configureSharedServices webhookCfg builder
         sp.GetRequiredService<ILogger<AzureBotOcr>>(),
         null) :> IBotOcr)
 %builder.Services.AddSingleton<IComputerVision, BotOcrComputerVision>()
-// Both LLM classifiers talk to Azure OpenAI through the Azure.AI.OpenAI SDK, which carries its own
-// retry pipeline (honors Retry-After on 429) — see LlmTriage.fs. Singleton so the per-instance
-// single-flight/verdict-cache state and the memoized ChatClient are shared across requests.
-%builder.Services.AddSingleton<ILlmTriage, AzureLlmTriage>()
+%builder.Services.AddSingleton<AzureSol56Layer>()
+%builder.Services.AddSingleton<LlmLayerFactory>()
+%builder.Services.AddSingleton<ILlmTriage, LayeredLlmTriage>()
 %builder.Services.AddSingleton<IReactionTriageClassifier, AzureReactionTriage>()
 %builder.Services.AddSingleton<IUserProfileFetcher, UserProfileFetcher>()
 

@@ -196,7 +196,7 @@ type LlmTriageResilienceTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwa
         let text = "77"
         let cache = LlmVerdictCacheRepository(fixture.DbConnectionString) :> ILlmVerdictCache
         let key = if globalEntry then globalKey text else senderKey sender.Id text
-        do! cache.Save(key, "NOT_SPAM", Some "earlier clearance", None)
+        do! cache.Save(key, LlmCacheVerdict.NotSpam, Some "earlier clearance", None, "")
         let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = sender)
         let! _ = fixture.SendMessage msg
         let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value

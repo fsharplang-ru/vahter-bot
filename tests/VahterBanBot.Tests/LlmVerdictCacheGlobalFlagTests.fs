@@ -66,7 +66,7 @@ type LlmVerdictCacheGlobalFlagTests(fixture: LlmVerdictCacheGlobalDisabledTestCo
         let sender = Tg.user()
         let text = "77"
         let cache = LlmVerdictCacheRepository(fixture.DbConnectionString) :> ILlmVerdictCache
-        do! cache.Save(senderKey sender.Id text, "NOT_SPAM", None, None)
+        do! cache.Save(senderKey sender.Id text, LlmCacheVerdict.NotSpam, None, None, "")
         for chat in fixture.ChatsToMonitor |> List.take 2 do
             let msg = Tg.quickMsg(chat = chat, text = text, from = sender)
             let! _ = fixture.SendMessage msg
