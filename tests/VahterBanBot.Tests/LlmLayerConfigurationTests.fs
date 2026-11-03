@@ -33,6 +33,7 @@ type LlmLayerConfigurationTests(fixture: MlEnabledVahterTestContainers, _ml: MlA
     [<InlineData("[]")>]
     [<InlineData("null")>]
     [<InlineData("{\"layers\":[]}")>]
+    [<InlineData("[\"typesafe-jev-1.14.0\",\"typesafe-jev-1.14.0\"]")>]
     let ``invalid layer settings reject reload and preserve the active pipeline`` setting = task {
         do! reset ()
         let spam () = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = Tg.user(firstName = "kill layer-config"))
@@ -76,6 +77,20 @@ type LlmLayerConfigurationTests(fixture: MlEnabledVahterTestContainers, _ml: MlA
         Assert.Equal(Some "NOT_SPAM", verdict)
         let! calls = fixture.GetAzureLlmCalls()
         Assert.Equal(2, calls.Length)
+    }
+
+    [<Fact>]
+    let ``enabled Jev without credentials keeps serving through Sol`` () = task {
+        do! reset ()
+        do! change "LLM_TRIAGE_LAYERS" "[\"typesafe-jev-1.14.0\",\"azure-sol-5.6\"]"
+        let msg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = "77", from = Tg.user(firstName = "kill missing Jev key"))
+        let! _ = fixture.SendMessage msg
+        let! deleted = fixture.MessageIsAutoDeleted msg.Message.Value
+        Assert.True(deleted)
+        let! calls = fixture.GetAzureLlmCalls()
+        %Assert.Single(calls)
+        use! health = fixture.Http.GetAsync("/health")
+        Assert.True(health.IsSuccessStatusCode)
     }
 
     interface IAsyncDisposable with

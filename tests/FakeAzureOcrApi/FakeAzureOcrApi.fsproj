@@ -10,6 +10,7 @@
     <Compile Include="Embedding.fs" />
     <Compile Include="Store.fs" />
     <Compile Include="Handlers.fs" />
+    <Compile Include="Jev.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

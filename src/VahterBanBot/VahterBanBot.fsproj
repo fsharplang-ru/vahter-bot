@@ -24,6 +24,8 @@
     <Compile Include="ComputerVision.fs" />
     <Compile Include="ProfileFetcher.fs" />
     <Compile Include="LlmTriagePipeline.fs" />
+    <Compile Include="ModerationPolicy.fs" />
+    <Compile Include="JevTriage.fs" />
     <Compile Include="LlmTriage.fs" />
     <Compile Include="UpdateChatAdmins.fs" />
     <Compile Include="Bot.fs" />

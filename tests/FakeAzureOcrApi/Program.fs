@@ -65,5 +65,8 @@ app.MapDelete("/test/calls", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> 
 
 app.MapGet("/health", Func<string>(fun () -> "OK")) |> ignore
 
+app.MapPost("/v1/systemone", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> FakeAzureOcrApi.Jev.classify ctx)) |> ignore
+app.MapPost("/test/mock/jev-script", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> FakeAzureOcrApi.Jev.setScript ctx)) |> ignore
+
 app.Run()
 

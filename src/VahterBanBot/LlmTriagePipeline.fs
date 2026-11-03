@@ -33,6 +33,7 @@ type ConfiguredLlmLayer =
       Classify: LlmTriageContext * CancellationToken -> Task<LlmLayerResult> }
 
 type ILlmTriageLayer =
+    abstract member Id: LlmLayerId
     abstract member Configure: BotConfiguration -> ConfiguredLlmLayer
 
 type LlmTriageResult =

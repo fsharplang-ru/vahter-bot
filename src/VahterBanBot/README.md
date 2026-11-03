@@ -27,9 +27,25 @@ After changing the setting, call the authenticated `POST /reload-settings` endpo
 
 LLM triage runs the ordered layer IDs in `bot_setting.LLM_TRIAGE_LAYERS`, a non-empty JSON array defaulting to `["azure-sol-5.6"]`. `azure-sol-5.6` selects the Sol 5.6 provider and prompt, using the configured Azure endpoint, deployment alias and reasoning effort. `LLM_TRIAGE_ENABLED` controls eligibility; changes take effect through authenticated `POST /reload-settings`.
 
+`typesafe-jev-1.14.0` selects Typesafe Jev with the pinned `jev-1.14.0` model. Set `LLM_TRIAGE_LAYERS` to `["typesafe-jev-1.14.0","azure-sol-5.6"]` to enable Jev before Sol, or `["azure-sol-5.6"]` for Sol-only. `TYPESAFE_APIKEY` supplies the bearer token from the environment; a missing or blank key logs an error and skips Jev without stopping the bot.
+
+Jev uses the shared moderation policy and frozen context with first-pass instructions and both `verdict` and `review_focus` Choice questions. Only a normalized, valid SPAM or NOT_SPAM answer meeting all three gates is accepted; review focus never influences Sol. Telegram logs and cached verdicts identify the deciding model. Jev supplies the selected-class probability as its reason (for example, `SPAM probability: 0.900`).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `JEV_ENDPOINT` | `https://api.typesafe.ai/v1/systemone` | System One HTTP endpoint |
+| `JEV_TIMEOUT_MS` | `3000` | Per-request deadline, 1–30000 milliseconds |
+| `JEV_MIN_CONFIDENCE` | `0.50` | Minimum Choice confidence |
+| `JEV_MIN_PROBABILITY` | `0.75` | Minimum chosen-class probability |
+| `JEV_MIN_MARGIN` | `0.30` | Minimum lead over the next-highest class |
+
+These settings are DB-backed and hot-reloadable. Thresholds must be finite numbers from 0 to 1. Jev makes one attempt per message and honors HTTP 429 `Retry-After` with a provider cooldown; errors, timeouts and uncertain results advance to the next layer. Cache identity includes the prompt, endpoint, model, context format, layer order and gate settings.
+
 Each layer receives the same frozen evidence. SPAM or NOT_SPAM ends classification; SKIP, invalid output or service failure advances to the next layer. Exhaustion routes to human review. Azure content-filter handling follows `LLM_CONTENT_FILTER_IS_SPAM`. Unknown IDs and empty or duplicate orders fail settings loading before startup; rejected reloads retain the last valid configuration.
 
-Providers implement `ILlmTriageLayer`; versioned `LlmLayerId` cases resolve through an exhaustive factory. `LlmLayerOrder` preserves configured order and guarantees non-empty, unique, supported IDs. `Configure` binds a settings snapshot and supplies model/prompt metadata, a cache identity covering request and acceptance settings, and a classification function. Layers perform classification only; the pipeline owns final event recording and caching, and the bot owns moderation actions.
+Providers register as `ILlmTriageLayer` services and expose a typed `Id`; the factory receives their collection through DI and selects them in settings order. Duplicate registrations are rejected. `LlmLayerOrder` guarantees non-empty, unique, supported IDs. `Configure` binds a settings snapshot and supplies model/prompt metadata, a cache identity covering request and acceptance settings, and a classification function. Layers perform classification only; the pipeline owns final event recording and caching, and the bot owns moderation actions.
+
+Typesafe controls Jev releases and hosting. The request pins `jev-1.14.0`, following Typesafe's [version-pinning guidance](https://docs.typesafe.ai/models#aliases); moving aliases such as `jev-latest` are not used. A request failure or a different returned model ID logs an error and advances to the next layer. New releases require an explicit model-pin change and threshold evaluation. Version pinning does not guarantee indefinite upstream availability or let the bot detect changes served under the same model ID.
 
 SPAM/SKIP cache entries retain the deciding provider's metadata and match the ordered pipeline's configuration fingerprint. Layer order, model, prompt, reasoning effort or chat-policy changes require fresh classification. Cache scope, TTLs and human-correction invalidation use the existing text keys.
 

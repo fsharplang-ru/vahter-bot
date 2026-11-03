@@ -1064,6 +1064,12 @@ type MlPreloadedVahterTestContainers(extraEnvVars: (string * string) list, extra
 type MlEnabledVahterTestContainers() =
     inherit MlPreloadedVahterTestContainers([])
 
+type JevVahterTestContainers() =
+    inherit MlPreloadedVahterTestContainers(
+        ["TYPESAFE_APIKEY", "synthetic-jev-key"],
+        ["LLM_TRIAGE_LAYERS", "[\"typesafe-jev-1.14.0\",\"azure-sol-5.6\"]", "JSON_BLOB", "LLM"
+         "JEV_ENDPOINT", $"http://{VahterTestConfig.fakeAzureAlias}:8081/v1/systemone", "FREE_FORM", "LLM"])
+
 /// Runs cache tests with sender-scoped SPAM/SKIP caching.
 type LlmVerdictCacheGlobalDisabledTestContainers() =
     inherit MlPreloadedVahterTestContainers([], ["LLM_VERDICT_CACHE_GLOBAL_ENABLED", "false", "FEATURE_FLAG", "LLM"])

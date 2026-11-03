@@ -5,11 +5,13 @@ open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
 open Microsoft.Extensions.Logging.Abstractions
+open Microsoft.Extensions.DependencyInjection
 open BotInfra
 open BotInfra.JsonSetup
 open VahterBanBot.Utils
 open VahterBanBot.Types
 open VahterBanBot.LlmTriagePipeline
+open VahterBanBot.LlmTriage
 open VahterBanBot.LlmLayerConfiguration
 open VahterBanBot.LlmVerdictCache
 open Xunit
@@ -25,6 +27,28 @@ let private settings () =
     { fromJson<BotConfiguration> "{}" with
         LlmTriageLayers = LlmLayerOrder.Default
         LlmChatDescriptions = Dictionary<int64, string>() }
+
+[<Fact>]
+let ``interface DI providers follow settings order and leave disabled providers unconfigured`` () =
+    let configured = ResizeArray<LlmLayerId>()
+    let stub id =
+        { new ILlmTriageLayer with
+            member _.Id = id
+            member _.Configure(_) =
+                configured.Add id
+                { layer id.SettingValue (fun _ -> Task.FromResult(result LlmVerdict.Error)) with Id = id } }
+    let services = ServiceCollection()
+    %services.AddSingleton<ILlmTriageLayer>(stub LlmLayerId.TypesafeJev114)
+    %services.AddSingleton<ILlmTriageLayer>(stub LlmLayerId.AzureSol56)
+    %services.AddSingleton<LlmLayerFactory>()
+    use provider = services.BuildServiceProvider()
+    let factory = provider.GetRequiredService<LlmLayerFactory>()
+    for ids in [[LlmLayerId.AzureSol56]; [LlmLayerId.AzureSol56; LlmLayerId.TypesafeJev114]; [LlmLayerId.TypesafeJev114; LlmLayerId.AzureSol56]] do
+        configured.Clear()
+        let conf = { settings () with LlmTriageLayers = ids |> List.map _.SettingValue |> LlmLayerOrder.Parse }
+        let actual = factory.Configure conf
+        Assert.Equal<LlmLayerId list>(ids, actual |> List.map _.Id)
+        Assert.Equal<LlmLayerId list>(ids, List.ofSeq configured)
 
 [<Theory>]
 [<InlineData("SPAM")>]

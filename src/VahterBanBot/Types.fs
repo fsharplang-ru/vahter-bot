@@ -28,7 +28,7 @@ type Actor =
     | User of {| userId: int64; username: string option |}
     | Bot of {| botUserId: int64; botUsername: string |} option   // deterministic code decisions (heuristic rules, static logic)
     | ML    // ML model predictions (karma scoring, neural networks)
-    | LLM of {| modelName: string; promptHash: string |}  // external LLM hosted in Azure
+    | LLM of {| modelName: string; promptHash: string |}  // external LLM provider
     member this.DisplayName =
         match this with
         | User u       -> defaultArg u.username (string u.userId)
@@ -508,6 +508,8 @@ type BotConfiguration =
       // LLM shadow triage
       LlmTriageEnabled: bool
       LlmTriageLayers: LlmLayerOrder
+      Jev: JevConfiguration
+      TypesafeApiKey: string
       AzureOpenAiEndpoint: string
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string

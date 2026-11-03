@@ -31,6 +31,7 @@ type AlphabeticalTestCollectionOrderer() =
 [<assembly: AssemblyFixture(typeof<MlDisabledVahterTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<ReportCommandRegisteredTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<MlEnabledVahterTestContainers>)>]
+[<assembly: AssemblyFixture(typeof<JevVahterTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<MlTrainingFromScratchTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<LlmVerdictCacheGlobalDisabledTestContainers>)>]
 [<assembly: AssemblyFixture(typeof<LlmContentFilterDisabledTestContainers>)>]
