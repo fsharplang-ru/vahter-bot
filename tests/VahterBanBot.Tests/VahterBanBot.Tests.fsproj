@@ -28,6 +28,7 @@
         <Compile Include="ReportCommandRegistrationTests.fs" />
         <Compile Include="EventSerializationTests.fs" />
         <Compile Include="LlmTriageTests.fs" />
+        <Compile Include="LlmLayerConfigurationTests.fs" />
         <Compile Include="LlmTriageResilienceTests.fs" />
         <Compile Include="LlmVerdictCacheGlobalFlagTests.fs" />
         <Compile Include="LlmVerdictCacheTieredTtlTests.fs" />

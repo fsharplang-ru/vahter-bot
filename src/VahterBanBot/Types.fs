@@ -9,6 +9,7 @@ open System.Text.Json.Serialization
 open Dapper
 open Utils
 open BotInfra
+open VahterBanBot.LlmLayerConfiguration
 
 // ---------------------------------------------------------------------------
 // Event sourcing — typed event DUs
@@ -68,6 +69,10 @@ type LlmVerdict =
         | "NOT_SPAM" -> LlmVerdict.NotSpam (reason, cacheScope)
         | "SKIP"     -> LlmVerdict.Skip (reason, cacheScope)
         | _          -> LlmVerdict.Error
+
+type LlmTriageSource =
+    { ModelName: string
+      PromptHash: string }
 
 /// Verdict for the reaction-spam triage pipeline (separate from LlmVerdict because the
 /// reaction flow has 4 verdicts vs 3 — UNSURE explicitly routes to vahters with the
@@ -303,7 +308,7 @@ type AutoVerdict =
     | NotSpam of score: float * actor: Actor
     /// Uncertain — route to human triage channel. `reason` is the LLM's SKIP phrase, when any;
     /// `cacheScope` (D4) is Some "global"|"sender" when the verdict was cache-served.
-    | Uncertain of score: float * reason: string option * cacheScope: string option
+    | Uncertain of score: float * modelName: string option * reason: string option * cacheScope: string option
 
 type ModerationEvent =
     | VahterActed      of {| vahterId: int64; actionType: VahterAction; targetUserId: int64; chatId: int64; messageId: int64 |}
@@ -502,6 +507,7 @@ type BotConfiguration =
       RichMessageSpamDetectionEnabled: bool
       // LLM shadow triage
       LlmTriageEnabled: bool
+      LlmTriageLayers: LlmLayerOrder
       AzureOpenAiEndpoint: string
       AzureOpenAiKey: string
       AzureOpenAiDeployment: string
