@@ -739,6 +739,28 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.True msgBanned
     }
 
+    [<Theory>]
+    [<InlineData("2222222", null, "2222222", true)>]
+    [<InlineData("Ada", "Lovelace", "Ada Lovelace", false)>]
+    let ``Shared contact is moderated using its name and attributed to its sender`` (firstName: string, lastName: string, expectedName: string, shouldDelete: bool) = task {
+        let contact: Funogram.Telegram.Types.Contact =
+            { PhoneNumber = "+12025550123"
+              FirstName = firstName
+              LastName = Option.ofObj lastName
+              UserId = Some (Tg.user()).Id
+              Vcard = None }
+        let update = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null, contact = contact)
+        let! _ = fixture.SendMessage update
+
+        let msg = update.Message.Value
+        let! stored = fixture.TryGetDbMessage msg
+        Assert.True stored.IsSome
+        Assert.Equal(msg.From.Value.Id, stored.Value.user_id)
+        Assert.Equal($"Shared contact: {expectedName}", stored.Value.text)
+        let! deleted = fixture.MessageIsAutoDeleted msg
+        Assert.Equal(shouldDelete, deleted)
+    }
+
     [<Fact>]
     let ``Rich-only message with spam in table cell triggers auto-delete`` () = task {
         // Real-world shape: rich_message table, no text/caption at all —

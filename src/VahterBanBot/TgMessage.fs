@@ -9,7 +9,13 @@ open BotInfra
 /// The raw message is never mutated; enrichment text is kept separately.
 type TgMessage private (raw: Message, isEdit: bool) =
     let mutable prefixText: string = null
-    let mutable suffixText: string = null
+    let mutable suffixText: string =
+        match raw.Contact with
+        | Some contact ->
+            let lastName = defaultArg contact.LastName String.Empty
+            let name = $"{contact.FirstName} {lastName}".Trim()
+            if name.Length = 0 then null else $"Shared contact: {name}"
+        | None -> null
     let mutable ownPhotoOcrApplied: bool = false
     let mutable externalReplyPhotoOcrApplied: bool = false
     let mutable ownStickerOcrApplied: bool = false
