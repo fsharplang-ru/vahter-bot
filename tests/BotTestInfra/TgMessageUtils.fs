@@ -166,7 +166,7 @@ type Tg() =
 
     // ── Message factories (VahterBanBot-style) ───────────────────────────────
 
-    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo, ?replyMarkup: InlineKeyboardMarkup, ?sticker: Sticker, ?ephemeralMessageId: int64, ?richMessage: RichMessage, ?document: Document, ?replyToMessage: Message) =
+    static member quickMsg (?text: string, ?chat: Chat, ?from: User, ?date: DateTime, ?caption: string, ?editedText: string, ?entities: MessageEntity[], ?photos: PhotoSize[], ?isAutomaticForward: bool, ?senderChat: Chat, ?quote: TextQuote, ?externalReply: ExternalReplyInfo, ?replyMarkup: InlineKeyboardMarkup, ?sticker: Sticker, ?ephemeralMessageId: int64, ?richMessage: RichMessage, ?document: Document, ?replyToMessage: Message, ?contact: Contact) =
         let msgId = next()
         let msgChat = chat |> Option.defaultWith (fun () -> Tg.chat())
         let msgFrom = from |> Option.defaultWith (fun () -> Tg.user())
@@ -192,7 +192,8 @@ type Tg() =
                     ?ephemeralMessageId = ephemeralMessageId,
                     ?richMessage = richMessage,
                     ?document = document,
-                    ?replyToMessage = replyToMessage
+                    ?replyToMessage = replyToMessage,
+                    ?contact = contact
                 ),
             ?editedMessage =
                 (editedText
