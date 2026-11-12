@@ -22,7 +22,9 @@ type FileMock =
 [<CLIMutable>]
 type MethodErrorMock =
     { methodName: string
-      enabled: bool }
+      enabled: bool
+      errorCode: int
+      description: string }
 
 [<CLIMutable>]
 type MethodDelayMock =

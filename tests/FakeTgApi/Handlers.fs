@@ -99,8 +99,10 @@ module Handlers =
     let private handleSimpleOk ctx =
         respondJson ctx 200 (okResult "true")
 
-    let private handleSimulatedError ctx =
-        respondJson ctx 400 """{"ok":false,"error_code":400,"description":"Simulated error by test"}"""
+    let private handleSimulatedError ctx (error: MethodErrorMock) =
+        let code = if error.errorCode = 0 then 400 else error.errorCode
+        let description = if isNull error.description then "Simulated error by test" else error.description
+        respondJson ctx code (JsonSerializer.Serialize {| ok = false; error_code = code; description = description |})
 
     /// AlitaBot Slice 6: simulated "can't parse entities" 400 — used by
     /// `Store.rejectMdv2` to exercise `Mdv2Delivery`'s plain-text fallback.
@@ -257,11 +259,12 @@ module Handlers =
         let mdv2Rejected =
             (methodName = "sendMessage" || methodName = "editMessageText") && Store.rejectMdv2 && isMdv2Request body
 
+        let simulatedError = Store.methodErrors.TryGetValue methodName
         match methodName with
         | _ when mdv2Rejected ->
             do! handleMdv2RejectedError ctx
-        | m when Store.methodErrors.TryGetValue(m) |> fst ->
-            do! handleSimulatedError ctx
+        | _ when fst simulatedError ->
+            do! handleSimulatedError ctx (snd simulatedError)
         | "sendMessage"      -> do! handleSendMessage ctx body
         | "sendPhoto"        -> do! handleSendPhoto ctx body
         | "sendDocument"     -> do! handleSendMessage ctx body
@@ -391,7 +394,7 @@ module Handlers =
                 if Object.ReferenceEquals(payload, null) || String.IsNullOrWhiteSpace payload.methodName then
                     do! respondJson ctx 400 (okResult "false")
                 elif payload.enabled then
-                    Store.methodErrors[payload.methodName] <- true
+                    Store.methodErrors[payload.methodName] <- payload
                     do! respondJson ctx 200 (okResult "true")
                 else
                     Store.methodErrors.TryRemove(payload.methodName) |> ignore

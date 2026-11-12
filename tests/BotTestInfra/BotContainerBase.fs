@@ -302,9 +302,11 @@ type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
             return ()
         }
 
-    member _.SetMethodError(methodName: string, enabled: bool) =
+    member _.SetMethodError(methodName: string, enabled: bool, ?errorCode: int, ?description: string) =
         task {
-            let payload: MethodErrorMock = { methodName = methodName; enabled = enabled }
+            let payload: MethodErrorMock =
+                { methodName = methodName; enabled = enabled; errorCode = defaultArg errorCode 400
+                  description = defaultArg description "Simulated error by test" }
             let! resp = fakeTgHttp.PostAsJsonAsync("/test/mock/methodError", payload)
             resp.EnsureSuccessStatusCode() |> ignore
         }
