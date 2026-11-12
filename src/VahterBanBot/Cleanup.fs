@@ -20,6 +20,7 @@ type CleanupService(
     botConf: IOptions<BotConfiguration>,
     ml: MachineLearning,
     db: DbService,
+    joinDeletions: JoinDeletionQueue,
     quality: ModerationQualityHistory
 ) =
     let podId = getEnvOr "POD_NAME" Environment.MachineName
@@ -30,6 +31,7 @@ type CleanupService(
     /// Cleans up failed callback posts, old detected spam from channel,
     /// and orphaned callback streams in the event table.
     let runCleanup () = task {
+        do! joinDeletions.PruneFinished()
         let sb = StringBuilder()
 
         // Expire failed callback posts (no message posted, older than 5 minutes)

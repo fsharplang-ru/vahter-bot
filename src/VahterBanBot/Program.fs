@@ -255,6 +255,8 @@ WebhookHost.configureSharedServices webhookCfg builder
             sp.GetRequiredService<ILogger<SettingsListenerHostedService>>()))
     .AddSingleton<ILlmVerdictCache>(fun _ -> LlmVerdictCacheRepository(connString) :> ILlmVerdictCache)
     .AddSingleton<BotService>()
+    .AddSingleton<JoinDeletionQueue>(fun _ -> JoinDeletionQueue(connString))
+    .AddHostedService<JoinDeletionWorker>()
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
@@ -379,6 +381,23 @@ let parseQualityHistoryMode (ctx: HttpContext) =
                 return Results.BadRequest $"unknown scope '{other}' (expected: users)"
     }))
 
+let processUpdate (services: IServiceProvider) (logger: ILogger<Root>) (update: Funogram.Telegram.Types.Update) join = task {
+    match join with
+    | Some (message: Funogram.Telegram.Types.Message) ->
+        try
+            do! services.GetRequiredService<JoinDeletionQueue>().Enqueue(message.Chat.Id, message.MessageId)
+            return true
+        with ex ->
+            logger.LogError(ex, "Failed to queue join deletion for chat {ChatId}, message {MessageId}, update {UpdateId}",
+                            message.Chat.Id, message.MessageId, update.UpdateId)
+            return false
+    | None ->
+        let bot = services.GetRequiredService<BotService>()
+        use _ = services.GetRequiredService<DbService>().BeginEventScope()
+        do! bot.OnUpdate(update)
+        return true
+}
+
 // Main webhook endpoint with bot-specific update handling
 WebhookHost.mapWebhookEndpoints webhookCfg FunogramJson.parseUpdate (fun ctx rawBody update ->
     task {
@@ -391,16 +410,11 @@ WebhookHost.mapWebhookEndpoints webhookCfg FunogramJson.parseUpdate (fun ctx raw
         // TraceId enricher ties the line to this trace; error logs don't repeat the body.
         JsonLogging.withRawJsonProperty "RawUpdate" rawBody (fun () ->
             logger.LogInformation("Received Telegram update {UpdateId}", update.UpdateId))
+        let join = JoinDeletions.target botConfOptions.Value update
         try
-            let bot = ctx.RequestServices.GetRequiredService<BotService>()
-            // Request-scoped event-stream cache: collapses the repeated per-stream reads one update
-            // would otherwise issue (e.g. the user stream loaded 3× per message). Scoped to this
-            // handle and disposed below; concurrent updates are isolated via AsyncLocal.
-            let db = ctx.RequestServices.GetRequiredService<DbService>()
-            use _ = db.BeginEventScope()
-            do! bot.OnUpdate(update)
-            %topActivity.SetTag("update-error", false)
-            %topActivity.SetStatus(ActivityStatusCode.Ok)
+            let! processed = processUpdate ctx.RequestServices logger update join
+            %topActivity.SetTag("update-error", not processed)
+            %topActivity.SetStatus(if processed then ActivityStatusCode.Ok else ActivityStatusCode.Error)
         with e ->
             logger.LogError(e, "Unexpected error while processing update {UpdateId}", update.UpdateId)
             %topActivity.SetStatus(ActivityStatusCode.Error)
@@ -420,10 +434,9 @@ if botConfOptions.Value.UsePolling then
                 let! updates = tg.CallExn(Req.GetUpdates.Make(offset = offset, timeout = 30L))
                 for update in updates do
                     offset <- max offset (update.UpdateId + 1L)
-                    if update.Message |> Option.exists _.Text.IsSome then
-                        let bot = app.Services.GetRequiredService<BotService>()
-                        use _ = app.Services.GetRequiredService<DbService>().BeginEventScope()
-                        do! bot.OnUpdate(update)
+                    let join = JoinDeletions.target botConfOptions.Value update
+                    if join.IsSome || (update.Message |> Option.exists _.Text.IsSome) then
+                        do! processUpdate app.Services logger update join |> taskIgnore
             with e ->
                 // polling is dev-only; log and keep the loop alive
                 logger.LogWarning(e, "Polling getUpdates iteration failed")

@@ -21,6 +21,10 @@ To add a chat, a Telegram chat ID (negative number) and its username are require
 
 `DELETE_JOIN_MESSAGES_IN_CHATS` in `bot_setting` is a JSON array of monitored chat IDs, for example `[-1001234567890]`; its default `[]` disables deletion everywhere. Listed chats have all member join service messages deleted, including messages announcing multiple members. The bot needs permission to delete messages.
 
+Vahter tries to queue each eligible notice in PostgreSQL with a one-second timeout. If the enqueue fails, Vahter logs an error with the chat and message IDs and acknowledges the webhook so Telegram can deliver the next update.
+
+Each pod polls once per second while idle, claims up to four deletions, and checks again as soon as the batch finishes. Unfinished claims become available again after three minutes.
+
 After changing the setting, call the authenticated `POST /reload-settings` endpoint. Leave messages and ordinary messages retain their usual handling.
 
 ## Spam Detection

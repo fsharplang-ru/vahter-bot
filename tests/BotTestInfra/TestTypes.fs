@@ -32,7 +32,9 @@ type AzureResponseMock =
 [<CLIMutable>]
 type MethodErrorMock =
     { methodName: string
-      enabled: bool }
+      enabled: bool
+      errorCode: int
+      description: string }
 
 /// Mock payload for FakeTgApi /test/mock/methodDelay (per-method artificial
 /// delay). Used by concurrency-race tests to widen the window between

@@ -16,6 +16,7 @@
     <Compile Include="SpamTextCache.fs" />
     <Compile Include="Telemetry.fs" />
     <Compile Include="DB.fs" />
+    <Compile Include="JoinDeletions.fs" />
     <Compile Include="ModerationQuality.fs" />
     <Compile Include="ModerationQualityHistory.fs" />
     <Compile Include="OcrCache.fs" />

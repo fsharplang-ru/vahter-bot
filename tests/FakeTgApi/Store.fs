@@ -8,7 +8,7 @@ module Store =
     let calls = ConcurrentQueue<ApiCallLog>()
     let chatMemberStatus = ConcurrentDictionary<int64, string>()
     let files = ConcurrentDictionary<string, byte[]>()
-    let methodErrors = ConcurrentDictionary<string, bool>()
+    let methodErrors = ConcurrentDictionary<string, MethodErrorMock>()
 
     /// AlitaBot Slice 6: when true, sendMessage/editMessageText calls whose body carries
     /// `"parse_mode":"MarkdownV2"` get a simulated 400 instead of the normal ok response —
