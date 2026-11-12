@@ -604,9 +604,7 @@ type BotContainerBase(config: BotContainerConfig, ?instanceCount: int) =
                 resp.EnsureSuccessStatusCode() |> ignore
         }
 
-    /// Requires TEST_MODE=true on the bot. Clears TelegramMembershipService's
-    /// in-memory cache so a subsequent IsMember() re-checks live instead of
-    /// returning a stale cached verdict.
+    /// Clears shared membership results through the TEST_MODE endpoint.
     member _.InvalidateMembershipCache() =
         task {
             use content = new StringContent("", Encoding.UTF8, "application/json")
