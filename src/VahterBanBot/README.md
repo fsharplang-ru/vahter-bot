@@ -39,6 +39,21 @@ One replica reads IDs in pages of 100 between the first and last observed notice
 
 PostgreSQL checkpoints each verified page. A failed page retries after a minute up to three failures, logged at Error. MTProto flood waits pause both replicas and preserve the retry budget. Checks expire after 47 hours.
 
+#### Measuring a history sweep
+
+In Tempo, search for `{ name = "joinHistory.page" }`. Each page attempt carries the chat, UTC bucket minute, cursor, requested ID count, queued notice count and checkpoint outcome. Child spans time the initial read, delete and verification; cold reads include nested login and username resolution. Errors carry the exception type and numeric Telegram RPC code when available.
+
+| Question | OpenTelemetry instrument |
+|---|---|
+| How long after the bucket is due does the first page start? | `vahter_join_history_start_delay` |
+| How long from the end of the Telegram minute until the bucket is fully checked? | `vahter_join_history_completion_age` |
+| Which step takes time or fails? | `vahter_join_history_operation_duration` by `operation` and `outcome` |
+| How many scanned IDs yield a surviving join and a verified deletion? | `vahter_join_history_ids_total` by `stage` (`scanned`, `found`, `delete_accepted`, `verified`) |
+| How old are the notices when removal is verified? | `vahter_join_history_verified_age` |
+| Are pages advancing, retrying or exhausting attempts? | `vahter_join_history_pages_total` by `outcome`, and `vahter_join_history_flood_wait` for the requested cooldown |
+
+Histograms use seconds. ID counters count observations across attempts, so retries can count an ID again. In Loki, group start, completion and error records by `ChatId` and `BucketMinute`. Verified deletion records include `MessageIds` to correlate with Bot API receipts. A completed bucket can reopen on a late webhook. These measurements cover the delayed sweep; earlier MTProto visibility requires a live observation.
+
 ## Spam Detection
 
 LLM triage runs the ordered layer IDs in `bot_setting.LLM_TRIAGE_LAYERS`, a non-empty JSON array defaulting to `["azure-sol-5.6"]`. `azure-sol-5.6` selects the Sol 5.6 provider and prompt, using the configured Azure endpoint, deployment alias and reasoning effort. `LLM_TRIAGE_ENABLED` controls eligibility; changes take effect through authenticated `POST /reload-settings`.
