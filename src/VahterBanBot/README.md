@@ -31,6 +31,14 @@ Bulk success records `JoinNotificationBulkDeleteAccepted` per ID because Telegra
 
 After changing the setting, call the authenticated `POST /reload-settings` endpoint. Leave messages and ordinary messages retain their usual handling.
 
+### Delayed join-history checks
+
+With `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in the pod environment, Vahter uses its bot token for an in-memory MTProto session. Enrolled supergroups with a resolvable Telegram username trigger a history check when at least 32 distinct join notices were queued for one Telegram UTC minute and arrivals for that bucket have been quiet for two minutes.
+
+One replica reads IDs in pages of 100 between the first and last observed notice, with 100 IDs of padding on each side. It deletes only join service actions in that supergroup and minute, then requires an explicit empty history result for every deleted ID. Gaps without a qualifying observed minute or outside the padded range are outside the scan.
+
+PostgreSQL checkpoints each verified page. A failed page retries after a minute up to three failures, logged at Error. MTProto flood waits pause both replicas and preserve the retry budget. Checks expire after 47 hours.
+
 ## Spam Detection
 
 LLM triage runs the ordered layer IDs in `bot_setting.LLM_TRIAGE_LAYERS`, a non-empty JSON array defaulting to `["azure-sol-5.6"]`. `azure-sol-5.6` selects the Sol 5.6 provider and prompt, using the configured Azure endpoint, deployment alias and reasoning effort. `LLM_TRIAGE_ENABLED` controls eligibility; changes take effect through authenticated `POST /reload-settings`.

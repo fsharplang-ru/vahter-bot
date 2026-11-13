@@ -14,6 +14,7 @@
         <Compile Include="BaseTests.fs" />
         <Compile Include="MessageTests.fs" />
         <Compile Include="JoinMessageTests.fs" />
+        <Compile Include="JoinHistoryTests.fs" />
         <Compile Include="EntitiesScanTests.fs" />
         <Compile Include="MLBanTests.fs" />
         <Compile Include="MLScoreDeterminismTests.fs" />
