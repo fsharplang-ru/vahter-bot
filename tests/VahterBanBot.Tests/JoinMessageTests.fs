@@ -180,10 +180,110 @@ type JoinMessageTests(fixture: MlDisabledVahterTestContainers) =
         Assert.False(queued)
     }
 
+    // A shared flood wait holds claims while both chats receive their webhooks.
+    let enqueueBurst (updates: Funogram.Telegram.Types.Update[]) = task {
+        use conn = new NpgsqlConnection(fixture.DbConnectionString)
+        do! conn.OpenAsync()
+        let key = {| chat = updates[0].Message.Value.Chat.Id; id = -updates[0].Message.Value.MessageId |}
+        let! _ = conn.ExecuteAsync(
+            """INSERT INTO join_deletion_queue (chat_id, message_id, flood_until, available_at)
+               VALUES (@chat, @id, now() + interval '1 minute', now() + interval '1 minute')""", key)
+        let release () = task {
+            let! _ = conn.ExecuteAsync("DELETE FROM join_deletion_queue WHERE chat_id=@chat AND message_id=@id",
+                                       key)
+            ()
+        }
+        use cleanup = { new IAsyncDisposable with member _.DisposeAsync() = ValueTask(release()) }
+        for update in updates do
+            use! resp = fixture.SendMessage update
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
+    }
+
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    let ``Same-chat groups above the live threshold use bulk and isolate rejected IDs`` rejectBulk = task {
+        let chat = fixture.ChatsToMonitor[0]
+        let other = fixture.ChatsToMonitor[1]
+        do! fixture.SetBotSetting("DELETE_JOIN_MESSAGES_IN_CHATS", JsonSerializer.Serialize [|chat.Id; other.Id|])
+        do! fixture.SetBotSetting("JOIN_DELETE_MAX_CLAIM", "5")
+        do! fixture.SetBotSetting("JOIN_DELETE_BULK_THRESHOLD", "3")
+        do! fixture.ReloadSettings()
+        do! fixture.SetMethodError("deleteMessages", rejectBulk)
+        let updates = Array.append (Array.init 5 (fun _ -> joinMessage chat 1)) (Array.init 3 (fun _ -> joinMessage other 1))
+        let messages = updates |> Array.map (fun u -> u.Message.Value)
+        let streams = messages |> Array.map (fun m -> $"join-notification:{m.Chat.Id}:{m.MessageId}")
+        do! enqueueBurst updates
+        use conn = new NpgsqlConnection(fixture.DbConnectionString)
+        do! waitFor (fun () -> task {
+            let! count = conn.ExecuteScalarAsync<int>("SELECT count(*) FROM event WHERE stream_id=ANY(@streams)", {| streams = streams |})
+            return count = messages.Length
+        })
+        let! calls = fixture.GetFakeCalls "deleteMessages"
+        let ids = messages |> Array.take 5 |> Array.map _.MessageId |> Array.sort
+        let matching =
+            calls |> Array.choose (fun call ->
+                use body = JsonDocument.Parse call.Body
+                let root = body.RootElement
+                let sent = root.GetProperty("message_ids").EnumerateArray() |> Seq.map _.GetInt64() |> Seq.sort |> Seq.toArray
+                if sent |> Array.exists (fun id -> messages |> Array.exists (fun m -> m.MessageId = id)) then
+                    Assert.Equal(chat.Id, root.GetProperty("chat_id").GetInt64())
+                    Some sent
+                else None)
+        Assert.Equal(1, matching.Length)
+        Assert.Equal<int64>(ids, matching[0])
+        for m in messages do
+            let! confirmed = deletedJoinCount m
+            let! singles = matchingCalls m
+            let expected = if rejectBulk || m.Chat.Id = other.Id then 1 else 0
+            Assert.Equal(expected, confirmed)
+            Assert.Equal(expected, singles.Length)
+        let! bulkEvents = conn.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM event WHERE stream_id=ANY(@streams) AND event_type='JoinNotificationBulkDeleteAccepted'", {| streams = streams |})
+        Assert.Equal((if rejectBulk then 0 else 5), bulkEvents)
+    }
+
+    [<Fact>]
+    let ``Other slots grow to the reloaded cap while a single delete is still running`` () = task {
+        let chat = fixture.ChatsToMonitor[0]
+        do! fixture.SetBotSetting("DELETE_JOIN_MESSAGES_IN_CHATS", JsonSerializer.Serialize [|chat.Id|])
+        do! fixture.SetBotSetting("JOIN_DELETE_MAX_CLAIM", "25")
+        do! fixture.ReloadSettings()
+        do! fixture.SetFakeTgMethodDelay("deleteMessage", 8000)
+        let slow = joinMessage chat 1
+        use! response = fixture.SendMessage slow
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        do! waitFor (fun () -> task {
+            let! calls = matchingCalls slow.Message.Value
+            return calls.Length = 1
+        })
+        do! fixture.SetFakeTgMethodDelay("deleteMessage", 0)
+        let burst = Array.init 200 (fun _ -> joinMessage chat 1)
+        do! enqueueBurst burst
+        let messages = burst |> Array.map (fun u -> u.Message.Value.MessageId) |> Set.ofArray
+        do! waitFor (fun () -> task {
+            let! calls = fixture.GetFakeCalls "deleteMessages"
+            let sizes =
+                calls |> Array.choose (fun call ->
+                    use body = JsonDocument.Parse call.Body
+                    let ids = body.RootElement.GetProperty("message_ids").EnumerateArray() |> Seq.map _.GetInt64() |> Seq.toArray
+                    if messages.Contains(ids[0]) then Some ids.Length else None)
+            Assert.All(sizes, fun size -> Assert.InRange(size, 3, 25))
+            return Array.contains 25 sizes
+        })
+        let! confirmed = deletedJoinCount slow.Message.Value
+        Assert.Equal(0, confirmed)
+        do! waitForDeletion slow.Message.Value
+    }
+
     interface IAsyncDisposable with
         member _.DisposeAsync() =
             ValueTask(task {
+                do! fixture.SetFakeTgMethodDelay("deleteMessage", 0)
+                do! fixture.SetMethodError("deleteMessages", false)
                 do! fixture.SetMethodError("deleteMessage", false)
+                do! fixture.SetBotSetting("JOIN_DELETE_MAX_CLAIM", "100")
+                do! fixture.SetBotSetting("JOIN_DELETE_BULK_THRESHOLD", "2")
                 do! fixture.SetBotSetting("DELETE_JOIN_MESSAGES_IN_CHATS", "[]")
                 do! fixture.ReloadSettings()
             })

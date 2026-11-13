@@ -374,6 +374,7 @@ type Callback =
 
 type JoinNotificationEvent =
     | JoinNotificationDeleted of {| chatId: int64; messageId: int64 |}
+    | JoinNotificationBulkDeleteAccepted of {| chatId: int64; messageId: int64 |}
 
 type DetectionEvent =
     | MlSkippedMessage             of {| chatId: int64; messageId: int64; reason: string |}
@@ -438,6 +439,8 @@ type BotConfiguration =
       DetectedSpamCleanupAge: TimeSpan
       ChatsToMonitor: Dictionary<string, int64>
       DeleteJoinMessagesInChats: int64[]
+      JoinDeleteBulkThreshold: int
+      JoinDeleteMaxClaim: int
       AllowedUsers: Dictionary<string, int64>
       IgnoreSideEffects: bool
       UsePolling: bool
