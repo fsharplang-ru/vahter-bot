@@ -263,6 +263,8 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<BotService>()
     .AddSingleton<JoinDeletionQueue>(fun _ -> JoinDeletionQueue(connString))
     .AddHostedService<JoinDeletionWorker>()
+    .AddHostedService<JoinHistoryWorker>(fun sp ->
+        new JoinHistoryWorker(connString, botConfOptions, sp.GetRequiredService<ITelegramApi>(), sp.GetRequiredService<ILogger<JoinHistoryWorker>>()))
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
@@ -391,7 +393,7 @@ let processUpdate (services: IServiceProvider) (logger: ILogger<Root>) (update: 
     match join with
     | Some (message: Funogram.Telegram.Types.Message) ->
         try
-            do! services.GetRequiredService<JoinDeletionQueue>().Enqueue(message.Chat.Id, message.MessageId)
+            do! services.GetRequiredService<JoinDeletionQueue>().Enqueue(message.Chat.Id, message.MessageId, message.Date)
             return true
         with ex ->
             logger.LogError(ex, "Failed to queue join deletion for chat {ChatId}, message {MessageId}, update {UpdateId}",

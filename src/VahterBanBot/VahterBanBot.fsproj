@@ -17,6 +17,7 @@
     <Compile Include="Telemetry.fs" />
     <Compile Include="DB.fs" />
     <Compile Include="JoinDeletions.fs" />
+    <Compile Include="JoinHistory.fs" />
     <Compile Include="ModerationQuality.fs" />
     <Compile Include="ModerationQualityHistory.fs" />
     <Compile Include="OcrCache.fs" />
@@ -41,6 +42,7 @@
     <PackageReference Include="Dapper.FSharp" />
     <PackageReference Include="FSharp.SystemTextJson" />
     <PackageReference Include="Microsoft.ML" />
+    <PackageReference Include="WTelegramClient" />
   </ItemGroup>
 
   <ItemGroup>

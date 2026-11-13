@@ -38,15 +38,25 @@ type JoinDeletionJob =
       candidate_count: int }
 
 type JoinDeletionQueue(connString: string) =
-    member _.Enqueue(chatId: int64, messageId: int64) = task {
+    member _.Enqueue(chatId: int64, messageId: int64, sentAt: DateTime) = task {
         use conn = new NpgsqlConnection(connString)
         use timeout = new CancellationTokenSource(TimeSpan.FromSeconds 1.)
         let! _ = conn.ExecuteAsync(CommandDefinition(
-            """INSERT INTO join_deletion_queue (chat_id, message_id)
-               SELECT @chatId, @messageId WHERE NOT EXISTS
-                   (SELECT 1 FROM event WHERE stream_id = @stream AND event_type IN ('JoinNotificationDeleted', 'JoinNotificationBulkDeleteAccepted'))
-               ON CONFLICT DO NOTHING""",
-            {| chatId = chatId; messageId = messageId; stream = $"join-notification:{chatId}:{messageId}" |},
+            """WITH inserted AS (
+                   INSERT INTO join_deletion_queue (chat_id, message_id)
+                   SELECT @chatId, @messageId WHERE NOT EXISTS
+                       (SELECT 1 FROM event WHERE stream_id = @stream AND event_type IN ('JoinNotificationDeleted', 'JoinNotificationBulkDeleteAccepted'))
+                   ON CONFLICT DO NOTHING RETURNING chat_id, message_id
+               )
+               INSERT INTO join_history_check AS h (chat_id, minute, notices, first_id, last_id, next_id, due_at)
+               SELECT chat_id, date_trunc('minute', @sentAt::timestamptz), 1, message_id, message_id,
+                      greatest(1, message_id - 100), now() + interval '2 minutes'
+               FROM inserted WHERE chat_id < -1000000000000 AND message_id BETWEEN 1 AND 2147483647
+               ON CONFLICT (chat_id, minute) DO UPDATE SET
+                   notices = h.notices + 1, first_id = least(h.first_id, excluded.first_id),
+                   last_id = greatest(h.last_id, excluded.last_id), next_id = least(h.next_id, excluded.next_id),
+                   due_at = excluded.due_at, failures = 0""",
+            {| chatId = chatId; messageId = messageId; sentAt = sentAt.ToUniversalTime(); stream = $"join-notification:{chatId}:{messageId}" |},
             cancellationToken = timeout.Token))
         ()
     }
@@ -54,7 +64,8 @@ type JoinDeletionQueue(connString: string) =
     member _.PruneFinished() = task {
         use conn = new NpgsqlConnection(connString)
         let! _ = conn.ExecuteAsync(
-            """DELETE FROM join_deletion_queue WHERE available_at IS NULL AND enqueued_at < now() - interval '2 days'""")
+            """DELETE FROM join_deletion_queue WHERE available_at IS NULL AND enqueued_at < now() - interval '2 days';
+               DELETE FROM join_history_check WHERE minute < now() - interval '2 days'""")
         ()
     }
 
