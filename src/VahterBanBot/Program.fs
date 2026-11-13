@@ -56,6 +56,10 @@ let buildBotConf settings =
     let getSetting key = accessor.GetSetting key
     let getSettingOr key def = accessor.GetSettingOr(key, def)
     let getRequiredSetting key = accessor.GetRequiredSetting key
+    let joinLimit key fallback =
+        match Int32.TryParse(getSettingOr key fallback) with
+        | true, value when value >= 1 && value <= 100 -> value
+        | _ -> invalidArg key "Expected an integer from 1 to 100"
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getSettingOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
@@ -69,6 +73,8 @@ let buildBotConf settings =
       DetectedSpamCleanupAge = getSettingOr "DETECTED_SPAM_CLEANUP_AGE_HOURS" "24" |> int |> TimeSpan.FromHours
       ChatsToMonitor = getRequiredSetting "CHATS_TO_MONITOR" |> fromJson
       DeleteJoinMessagesInChats = getSettingOr "DELETE_JOIN_MESSAGES_IN_CHATS" "[]" |> fromJson
+      JoinDeleteBulkThreshold = joinLimit "JOIN_DELETE_BULK_THRESHOLD" "2"
+      JoinDeleteMaxClaim = joinLimit "JOIN_DELETE_MAX_CLAIM" "100"
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse
