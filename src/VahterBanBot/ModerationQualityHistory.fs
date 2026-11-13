@@ -6,6 +6,7 @@ open System.Diagnostics
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Logging.Abstractions
 open System.Threading
+open System.Threading.Tasks
 open BotInfra
 open Dapper
 open Npgsql
@@ -122,9 +123,7 @@ type ModerationQualityHistory(connectionString: string, clock: TimeProvider, ?lo
 
     member _.Run(mode: QualityHistoryMode, ct: CancellationToken) = task {
         let elapsed = Stopwatch.StartNew()
-        let connection = NpgsqlConnectionStringBuilder(connectionString)
-        connection.Pooling <- false
-        use conn = new NpgsqlConnection(connection.ConnectionString)
+        use conn = new NpgsqlConnection(connectionString)
         do! conn.OpenAsync ct
         let today = clock.GetUtcNow().UtcDateTime.Date
         let cutoff = today.AddDays -14.0
@@ -134,6 +133,8 @@ type ModerationQualityHistory(connectionString: string, clock: TimeProvider, ?lo
         | _ -> ()
         let! acquired = conn.QuerySingleAsync<bool>("SELECT pg_try_advisory_lock(734829105)")
         if not acquired then invalidOp "A quality history job is already running"
+        use unlock = { new IAsyncDisposable with
+                           member _.DisposeAsync() = ValueTask(conn.ExecuteAsync("SELECT pg_advisory_unlock(734829105)")) }
         let! days = task {
             match mode with
             | QualityHistoryMode.Rebuild day -> return [day]

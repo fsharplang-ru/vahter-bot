@@ -199,6 +199,52 @@ type JoinMessageTests(fixture: MlDisabledVahterTestContainers) =
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode)
     }
 
+    [<Fact>]
+    let ``One idle claim feeds four slow deletions without leasing a fifth job`` () = task {
+        use admin = new NpgsqlConnection(fixture.AdminDbConnectionString)
+        do! admin.OpenAsync()
+        use! tx = admin.BeginTransactionAsync()
+        let! _ = admin.ExecuteAsync("LOCK TABLE join_deletion_queue IN ACCESS EXCLUSIVE MODE", transaction = tx)
+        use observer = new NpgsqlConnection(fixture.DbConnectionString)
+        let blockedClaims () =
+            observer.ExecuteScalarAsync<int>(
+                """SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'
+                   AND datname=current_database() AND usename=current_user
+                   AND @blocker = ANY(pg_blocking_pids(pid)) AND query LIKE 'WITH head AS (%'""",
+                {| blocker = admin.ProcessID |})
+        do! waitFor (fun () -> task {
+            let! count = blockedClaims()
+            return count > 0
+        })
+        do! Task.Delay 1200
+        let! blocked = blockedClaims()
+        Assert.Equal(1, blocked)
+        do! tx.CommitAsync()
+
+        let chat = fixture.ChatsToMonitor[0]
+        do! fixture.SetBotSetting("DELETE_JOIN_MESSAGES_IN_CHATS", JsonSerializer.Serialize [|chat.Id|])
+        do! fixture.SetBotSetting("JOIN_DELETE_MAX_CLAIM", "1")
+        do! fixture.ReloadSettings()
+        do! fixture.SetFakeTgMethodDelay("deleteMessage", 5000)
+        let updates = Array.init 5 (fun _ -> joinMessage chat 1)
+        let ids = updates |> Array.map (fun u -> u.Message.Value.MessageId)
+        do! enqueueBurst updates
+        let countClaims () =
+            admin.ExecuteScalarAsync<int>(
+                "SELECT count(*) FROM join_deletion_queue WHERE chat_id=@chat AND message_id=ANY(@ids) AND attempt>0",
+                {| chat = chat.Id; ids = ids |})
+        do! waitFor (fun () -> task {
+            let! calls = fixture.GetFakeCalls "deleteMessage"
+            let started = calls |> Array.filter (fun call ->
+                use body = JsonDocument.Parse call.Body
+                Array.contains (body.RootElement.GetProperty("message_id").GetInt64()) ids)
+            return started.Length >= 4
+        })
+        let! claimed = countClaims()
+        Assert.Equal(4, claimed)
+        for update in updates do do! waitForDeletion update.Message.Value
+    }
+
     [<Theory>]
     [<InlineData(false)>]
     [<InlineData(true)>]

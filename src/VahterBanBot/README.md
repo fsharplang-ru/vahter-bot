@@ -23,9 +23,9 @@ To add a chat, a Telegram chat ID (negative number) and its username are require
 
 Vahter tries to queue each eligible notice in PostgreSQL with a one-second timeout. If the enqueue fails, Vahter logs an error with the chat and message IDs and acknowledges the webhook so Telegram can deliver the next update.
 
-Each pod runs four independent deletion slots. A slot starts by looking for up to 16 ready jobs in one chat. A full result doubles the next limit up to `JOIN_DELETE_MAX_CLAIM` (default 100) and triggers an immediate poll after the request finishes. At least half full waits 500 ms. Below half waits one second and halves the limit toward 16, bounded by the configured cap.
+One poller per pod claims work only when one of four deletion slots is waiting on its zero-capacity channel. It starts by looking for up to 16 ready jobs in one chat. A full result doubles the next limit up to `JOIN_DELETE_MAX_CLAIM` (default 100) and triggers an immediate poll when a slot is free. At least half full waits 500 ms. Below half waits one second and halves the limit toward 16, bounded by the configured cap.
 
-Above `JOIN_DELETE_BULK_THRESHOLD` (default 2), a slot sends one `deleteMessages` request with the available IDs. At or below the threshold it takes one ID for `deleteMessage`, leaving the others for free slots. Both settings accept 1–100 and reload with `POST /reload-settings`. Telegram accepts up to 100 IDs per call.
+Above `JOIN_DELETE_BULK_THRESHOLD` (default 2), a slot sends one `deleteMessages` request with the available IDs. At or below the threshold it takes one ID for `deleteMessage`, and immediately hands further known-ready jobs to free slots. Both settings accept 1–100 and reload with `POST /reload-settings`. Telegram accepts up to 100 IDs per call.
 
 Bulk success records `JoinNotificationBulkDeleteAccepted` per ID because Telegram skips absent messages. Single-message success records `JoinNotificationDeleted`. A rejected bulk request with HTTP 400 returns its IDs to individual processing. Flood waits are shared across pods and abandoned claims expire after three minutes.
 
@@ -92,6 +92,8 @@ Container images pin architecture-specific .NET base images (`arm64v8`) for repr
 - **Deploy**: push to `main` triggers CI/CD via GitHub Actions → GHCR → ArgoCD
 
 ## Database
+
+The startup setting `DB_MAX_POOL_SIZE` defaults to three connections per Vahter process. `DATABASE_URL` supplies an additional upper bound. Two replicas can use six connections, and four overlapping processes can use twelve. The settings listener, workers and webhook requests share the pool. Changes apply on the next process start.
 
 - **Database**: `vahter_db_v2`
 - **Migrations**: `src/vahter-bot/migrations/` (Flyway)

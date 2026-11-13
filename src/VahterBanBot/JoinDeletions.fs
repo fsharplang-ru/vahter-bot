@@ -4,6 +4,7 @@ open System
 open System.Text.Json
 open System.Text.RegularExpressions
 open System.Threading
+open System.Threading.Channels
 open System.Threading.Tasks
 open BotInfra
 open Dapper
@@ -69,9 +70,9 @@ type JoinDeletionQueue(connString: string) =
         ()
     }
 
-    member _.Claim(limit: int, threshold: int) = task {
+    member _.Claim(limit: int, threshold: int, ct: CancellationToken) = task {
         use conn = new NpgsqlConnection(connString)
-        let! jobs = conn.QueryAsync<JoinDeletionJob>(
+        let! jobs = conn.QueryAsync<JoinDeletionJob>(CommandDefinition(
             """WITH head AS (
                    SELECT chat_id, single_only FROM join_deletion_queue
                    WHERE available_at <= now() AND NOT EXISTS
@@ -91,7 +92,8 @@ type JoinDeletionQueue(connString: string) =
                )
                UPDATE join_deletion_queue q SET available_at = now() + interval '3 minutes', attempt = q.attempt + 1
                FROM claimed c WHERE q.chat_id = c.chat_id AND q.message_id = c.message_id
-               RETURNING q.chat_id, q.message_id, q.attempt, (SELECT count(*)::int FROM candidates) AS candidate_count""", {| limit = limit; threshold = threshold |})
+               RETURNING q.chat_id, q.message_id, q.attempt, (SELECT count(*)::int FROM candidates) AS candidate_count""",
+            {| limit = limit; threshold = threshold |}, cancellationToken = ct))
         return Seq.toArray jobs
     }
 
@@ -170,24 +172,47 @@ type JoinDeletionWorker(queue: JoinDeletionQueue, tg: ITelegramApi, options: IOp
             do! queue.Retry(jobs, delay, flood, false)
     }
 
-    let runSlot (ct: CancellationToken) = task {
+    let poll (writer: ChannelWriter<JoinDeletionJob[]>) (ct: CancellationToken) = task {
         let mutable limit = JoinDeletions.initialClaim
-        while not ct.IsCancellationRequested do
-            try
-                let config = options.Value
-                let requested = min limit config.JoinDeleteMaxClaim
-                let! jobs = queue.Claim(requested, config.JoinDeleteBulkThreshold)
-                let found = if jobs.Length = 0 then 0 else jobs[0].candidate_count
-                let next, delay = JoinDeletions.nextPoll requested found config.JoinDeleteMaxClaim
-                limit <- next
-                if jobs.Length > 0 then do! delete jobs
-                if delay > 0 then do! Task.Delay(delay, ct)
-            with
-            | :? OperationCanceledException when ct.IsCancellationRequested -> ()
-            | ex ->
-                logger.LogError(ex, "Join deletion slot failed")
-                do! Task.Delay(1000, ct)
+        try
+            while not ct.IsCancellationRequested do
+                // With zero capacity, a waiting reader reserves a deletion slot before we take a database lease.
+                let! _ = writer.WaitToWriteAsync(ct)
+                try
+                    let config = options.Value
+                    let requested = min limit config.JoinDeleteMaxClaim
+                    let! jobs = queue.Claim(requested, config.JoinDeleteBulkThreshold, ct)
+                    let found = if jobs.Length = 0 then 0 else jobs[0].candidate_count
+                    let next, delay = JoinDeletions.nextPoll requested found config.JoinDeleteMaxClaim
+                    limit <- next
+                    if jobs.Length > 0 then do! writer.WriteAsync(jobs)
+                    if found <= jobs.Length && delay > 0 then do! Task.Delay(delay, ct)
+                with
+                | :? OperationCanceledException when ct.IsCancellationRequested -> ()
+                | ex ->
+                    logger.LogError(ex, "Join deletion claim failed")
+                    do! Task.Delay(1000, ct)
+        finally
+            %writer.TryComplete()
     }
 
-    override _.ExecuteAsync(ct) =
-        Array.init 4 (fun _ -> runSlot ct) |> Task.WhenAll :> Task
+    let runSlot (reader: ChannelReader<JoinDeletionJob[]>) (ct: CancellationToken) = task {
+        let mutable running = true
+        while running do
+            try
+                let! jobs = reader.ReadAsync()
+                try
+                    do! delete jobs
+                with ex ->
+                    logger.LogError(ex, "Join deletion slot failed")
+                    do! Task.Delay(1000, ct)
+            with :? ChannelClosedException -> running <- false
+    }
+
+    override _.ExecuteAsync(ct) = task {
+        let channel = Channel.CreateBounded<JoinDeletionJob[]>(BoundedChannelOptions(0, SingleWriter = true))
+        let workers = Array.init 4 (fun _ -> runSlot channel.Reader ct)
+        try
+            do! Task.WhenAll(Array.append workers [| poll channel.Writer ct |]) :> Task
+        with :? OperationCanceledException when ct.IsCancellationRequested -> ()
+    }

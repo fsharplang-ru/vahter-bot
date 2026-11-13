@@ -33,19 +33,11 @@ type Root = class end
 
 Dapper.FSharp.PostgreSQL.OptionTypes.register()
 
-let connString = getEnv "DATABASE_URL"
+let connString, initialSettings =
+    DbSettings.loadStartupSettings 3 (getEnv "DATABASE_URL") |> fun t -> t.GetAwaiter().GetResult()
 
-let loadDbSettings () =
-    try
-        // NOTE(project-agent): intentional blocking call. Runs once at module init before the
-        // ASP.NET Core host exists; there is no SynchronizationContext to deadlock against, and
-        // settings must be loaded synchronously to build the DI container. Do not flag.
-        DbSettings.loadBotSettings(connString).GetAwaiter().GetResult()
-    with e ->
-        eprintfn "[FATAL] Failed to load bot settings from database: %O" e
-        reraise()
-
-let mutable dbSettings = loadDbSettings()
+let loadDbSettings () = DbSettings.loadBotSettings(connString).GetAwaiter().GetResult()
+let mutable dbSettings = initialSettings
 
 let getSettingOr key def =
     let accessor = DbSettings.BotSettingsAccessor(dbSettings)
@@ -262,12 +254,12 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddSingleton<ILlmVerdictCache>(fun _ -> LlmVerdictCacheRepository(connString) :> ILlmVerdictCache)
     .AddSingleton<BotService>()
     .AddSingleton<JoinDeletionQueue>(fun _ -> JoinDeletionQueue(connString))
-    .AddHostedService<JoinDeletionWorker>()
-    .AddHostedService<JoinHistoryWorker>(fun sp ->
-        new JoinHistoryWorker(connString, botConfOptions, sp.GetRequiredService<ITelegramApi>(), sp.GetRequiredService<ILogger<JoinHistoryWorker>>()))
     // MachineLearning must start before CleanupService (loads model from DB on startup)
     .AddSingleton<MachineLearning>()
     .AddHostedService<MachineLearning>(fun sp -> sp.GetRequiredService<MachineLearning>())
+    .AddHostedService<JoinDeletionWorker>()
+    .AddHostedService<JoinHistoryWorker>(fun sp ->
+        new JoinHistoryWorker(connString, botConfOptions, sp.GetRequiredService<ITelegramApi>(), sp.GetRequiredService<ILogger<JoinHistoryWorker>>()))
     // Single CleanupService instance, exposed both as the hosted scheduler and as
     // the IForcedCleanup used by the /vahter cleanup admin command.
     .AddSingleton<CleanupService>()
