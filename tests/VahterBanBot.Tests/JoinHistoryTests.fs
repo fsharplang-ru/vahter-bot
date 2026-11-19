@@ -85,7 +85,7 @@ type JoinHistoryTests(fixture: MlDisabledVahterTestContainers) =
     }
 
     [<Fact>]
-    member _.``A surviving join after delete is retried from the same page and stops after three failures`` () = task {
+    member _.``Repeated failures back off without abandoning a bucket`` () = task {
         let chat = -1000000017062L
         let minute = DateTime.UtcNow.AddMinutes(-5.)
         use conn = new NpgsqlConnection(fixture.DbConnectionString)
@@ -98,17 +98,65 @@ type JoinHistoryTests(fixture: MlDisabledVahterTestContainers) =
             { new IJoinHistory with
                 member _.Read(_, ids) =
                     ids |> Array.map (function
-                        | 41 -> service (JoinHistory.channelId chat) minute 41 (MessageActionChatAddUser())
+                        | 41 when deletes < 7 -> service (JoinHistory.channelId chat) minute 41 (MessageActionChatAddUser())
                         | id -> empty id) |> Task.FromResult
                 member _.Delete(_, ids) = task {
                     Assert.Equal<int>([|41|], ids)
                     deletes <- deletes+1
                 } }
         let sweep = JoinHistorySweep(fixture.DbConnectionString, NullLogger.Instance)
-        for _ in 1..4 do
+        for delay in [|60.;120.;240.;480.;900.;900.;0.|] do
             let! _ = conn.ExecuteAsync("UPDATE join_history_check SET due_at=now() WHERE chat_id=@chat",args)
             do! sweep.Run(fake, (fun () -> [|chat|]), CancellationToken.None)
-        Assert.Equal(3,deletes)
+            if delay > 0. then
+                let! pending = conn.QuerySingleAsync<JoinHistoryPage>("SELECT * FROM join_history_check WHERE chat_id=@chat",args)
+                Assert.Equal(40L,pending.next_id)
+                Assert.InRange((pending.due_at-DateTime.UtcNow).TotalSeconds,delay-10.,delay)
+        Assert.Equal(7,deletes)
         let! cursor = conn.ExecuteScalarAsync<int64>("SELECT next_id FROM join_history_check WHERE chat_id=@chat",args)
-        Assert.Equal(40L,cursor)
+        Assert.Equal(151L,cursor)
+    }
+
+    [<Fact>]
+    member _.``A cancelled client is replaced and another sweep verifies the pending bucket`` () = task {
+        let chat = -1000000017063L
+        let minute = DateTime.UtcNow.AddMinutes(-5.)
+        use conn = new NpgsqlConnection(fixture.DbConnectionString)
+        let args = {| chat=chat; minute=minute |}
+        let! _ = conn.ExecuteAsync(
+            """INSERT INTO join_history_check(chat_id,minute,notices,first_id,last_id,next_id,due_at)
+               VALUES (@chat,@minute,32,40,50,40,now())""", args)
+        let mutable created, disposed, deleted = 0, 0, false
+        let create () =
+            created <- created+1
+            let generation = created
+            let history =
+                { new IJoinHistory with
+                    member _.Read(_, ids) =
+                        if generation = 1 then Task.FromException<MessageBase[]>(TaskCanceledException())
+                        else
+                            ids |> Array.map (function
+                                | 41 when not deleted -> service (JoinHistory.channelId chat) minute 41 (MessageActionChatAddUser())
+                                | id -> empty id) |> Task.FromResult
+                    member _.Delete(actual, ids) = task {
+                        Assert.Equal(chat,actual)
+                        Assert.Equal<int>([|41|],ids)
+                        deleted <- true
+                    } }
+            history, { new IAsyncDisposable with member _.DisposeAsync() = disposed <- disposed+1; ValueTask.CompletedTask }
+        use history = new RecoveringJoinHistory(create, NullLogger.Instance, CancellationToken.None, (fun () -> TimeSpan.FromSeconds 5.))
+        let sweep = JoinHistorySweep(fixture.DbConnectionString, NullLogger.Instance)
+        do! sweep.Run(history, (fun () -> [|chat|]), CancellationToken.None)
+        Assert.Equal(1,disposed)
+        let! failed = conn.QuerySingleAsync<JoinHistoryPage>("SELECT * FROM join_history_check WHERE chat_id=@chat",args)
+        Assert.Equal(1,failed.failures)
+        Assert.Equal(40L,failed.next_id)
+        Assert.InRange((failed.due_at-DateTime.UtcNow).TotalSeconds,50.,60.)
+        let! _ = conn.ExecuteAsync("UPDATE join_history_check SET due_at=now() WHERE chat_id=@chat",args)
+        do! sweep.Run(history, (fun () -> [|chat|]), CancellationToken.None)
+        let! completed = conn.QuerySingleAsync<JoinHistoryPage>("SELECT * FROM join_history_check WHERE chat_id=@chat",args)
+        Assert.Equal(151L,completed.next_id)
+        Assert.Equal(0,completed.failures)
+        Assert.Equal(2,created)
+        Assert.True(deleted)
     }

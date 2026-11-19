@@ -52,6 +52,10 @@ let buildBotConf settings =
         match Int32.TryParse(getSettingOr key fallback) with
         | true, value when value >= 1 && value <= 100 -> value
         | _ -> invalidArg key "Expected an integer from 1 to 100"
+    let historySeconds key fallback minimum maximum =
+        match Int32.TryParse(getSettingOr key fallback) with
+        | true, value when value >= minimum && value <= maximum -> value
+        | _ -> invalidArg key $"Expected seconds from {minimum} to {maximum}"
     { BotToken = getEnv "BOT_TELEGRAM_TOKEN"
       Route = getSettingOr "BOT_HOOK_ROUTE" "/bot"
       SecretToken = getEnv "BOT_AUTH_TOKEN"
@@ -67,6 +71,8 @@ let buildBotConf settings =
       DeleteJoinMessagesInChats = getSettingOr "DELETE_JOIN_MESSAGES_IN_CHATS" "[]" |> fromJson
       JoinDeleteBulkThreshold = joinLimit "JOIN_DELETE_BULK_THRESHOLD" "2"
       JoinDeleteMaxClaim = joinLimit "JOIN_DELETE_MAX_CLAIM" "100"
+      JoinHistoryRequestTimeoutSeconds = historySeconds "JOIN_HISTORY_REQUEST_TIMEOUT_SECONDS" "30" 1 120
+      JoinHistoryRetryMaxSeconds = historySeconds "JOIN_HISTORY_RETRY_MAX_SECONDS" "900" 60 3600
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse

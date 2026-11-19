@@ -3,6 +3,7 @@ namespace VahterBanBot
 open System
 open System.Diagnostics
 open System.IO
+open System.Net.Sockets
 open System.Threading
 open System.Threading.Tasks
 open BotInfra
@@ -20,6 +21,16 @@ type IJoinHistory =
 
 module JoinHistory =
     let channelId (chat: int64) = -1000000000000L - chat
+
+    let retryDelay maximum failures = min maximum (60 * (1 <<< min 6 (max 0 failures)))
+
+    let resetReason (ex: exn) =
+        match ex with
+        | :? OperationCanceledException -> Some "cancellation"
+        | :? TimeoutException -> Some "timeout"
+        | :? RpcException as rpc -> if rpc.Code = 401 then Some "auth" else None
+        | :? IOException | :? SocketException | :? ObjectDisposedException | :? WTelegram.WTException -> Some "transport"
+        | _ -> None
 
     let survivors chat (minute: DateTime) (ids: int[]) (messages: MessageBase[]) =
         let requested = Set.ofArray ids
@@ -59,11 +70,60 @@ module JoinHistory =
         else return [||]
     }
 
-type private TelegramJoinHistory(apiId, apiHash, token: string, tg: ITelegramApi) =
+type RecoveringJoinHistory(create: unit -> IJoinHistory * IAsyncDisposable, logger: ILogger, ct: CancellationToken, timeout: unit -> TimeSpan) =
+    let mutable current: (IJoinHistory * IAsyncDisposable) option = None
+    let mutable generation = 0
+    let close () = task {
+        let previous = current
+        current <- None
+        match previous with
+        | Some (_, lifetime) -> do! lifetime.DisposeAsync().AsTask()
+        | None -> ()
+    }
+    let run name work = task {
+        ct.ThrowIfCancellationRequested()
+        try
+            let history =
+                match current with
+                | Some (history, _) -> history
+                | None ->
+                    let history, lifetime = create()
+                    current <- Some (history, lifetime)
+                    generation <- generation + 1
+                    logger.LogInformation("Created join history client {Generation}", generation)
+                    history
+            JoinHistoryTelemetry.setTag Activity.Current "history.client_generation" generation
+            return! (work history : Task<_>).WaitAsync(timeout(), ct)
+        with ex ->
+            if not ct.IsCancellationRequested then JoinHistoryTelemetry.logFailure logger name ex
+            match JoinHistory.resetReason ex with
+            | Some reason ->
+                if not ct.IsCancellationRequested then
+                    JoinHistoryTelemetry.countReset reason
+                    logger.LogWarning("Discarding join history client {Generation} after {Operation} ({Reason})", generation, name, reason)
+                try do! close()
+                with disposeError -> JoinHistoryTelemetry.logFailure logger "dispose" disposeError
+            | None -> ()
+            return! Task.FromException<_>(ex)
+    }
+    interface IJoinHistory with
+        member _.Read(chat, ids) = run "read" (fun h -> h.Read(chat, ids))
+        member _.Delete(chat, ids) = run "delete" (fun h -> h.Delete(chat, ids))
+    interface IAsyncDisposable with
+        member _.DisposeAsync() = ValueTask(close())
+
+type private TelegramJoinHistory(apiId, apiHash, token: string, tg: ITelegramApi, logger: ILogger) =
     let config = function "api_id" -> apiId | "api_hash" -> apiHash | _ -> null
     let session = new MemoryStream()
     do WTelegram.Helpers.Log <- fun _ _ -> ()
     let client = new WTelegram.Client(Func<string,string>(config), session, FloodRetryThreshold = 0)
+    do client.add_OnOther(Func<IObject, Task>(fun update ->
+        match update with
+        | :? ReactorError as error ->
+            JoinHistoryTelemetry.countReactorError()
+            JoinHistoryTelemetry.logFailure logger "reactor" error.Exception
+        | _ -> ()
+        Task.CompletedTask))
     let peers = Collections.Generic.Dictionary<int64, InputChannel>()
     let peer chat = task {
         match peers.TryGetValue chat with
@@ -96,16 +156,18 @@ type private TelegramJoinHistory(apiId, apiHash, token: string, tg: ITelegramApi
             let! _ = client.Channels_DeleteMessages(channel, ids)
             ()
         }
-    interface IDisposable with
-        member _.Dispose() =
-            client.Dispose()
-            session.Dispose()
+    interface IAsyncDisposable with
+        member _.DisposeAsync() = ValueTask(task {
+            try do! client.DisposeAsync().AsTask()
+            finally session.Dispose()
+        })
 
 [<CLIMutable>]
 type JoinHistoryPage =
     { chat_id: int64; minute: DateTime; due_at: DateTime; notices: int; first_id: int; next_id: int64; last_id: int; failures: int }
 
-type JoinHistorySweep(connString: string, logger: ILogger) =
+type JoinHistorySweep(connString: string, logger: ILogger, ?maxRetryDelay: unit -> int) =
+    let retryMaximum = defaultArg maxRetryDelay (fun () -> 900)
     member _.Run(history: IJoinHistory, enabledChats: unit -> int64[], ct: CancellationToken) = task {
         use conn = new NpgsqlConnection(connString)
         do! conn.OpenAsync(ct)
@@ -118,7 +180,7 @@ type JoinHistorySweep(connString: string, logger: ILogger) =
             while work && not ct.IsCancellationRequested do
                 let! pages = conn.QueryAsync<JoinHistoryPage>(
                     """SELECT chat_id, minute, due_at, notices, first_id, next_id, last_id, failures FROM join_history_check
-                       WHERE notices >= 32 AND failures < 3 AND due_at <= now() AND minute > now() - interval '47 hours'
+                       WHERE notices >= 32 AND due_at <= now() AND minute > now() - interval '47 hours'
                          AND next_id <= least(2147483647, last_id + 100::bigint) AND chat_id = ANY(@chats)
                          AND NOT EXISTS (SELECT FROM join_deletion_queue WHERE flood_until > now())
                          AND NOT EXISTS (SELECT FROM join_deletion_queue q WHERE q.chat_id=join_history_check.chat_id
@@ -167,8 +229,9 @@ type JoinHistorySweep(connString: string, logger: ILogger) =
                         let flood, delay =
                             match ex with
                             | :? RpcException as rpc when rpc.Code = 420 -> true, max 1 rpc.X
-                            | _ -> false, 60
+                            | _ -> false, JoinHistory.retryDelay (retryMaximum()) page.failures
                         JoinHistoryTelemetry.markError span ex
+                        JoinHistoryTelemetry.logFailure logger "page" ex
                         let! updated = conn.ExecuteAsync(
                             """UPDATE join_history_check SET due_at=now()+make_interval(secs=>@delay),
                                       failures=failures+CASE WHEN @flood THEN 0 ELSE 1 END
@@ -177,12 +240,12 @@ type JoinHistorySweep(connString: string, logger: ILogger) =
                         let outcome =
                             if flood then "flood_wait"
                             elif updated = 0 then "superseded"
-                            elif page.failures + 1 >= 3 then "exhausted"
                             else "retry"
                         JoinHistoryTelemetry.countPage outcome
                         JoinHistoryTelemetry.setTag span "history.outcome" outcome
-                        logger.LogError("Join history check failed in {ChatId} for {BucketMinute} at {Cursor} ({ErrorType}, {Outcome}, delay {DelaySeconds}s)",
-                                        page.chat_id, page.minute, page.next_id, ex.GetType().Name, outcome, delay)
+                        logger.LogError("Join history check failed in {ChatId} for {BucketMinute} at {Cursor} ({ErrorType}, {Outcome}, failures {Failures}, delay {DelaySeconds}s)",
+                                        page.chat_id, page.minute, page.next_id, ex.GetType().Name, outcome, page.failures + (if flood then 0 else 1), delay)
+                        if (JoinHistory.resetReason ex).IsSome then work <- false
                         if flood then
                             JoinHistoryTelemetry.floodWait.Record(float delay)
                             let! _ = conn.ExecuteAsync(
@@ -199,15 +262,20 @@ type JoinHistoryWorker(connString: string, options: IOptions<BotConfiguration>, 
         if String.IsNullOrWhiteSpace apiId || String.IsNullOrWhiteSpace apiHash then
             logger.LogWarning("Join history checks require TELEGRAM_API_ID and TELEGRAM_API_HASH")
         else
-            let sweep = JoinHistorySweep(connString, logger)
+            let sweep = JoinHistorySweep(connString, logger, maxRetryDelay = (fun () -> options.Value.JoinHistoryRetryMaxSeconds))
             let enabled () =
                 let cfg = options.Value
                 cfg.DeleteJoinMessagesInChats |> Array.filter (fun id -> id < -1000000000000L && cfg.ChatsToMonitor.ContainsValue id)
-            use history = new TelegramJoinHistory(apiId, apiHash, options.Value.BotToken, tg)
-            while not ct.IsCancellationRequested do
-                try
-                    do! sweep.Run(history, enabled, ct)
-                with ex when not ct.IsCancellationRequested ->
-                    logger.LogError("Join history worker failed ({ErrorType})", ex.GetType().Name)
-                do! Task.Delay(TimeSpan.FromSeconds 30., ct)
+            let create () =
+                let client = new TelegramJoinHistory(apiId, apiHash, options.Value.BotToken, tg, logger)
+                (client :> IJoinHistory), (client :> IAsyncDisposable)
+            use history = new RecoveringJoinHistory(create, logger, ct, fun () -> TimeSpan.FromSeconds(float options.Value.JoinHistoryRequestTimeoutSeconds))
+            try
+                while not ct.IsCancellationRequested do
+                    try
+                        do! sweep.Run(history, enabled, ct)
+                    with ex when not ct.IsCancellationRequested ->
+                        JoinHistoryTelemetry.logFailure logger "worker" ex
+                    do! Task.Delay(TimeSpan.FromSeconds 30., ct)
+            with :? OperationCanceledException when ct.IsCancellationRequested -> ()
     }

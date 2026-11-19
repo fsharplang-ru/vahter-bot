@@ -4,8 +4,10 @@ open System
 open System.Collections.Generic
 open System.Diagnostics
 open System.Diagnostics.Metrics
+open System.Net.Sockets
 open System.Threading.Tasks
 open BotInfra
+open Microsoft.Extensions.Logging
 open TL
 
 let private histogram name description boundaries =
@@ -25,11 +27,25 @@ let floodWait = histogram "vahter_join_history_flood_wait" "MTProto requested co
 
 let private ids = Metrics.meter.CreateCounter<int64>("vahter_join_history_ids_total", description = "Message IDs observed by scan stage, including repeat attempts.")
 let private pages = Metrics.meter.CreateCounter<int64>("vahter_join_history_pages_total", description = "History page attempts by outcome.")
+let private resets = Metrics.meter.CreateCounter<int64>("vahter_join_history_client_resets_total", description = "History clients discarded after connection failures.")
+let private reactorErrors = Metrics.meter.CreateCounter<int64>("vahter_join_history_reactor_errors_total", description = "MTProto connections whose automatic recovery failed.")
 
 let private tag name (value: string) = KeyValuePair<string,obj>(name, value)
 
 let countIds stage count = ids.Add(int64 count, tag "stage" stage)
 let countPage outcome = pages.Add(1L, tag "outcome" outcome)
+let countReset reason = resets.Add(1L, tag "reason" reason)
+let countReactorError () = reactorErrors.Add(1L)
+
+let private exceptionTypes (ex: exn) =
+    Seq.unfold (fun (e: exn) -> if isNull e then None else Some(e.GetType().FullName, e.InnerException)) ex
+    |> Seq.truncate 8 |> String.concat " -> "
+
+let logFailure (logger: ILogger) operation (ex: exn) =
+    let rpc = match ex with :? RpcException as r -> Nullable r.Code | _ -> Nullable()
+    let socket = match ex.GetBaseException() with :? SocketException as s -> string s.SocketErrorCode | _ -> ""
+    logger.LogError("Join history {Operation} failed ({ErrorTypes}, RPC {RpcCode}, socket {SocketError}, HRESULT {HResult}); stack {ErrorStack}",
+                    operation, exceptionTypes ex, rpc, socket, ex.HResult, ex.StackTrace)
 
 let setTag (span: Activity) name (value: obj) =
     if not (isNull span) then %span.SetTag(name, value)
@@ -37,6 +53,8 @@ let setTag (span: Activity) name (value: obj) =
 let markError (span: Activity) (ex: exn) =
     if not (isNull span) then
         %span.SetStatus(ActivityStatusCode.Error, ex.GetType().Name)
+        %span.SetTag("error.type", exceptionTypes ex)
+        %span.SetTag("exception.stacktrace", ex.StackTrace)
         match ex with
         | :? RpcException as rpc -> %span.SetTag("rpc.code", rpc.Code)
         | _ -> ()

@@ -37,11 +37,17 @@ With `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in the pod environment, Vahter us
 
 One replica reads IDs in pages of 100 between the first and last observed notice, with 100 IDs of padding on each side. It deletes only join service actions in that supergroup and minute, then requires an explicit empty history result for every deleted ID. Gaps without a qualifying observed minute or outside the padded range are outside the scan.
 
-PostgreSQL checkpoints each verified page. A failed page retries after a minute up to three failures, logged at Error. MTProto flood waits pause both replicas and preserve the retry budget. Checks expire after 47 hours.
+PostgreSQL checkpoints each verified page. Failures log at Error and retry with exponential delays, by default from one to fifteen minutes, until the 47-hour expiry. MTProto flood waits pause both replicas without increasing the failure count.
+
+Connection, unexpected cancellation and expired-session failures discard the client and release the sweep lock; a later sweep creates a fresh in-memory session. Shutdown cancellation leaves the checkpoint unchanged.
+
+`bot_setting.JOIN_HISTORY_REQUEST_TIMEOUT_SECONDS` bounds each call including login (default 30, range 1–120). `JOIN_HISTORY_RETRY_MAX_SECONDS` caps backoff (default 900, range 60–3600); both follow settings reloads.
 
 #### Measuring a history sweep
 
-In Tempo, search for `{ name = "joinHistory.page" }`. Each page attempt carries the chat, UTC bucket minute, cursor, requested ID count, queued notice count and checkpoint outcome. Child spans time the initial read, delete and verification; cold reads include nested login and username resolution. Errors carry the exception type and numeric Telegram RPC code when available.
+In Tempo, search for `{ name = "joinHistory.page" }`. Each page attempt carries the chat, UTC bucket minute, cursor, requested ID count, queued notice count and checkpoint outcome. Child spans time the initial read, delete and verification; cold reads include nested login and username resolution.
+
+Errors carry exception types, stack frames and numeric Telegram RPC codes. Structured logs also include socket error codes, failure counts and retry delays; reactor failures log even while idle. Exception messages and raw MTProto payloads are excluded.
 
 | Question | OpenTelemetry instrument |
 |---|---|
@@ -50,7 +56,9 @@ In Tempo, search for `{ name = "joinHistory.page" }`. Each page attempt carries 
 | Which step takes time or fails? | `vahter_join_history_operation_duration` by `operation` and `outcome` |
 | How many scanned IDs yield a surviving join and a verified deletion? | `vahter_join_history_ids_total` by `stage` (`scanned`, `found`, `delete_accepted`, `verified`) |
 | How old are the notices when removal is verified? | `vahter_join_history_verified_age` |
-| Are pages advancing, retrying or exhausting attempts? | `vahter_join_history_pages_total` by `outcome`, and `vahter_join_history_flood_wait` for the requested cooldown |
+| Are pages advancing, retrying or waiting on Telegram? | `vahter_join_history_pages_total` by `outcome`, and `vahter_join_history_flood_wait` for the requested cooldown |
+| Are failed clients being replaced? | `vahter_join_history_client_resets_total` by `reason` |
+| Does automatic MTProto reconnection fail while idle? | `vahter_join_history_reactor_errors_total` |
 
 Histograms use seconds. ID counters count observations across attempts, so retries can count an ID again. In Loki, group start, completion and error records by `ChatId` and `BucketMinute`. Verified deletion records include `MessageIds` to correlate with Bot API receipts. A completed bucket can reopen on a late webhook. These measurements cover the delayed sweep; earlier MTProto visibility requires a live observation.
 
