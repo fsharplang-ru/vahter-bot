@@ -441,6 +441,8 @@ type BotConfiguration =
       DeleteJoinMessagesInChats: int64[]
       JoinDeleteBulkThreshold: int
       JoinDeleteMaxClaim: int
+      JoinHistoryRequestTimeoutSeconds: int
+      JoinHistoryRetryMaxSeconds: int
       AllowedUsers: Dictionary<string, int64>
       IgnoreSideEffects: bool
       UsePolling: bool
