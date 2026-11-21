@@ -1144,3 +1144,16 @@ type MlAwaitFixture() =
         member this.InitializeAsync() = ValueTask()
     interface IAsyncDisposable with
         member this.DisposeAsync() = ValueTask()
+
+let tryFindChannelPost (fixture: VahterTestContainers) (channelId: int64) (marker: string) = task {
+    let mutable found = None
+    let mutable attempts = 0
+    while found.IsNone && attempts < 40 do
+        let! calls = fixture.GetFakeCalls "sendMessage"
+        found <- calls |> Array.tryFind (fun c ->
+            c.Body.Contains $"\"chat_id\":{channelId}" && c.Body.Contains marker)
+        if found.IsNone then
+            attempts <- attempts + 1
+            do! Task.Delay 250
+    return found
+}

@@ -317,6 +317,11 @@ let hasSuspiciousApkAttachment (extensions: string list) (msg: TgMessage) =
             doc |> Option.bind _.FileName |> Option.exists matchesAny
         isMatch msg.Document || isMatch msg.ExternalReplyDocument
 
+let private ephemeralFor userId =
+    { ReceiverUserId = userId
+      CallbackQueryId = None
+      ReplaceCallbackQueryMessage = None }
+
 type BotService(
     tg: ITelegramApi,
     botConfig: IOptions<BotConfiguration>,
@@ -417,7 +422,7 @@ type BotService(
         // an ephemeral /ban ping gets an ephemeral pong — a public reply to an
         // invisible command would look like noise to the rest of the chat
         if msg.IsEphemeral then
-            do! tg.CallExn(Req.SendMessage.Make(msg.ChatId, "pong", receiverUserId = msg.SenderId)) |> taskIgnore
+            do! tg.CallExn(Req.SendMessage.Make(msg.ChatId, "pong", ephemeralMessageParameters = ephemeralFor msg.SenderId)) |> taskIgnore
         else
             do! tg.CallExn(Req.SendMessage.Make(msg.ChatId, "pong")) |> taskIgnore
     }
@@ -757,7 +762,7 @@ type BotService(
                 | AutoDeleteReason.SpamTextCacheHit _ | AutoDeleteReason.SuspiciousAttachment -> None
             match warnedReasonScore with
             | Some score when score < botConfig.Value.SpamWarningMaxScore ->
-                do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, botConfig.Value.SpamWarningText, receiverUserId = msg.SenderId))
+                do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, botConfig.Value.SpamWarningText, ephemeralMessageParameters = ephemeralFor msg.SenderId))
                 recordSpamWarningSent msg.ChatId msg.ChatUsername
             | Some _ | None -> ()
     }
@@ -832,7 +837,7 @@ type BotService(
                 // deliberately generic (see SpamProtectionNotifyText's doc comment): it must never
                 // reveal that enforcement was relaxed or time-boxed.
                 if botConfig.Value.SpamProtectionNotifyEnabled then
-                    do! tg.CallIgnore(Req.SendMessage.Make(chatId, botConfig.Value.SpamProtectionNotifyText, receiverUserId = userId))
+                    do! tg.CallIgnore(Req.SendMessage.Make(chatId, botConfig.Value.SpamProtectionNotifyText, ephemeralMessageParameters = ephemeralFor userId))
     }
 
     // ── Reaction-spam triage pipeline ──────────────────────────────────────
@@ -1606,7 +1611,7 @@ type BotService(
         // failure must never fail the command itself, hence CallIgnore.
         let confirm (text: string) : Task<unit> =
             if botConfig.Value.EphemeralConfirmationEnabled then
-                tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, text, receiverUserId = vahter.Id))
+                tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, text, ephemeralMessageParameters = ephemeralFor vahter.Id))
             else Task.FromResult ()
 
         // aux functions to overcome annoying FS3511: This state machine is not statically compilable.
@@ -1688,7 +1693,7 @@ type BotService(
                 fun () -> db.GetReportStats(msg.ChatId, timeProvider.GetUtcNow()))
         // best-effort ephemeral delivery — a failure here must never fail the command, hence
         // CallIgnore (never CallExn); see AdminCommand's `confirm` helper for the same pattern.
-        do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, stats.ToReportMessage(), receiverUserId = user.Id))
+        do! tg.CallIgnore(Req.SendMessage.Make(msg.ChatId, stats.ToReportMessage(), ephemeralMessageParameters = ephemeralFor user.Id))
         // an ephemeral command is invisible to the chat and auto-expires — there is no regular
         // message to delete (mirrors AdminCommand's deleteCmdTask)
         if not msg.IsEphemeral then

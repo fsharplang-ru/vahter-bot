@@ -32,6 +32,7 @@ let rec private appendRichText (sb: StringBuilder) (richText: RichText) =
     match richText with
     | RichText.Plain text -> %sb.Append text
     | RichText.ArrayOf items -> for item in items do appendRichText sb item
+    | RichText.Button b -> appendButton sb b.Button
     | RichText.Bold t -> appendRichText sb t.Text
     | RichText.Italic t -> appendRichText sb t.Text
     | RichText.Underline t -> appendRichText sb t.Text
@@ -79,6 +80,17 @@ let rec private appendRichText (sb: StringBuilder) (richText: RichText) =
     | RichText.ReferenceLink l ->
         appendRichText sb l.Text
         appendPayload sb l.ReferenceName
+
+and private appendButton (sb: StringBuilder) (button: RichMessageButton) =
+    appendRichText sb button.Text
+    button.Url |> Option.iter (appendPayload sb)
+    button.WebApp |> Option.iter (fun app -> appendPayload sb app.Url)
+    button.LoginUrl |> Option.iter (fun login -> appendPayload sb login.Url)
+    button.CopyText |> Option.iter (fun copy -> appendPayload sb copy.Text)
+    button.CallbackData |> Option.iter (appendPayload sb)
+    button.SwitchInlineQuery |> Option.iter (appendPayload sb)
+    button.SwitchInlineQueryCurrentChat |> Option.iter (appendPayload sb)
+    button.SwitchInlineQueryChosenChat |> Option.bind _.Query |> Option.iter (appendPayload sb)
 
 let private appendRichTextLine (sb: StringBuilder) (richText: RichText) =
     appendRichText sb richText
@@ -143,6 +155,16 @@ let rec private appendBlock (sb: StringBuilder) (block: RichBlock) =
         appendRichTextLine sb d.Summary
         for nested in d.Blocks do
             appendBlock sb nested
+    | RichBlock.Buttons b ->
+        for button in b.Buttons do
+            appendButton sb button
+            appendLineBreak sb
+    | RichBlock.ExpandableBlockQuotation q ->
+        appendRichTextLine sb q.Text
+        appendOptionalCredit sb q.Credit
+    | RichBlock.Document d ->
+        d.Document.FileName |> Option.iter (appendPayload sb)
+        appendCaption sb d.Caption
     | RichBlock.Map m -> appendCaption sb m.Caption
     | RichBlock.Animation a -> appendCaption sb a.Caption
     | RichBlock.Audio a -> appendCaption sb a.Caption

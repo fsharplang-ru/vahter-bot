@@ -2,28 +2,11 @@ module VahterBanBot.Tests.MLBanTests
 
 open System.Net
 open System.Text.Json
-open System.Threading.Tasks
 open VahterBanBot.Tests.ContainerTestBase
 open BotTestInfra
 open VahterBanBot.Types
 open VahterBanBot.Utils
 open Xunit
-
-/// Channel posts can be fire-and-forget (e.g. the Detected Spam card and its
-/// AllLogs mirror), so poll for the matching sendMessage call instead of
-/// asserting on a single snapshot.
-let private tryFindChannelPost (fixture: MlEnabledVahterTestContainers) (channelId: int64) (marker: string) = task {
-    let mutable found = None
-    let mutable attempts = 0
-    while found.IsNone && attempts < 40 do
-        let! calls = fixture.GetFakeCalls "sendMessage"
-        found <- calls |> Array.tryFind (fun c ->
-            c.Body.Contains $"\"chat_id\":{channelId}" && c.Body.Contains marker)
-        if found.IsNone then
-            attempts <- attempts + 1
-            do! Task.Delay 250
-    return found
-}
 
 type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture) =
 
@@ -759,6 +742,46 @@ type MLBanTests(fixture: MlEnabledVahterTestContainers, _unused: MlAwaitFixture)
         Assert.Equal($"Shared contact: {expectedName}", stored.Value.text)
         let! deleted = fixture.MessageIsAutoDeleted msg
         Assert.Equal(shouldDelete, deleted)
+    }
+
+    [<Fact>]
+    let ``Forwarded rich message with button rows reaches spam moderation`` () = task {
+        let update = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = null)
+        let msg = update.Message.Value
+        let json = $$$"""{
+          "update_id":{{{update.UpdateId}}},
+          "message":{
+            "message_id":{{{msg.MessageId}}},
+            "from":{"id":{{{msg.From.Value.Id}}},"is_bot":false,"first_name":"Sender"},
+            "chat":{"id":{{{msg.Chat.Id}}},"type":"supergroup","title":"Test group"},
+            "date":{{{System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()}}},
+            "forward_origin":{"type":"user","date":1,"sender_user":{"id":777,"is_bot":true,"first_name":"Source"}},
+            "forward_from":{"id":777,"is_bot":true,"first_name":"Source"},"forward_date":1,
+            "rich_message":{"blocks":[
+              {"type":"paragraph","text":[{"type":"custom_emoji","custom_emoji_id":"1","alternative_text":"*"},{"type":"bold","text":" offer "},{"type":"custom_emoji","custom_emoji_id":"2","alternative_text":"*"}]},
+              {"type":"paragraph","text":{"type":"bold","text":"details"}},
+              {"type":"paragraph","text":{"type":"bold","text":[{"type":"custom_emoji","custom_emoji_id":"3","alternative_text":"+"}," more"]}},
+              {"type":"buttons","align":"center","buttons":[
+                {"text":[{"type":"custom_emoji","custom_emoji_id":"4","alternative_text":"+"}," first"],"style":"primary","url":"https://example.org/first"},
+                {"text":[{"type":"custom_emoji","custom_emoji_id":"5","alternative_text":"+"}," second"],"style":"primary","url":"https://example.org/second"}]},
+              {"type":"buttons","align":"center","buttons":[
+                {"text":[{"type":"custom_emoji","custom_emoji_id":"6","alternative_text":"+"}," third"],"style":"primary","url":"https://example.org/third"},
+                {"text":[{"type":"custom_emoji","custom_emoji_id":"7","alternative_text":"+"}," fourth"],"style":"primary","url":"https://example.org/fourth"}]},
+              {"type":"buttons","align":"center","buttons":[
+                {"text":[{"type":"custom_emoji","custom_emoji_id":"8","alternative_text":"+"}," last"],"style":"primary","url":"https://2222222.example.org"}]}]}
+          }}"""
+        use! response = fixture.SendMessage json
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+        let! stored = fixture.TryGetDbMessage msg
+        Assert.True(stored.IsSome)
+        let expected =
+            String.concat "\n"
+                [ "* offer *"; "details"; "+ more"; "+ first"; "https://example.org/first"
+                  "+ second"; "https://example.org/second"; "+ third"; "https://example.org/third"
+                  "+ fourth"; "https://example.org/fourth"; "+ last"; "https://2222222.example.org" ]
+        Assert.Equal(expected, stored.Value.text)
+        let! deleted = fixture.MessageIsAutoDeleted msg
+        Assert.True deleted
     }
 
     [<Fact>]
