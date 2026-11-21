@@ -10,8 +10,8 @@
     <PackageVersion Include="FSharp.Core" Version="10.1.201" />
 
     <!-- Telegram -->
-    <PackageVersion Include="Funogram" Version="3.0.5" />
-    <PackageVersion Include="Funogram.Telegram" Version="10.2.0" />
+    <PackageVersion Include="Funogram" Version="3.0.6" />
+    <PackageVersion Include="Funogram.Telegram" Version="10.3.0" />
 
     <!-- Azure OpenAI SDK (LLM triage; SDK-native retry honors Retry-After on 429) -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />

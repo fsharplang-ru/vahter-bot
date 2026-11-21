@@ -158,6 +158,7 @@ type Tg() =
             { Type = "table"
               Cells = [| for t in cellTexts -> [| cell t |] |]
               IsBordered = None
+              IsCompact = None
               IsStriped = None
               Caption = None }
 

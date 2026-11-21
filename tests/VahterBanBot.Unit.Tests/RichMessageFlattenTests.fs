@@ -86,6 +86,7 @@ let ``collapsed details, list labels, quotation credit, empty cells and media ca
                  { Type = "table"
                    Cells = [| [| cell None; cell (Some "cell") |] |]
                    IsBordered = None
+                   IsCompact = None
                    IsStriped = None
                    Caption = Some(RichText.Plain "table caption") }
                RichBlock.Photo
@@ -123,3 +124,17 @@ let ``payload lands on its own line after the visible text`` () =
                                   Url = "https://spam.example" } |] } |]
           IsRtl = None }
     Assert.Equal("click here\nhttps://spam.example", RichMessageText.flatten richMessage)
+
+[<Fact>]
+let ``webhook rich message preserves paragraphs and button labels and targets`` () =
+    let json = """{
+        "update_id":1,"message":{"message_id":2,"date":1,"chat":{"id":3,"type":"private"},
+        "rich_message":{"blocks":[
+            {"type":"paragraph","text":"before"},
+            {"type":"buttons","buttons":[
+                {"text":{"type":"bold","text":"first"},"url":"https://example.org"},
+                {"text":"second","copy_text":{"text":"copied"}}]},
+            {"type":"paragraph","text":{"type":"button","button":{"text":"inline"}}},
+            {"type":"paragraph","text":"after"}]}}}"""
+    let flattened = (FunogramJson.parseUpdate json).Value |> richMessageOf |> RichMessageText.flatten
+    Assert.Equal("before\nfirst\nhttps://example.org\nsecond\ncopied\ninline\nafter", flattened)
