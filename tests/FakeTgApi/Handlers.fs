@@ -275,6 +275,17 @@ module Handlers =
         | "answerCallbackQuery" | "deleteMessage"
         | "banChatMember" | "unbanChatMember" | "restrictChatMember" ->
             do! handleSimpleOk ctx
+        | "createChatInviteLink" | "revokeChatInviteLink" ->
+            use doc = JsonDocument.Parse(body)
+            let revoked = methodName = "revokeChatInviteLink"
+            let link = if revoked then doc.RootElement.GetProperty("invite_link").GetString() else $"https://t.me/+{Guid.NewGuid():N}"
+            let createsJoinRequest =
+                match doc.RootElement.TryGetProperty("creates_join_request") with
+                | true, value -> value.GetBoolean()
+                | _ -> false
+            let invite = {| invite_link = link; creator = {| id = 123L; is_bot = true; first_name = "Test" |}
+                            creates_join_request = createsJoinRequest; is_primary = false; is_revoked = revoked |}
+            do! respondJson ctx 200 (okResult (JsonSerializer.Serialize invite))
         | "getChatMember"    -> do! handleGetChatMember ctx body
         | "getMe"           -> do! respondJson ctx 200 (okResult """{"id":123,"is_bot":true,"first_name":"Test bot","username":"coupon_test_bot"}""")
         | "getFile"          -> do! handleGetFile ctx body

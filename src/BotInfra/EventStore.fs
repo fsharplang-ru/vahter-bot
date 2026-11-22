@@ -126,6 +126,38 @@ type internal RequestCache() =
             raws.Clear()
             states.Clear())
 
+/// Writes versioned events using the caller's PostgreSQL transaction.
+type TransactionalEventWriter(tableName: string, jsonOptions: JsonSerializerOptions) =
+    do
+        if isNull tableName then nullArg (nameof tableName)
+        if isNull jsonOptions then nullArg (nameof jsonOptions)
+        if not (TransactionalEventWriter.IsValidTableName tableName) then
+            invalidArg (nameof tableName) $"invalid event table name: %s{tableName}"
+
+    let insertSql version timestamp conflict =
+        $"""
+INSERT INTO {tableName}(stream_id, stream_version, data, created_at)
+VALUES (@streamId, {version}, @data::jsonb, {timestamp})
+{conflict}
+"""
+
+    let optimisticInsert = insertSql "@version" "DEFAULT" "ON CONFLICT (stream_id, stream_version) DO NOTHING"
+    let nextVersion = $"(SELECT COALESCE(MAX(stream_version), 0) + 1 FROM {tableName} WHERE stream_id=@streamId)"
+    let lockedInsert = insertSql nextVersion "@occurredAt" ""
+
+    static member internal IsValidTableName(name: string) =
+        Regex.IsMatch(name, @"^[a-z_][a-z0-9_]{0,62}$")
+
+    member internal _.TryInsert(tx: NpgsqlTransaction, streamId: string, version: int, event: 'Event) =
+        tx.Connection.ExecuteAsync(optimisticInsert,
+            {| streamId = streamId; version = version; data = JsonSerializer.Serialize(event, jsonOptions) |}, tx)
+
+    /// The caller holds the stream's writer lock through commit or rollback.
+    member _.AppendToLockedStream(tx: NpgsqlTransaction, streamId: string, event: 'Event, occurredAt: DateTime) =
+        tx.Connection.ExecuteAsync(lockedInsert,
+            {| streamId = streamId; occurredAt = occurredAt; data = JsonSerializer.Serialize(event, jsonOptions) |}, tx)
+        |> taskIgnore
+
 /// Append-only event store wrapper. One instance per (connection-string, event-table)
 /// pair. Each bot owns its own event table — this wrapper does not attempt to merge them.
 ///
@@ -141,15 +173,11 @@ type internal RequestCache() =
 /// The event table must follow the schema described in `EVENTSTORE.md`.
 /// `snapshotTableName` (optional, same schema doc) enables the `SnapshotPolicy` overloads.
 type EventStore(connString: string, tableName: string, jsonOptions: JsonSerializerOptions, ?snapshotTableName: string) =
-    static let identifierPattern = @"^[a-z_][a-z0-9_]{0,62}$"
+    let writer = TransactionalEventWriter(tableName, jsonOptions)
     do
         if isNull connString then nullArg (nameof connString)
-        if isNull tableName then nullArg (nameof tableName)
-        if isNull jsonOptions then nullArg (nameof jsonOptions)
-        if not (Regex.IsMatch(tableName, identifierPattern)) then
-            invalidArg (nameof tableName) $"invalid event table name: %s{tableName}"
         match snapshotTableName with
-        | Some snap when not (Regex.IsMatch(snap, identifierPattern)) ->
+        | Some snap when not (TransactionalEventWriter.IsValidTableName snap) ->
             invalidArg (nameof snapshotTableName) $"invalid snapshot table name: %s{snap}"
         | _ -> ()
 
@@ -159,14 +187,6 @@ SELECT id::BIGINT AS id, stream_id, stream_version, event_type, data::TEXT AS da
 FROM {tableName}
 WHERE stream_id = @streamId
 ORDER BY stream_version
-"""
-
-    let insertSql =
-        $"""
-INSERT INTO {tableName}(stream_id, stream_version, data)
-VALUES (@stream_id, @stream_version, @data::JSONB)
-ON CONFLICT (stream_id, stream_version) DO NOTHING
-RETURNING id
 """
 
     let maxVersionSql =
@@ -450,19 +470,12 @@ WHERE stream_id = @streamId AND state_type = @stateType
                 return events, version
         }
 
-    let insertEvents
-            (conn: NpgsqlConnection) (tx: NpgsqlTransaction)
-            (streamId: string) (expectedVersion: int) (events: 'TEvent list) : Task<int> =
+    let insertEvents (tx: NpgsqlTransaction) (streamId: string) (expectedVersion: int) (events: 'TEvent list) =
         task {
             let mutable insertedCount = 0
             for (i, e) in events |> List.indexed do
-                let data = JsonSerializer.Serialize<'TEvent>(e, jsonOptions)
-                let parms =
-                    {| stream_id = streamId
-                       stream_version = expectedVersion + i + 1
-                       data = data |}
-                let! rows = conn.QueryAsync<int64>(insertSql, parms, tx)
-                insertedCount <- insertedCount + Seq.length rows
+                let! affected = writer.TryInsert(tx, streamId, expectedVersion + i + 1, e)
+                insertedCount <- insertedCount + affected
             return insertedCount
         }
 
@@ -476,7 +489,7 @@ WHERE stream_id = @streamId AND state_type = @stateType
             use conn = new NpgsqlConnection(connString)
             do! conn.OpenAsync()
             use! tx = conn.BeginTransactionAsync()
-            let! inserted = insertEvents conn tx streamId expectedVersion events
+            let! inserted = insertEvents tx streamId expectedVersion events
             if inserted < events.Length then
                 do! tx.RollbackAsync()
                 return Error ConcurrencyConflict
