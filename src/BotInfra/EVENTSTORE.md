@@ -1,8 +1,8 @@
 # BotInfra.EventStore
 
 A small, opinionated wrapper for append-only event sourcing on top of a
-per-bot Postgres event table. Used by VahterBanBot today; designed so other
-bots (alita) can adopt it as-is.
+per-bot Postgres event table. VahterBanBot uses optimistic appends, and
+CouponHubBot appends invite events while holding the sponsor row lock.
 
 The wrapper does **not** provide a single shared event table — each consuming
 bot owns its own table in its own database. The wrapper is generic over the
@@ -112,6 +112,10 @@ match! store.TryAppend($"user:{userId}", expectedVersion, [evt]) with
 | Ok ()                     -> ()
 | Error ConcurrencyConflict -> () // re-read, re-decide, retry
 ```
+
+## Appending under a caller-owned lock
+
+Use `TransactionalEventWriter(tableName, jsonOptions).AppendToLockedStream(tx, streamId, event, occurredAt)` when every writer locks the same row for that stream. Hold the lock through commit so the event and associated row changes roll back or commit together.
 
 ## Transactional projection writes
 
