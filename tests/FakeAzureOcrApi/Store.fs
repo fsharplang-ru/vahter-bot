@@ -4,7 +4,8 @@ open System
 open System.Collections.Concurrent
 
 module Store =
-    let defaultOcrResponse = """{"modelVersion":"2023-10-01","metadata":{"width":1020,"height":638},"readResult":{"blocks":[{"lines":[{"text":"b","boundingPolygon":[{"x":1,"y":24},{"x":1005,"y":27},{"x":1004,"y":377},{"x":0,"y":371}],"words":[{"text":"b","confidence":0.9}]}]}]}}"""
+    let operations = ConcurrentDictionary<string, string>()
+    let defaultOcrResponse = """{"status":"succeeded","analyzeResult":{"apiVersion":"2024-11-30","modelId":"prebuilt-read","stringIndexType":"textElements","content":"b","pages":[]}}"""
 
     let calls = ConcurrentQueue<ApiCallLog>()
     let mutable responseStatus = 200
@@ -189,6 +190,7 @@ module Store =
     /// next test (which would otherwise read stale state — see #163 review). The OpenAI
     /// LLM script is intentionally left untouched (a separate queue).
     let resetOcrMock () =
+        operations.Clear()
         responseStatus <- 200
         responseBody <- defaultOcrResponse
         responseDelayMs <- 0

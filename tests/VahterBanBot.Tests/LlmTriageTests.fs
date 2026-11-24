@@ -302,7 +302,7 @@ type LlmTriageTests(fixture: MlEnabledVahterTestContainers, _ml: MlAwaitFixture)
         // Prime 5 harmless messages first — a brand-new sender's null-text score is ham-range and skips LLM triage.
         do! fixture.ClearLlmVerdictCache()
         do! fixture.ClearAzureOcrCalls()
-        do! fixture.SetAzureOcrResponse(200, """{"modelVersion":"2023-10-01","metadata":{"width":1020,"height":638},"readResult":{"blocks":[]}}""")
+        do! fixture.SetAzureOcrResponse(200, """{"status":"succeeded","analyzeResult":{"apiVersion":"2024-11-30","modelId":"prebuilt-read","stringIndexType":"textElements","content":"","pages":[]}}""")
         let sender = Tg.user(firstName = "sticker prime user")
         for text in ["p1"; "p2"; "p3"; "p4"; "p5"] do
             let primeMsg = Tg.quickMsg(chat = fixture.ChatsToMonitor[0], text = text, from = sender)

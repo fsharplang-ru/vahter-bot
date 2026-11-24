@@ -42,6 +42,8 @@
     <PackageReference Include="Azure.AI.OpenAI" />
     <PackageReference Include="Dapper.FSharp" />
     <PackageReference Include="FSharp.SystemTextJson" />
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
     <PackageReference Include="Microsoft.ML" />
     <PackageReference Include="WTelegramClient" />
   </ItemGroup>

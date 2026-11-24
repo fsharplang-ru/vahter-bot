@@ -19,7 +19,7 @@ type ResponseMockDto =
     { status: int
       body: string }
 
-/// Per-request delay (ms) applied to /computervision/imageanalysis:analyze.
+/// Per-request delay (ms) applied to OCR submission.
 /// 0 disables the delay.
 [<CLIMutable>]
 type DelayMockDto =

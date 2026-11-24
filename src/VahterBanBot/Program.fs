@@ -92,8 +92,8 @@ let buildBotConf settings =
       UpdateChatAdmins = getSettingOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
       OcrEnabled = getSettingOr "OCR_ENABLED" "false" |> bool.Parse
       OcrMaxFileSizeBytes = getSettingOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
-      AzureOcrEndpoint = getSettingOr "AZURE_OCR_ENDPOINT" ""
-      AzureOcrKey = getEnvOr "AZURE_OCR_KEY" ""
+      AzureOcrEndpoint = getSettingOr "DOCUMENT_INTELLIGENCE_ENDPOINT" (getEnvOr "DOCUMENT_INTELLIGENCE_ENDPOINT" "")
+      AzureOcrKey = getEnvOr "DOCUMENT_INTELLIGENCE_KEY" ""
       MlEnabled = getSettingOr "ML_ENABLED" "false" |> bool.Parse
       MlRetrainScheduledTime =
           let s = getSettingOr "ML_RETRAIN_SCHEDULED_TIME_UTC" "23:30"
@@ -277,7 +277,7 @@ WebhookHost.configureSharedServices webhookCfg builder
     .AddHostedService<BotCommandsSetupService>()
     .AddHostedService<UpdateChatAdmins>()
 
-// OCR: register shared IBotOcr (Azure AI Vision SDK; SDK-native retry), then the VahterBanBot
+// OCR: register shared IBotOcr (Document Intelligence SDK; SDK-native retry), then the VahterBanBot
 // adapter that keeps the IComputerVision interface.
 %builder.Services.AddSingleton<IOptions<BotOcrConfig>>(botOcrOptions)
 %builder.Services.AddSingleton<IBotOcr>(fun sp ->

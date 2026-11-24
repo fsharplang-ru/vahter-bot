@@ -6,9 +6,9 @@ open FakeAzureOcrApi.Handlers
 let builder = WebApplication.CreateBuilder()
 let app = builder.Build()
 
-// Azure Computer Vision (stream) analyze endpoint used by AzureOcrService:
-// POST /computervision/imageanalysis:analyze?overload=stream&api-version=2024-02-01&features=read
-app.MapPost("/computervision/imageanalysis:analyze", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleAnalyze ctx))
+app.MapPost("/documentintelligence/documentModels/prebuilt-read:analyze", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleAnalyze ctx))
+|> ignore
+app.MapGet("/documentintelligence/documentModels/prebuilt-read/analyzeResults/{id}", Func<HttpContext, Threading.Tasks.Task>(fun ctx -> handleAnalyzeResult ctx))
 |> ignore
 
 // Azure OpenAI Chat Completions (used by VahterBanBot LLM triage)
