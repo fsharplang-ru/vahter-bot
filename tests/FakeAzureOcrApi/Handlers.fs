@@ -57,9 +57,20 @@ module Handlers =
                 // Stall well past the client's HttpClient.Timeout so it cancels first.
                 do! Task.Delay(10_000)
                 do! respondJson ctx status respBody
+            | _ when status = 200 ->
+                let id = Guid.NewGuid().ToString()
+                Store.operations[id] <- respBody
+                let location = $"{ctx.Request.Scheme}://{ctx.Request.Host}/documentintelligence/documentModels/prebuilt-read/analyzeResults/{id}"
+                ctx.Response.Headers["Operation-Location"] <- Microsoft.Extensions.Primitives.StringValues(location)
+                ctx.Response.StatusCode <- 202
             | _ ->
                 do! respondJson ctx status respBody
         }
+
+    let handleAnalyzeResult (ctx: HttpContext) =
+        match Store.operations.TryGetValue(string ctx.Request.RouteValues["id"]) with
+        | true, body -> respondJson ctx 200 body
+        | _ -> respondJson ctx 404 "{}"
 
     /// Adds a Retry-After header to 429s when configured (chat-completions only).
     let private respondLlmJson (ctx: HttpContext) (status: int) (json: string) =

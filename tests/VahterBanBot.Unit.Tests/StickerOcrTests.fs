@@ -111,3 +111,11 @@ let ``selectEligibleOcrTarget: eligible static sticker under the limit is Ok`` (
     match selectEligibleOcrTarget (1024L * 1024L) sticker with
     | Ok _ -> ()
     | Error reason -> Assert.Fail($"expected Ok, got Error {reason}")
+
+[<Fact>]
+let ``WebP sticker is submitted as a full-resolution PNG`` () =
+    let webp = System.Convert.FromBase64String("UklGRiIAAABXRUJQVlA4TBUAAAAvP8APAAeQUYH+B4CE8P+9FtH/1A8A")
+    let png = VahterBanBot.StickerOcr.prepareReadImage webp
+    Assert.Equal<byte>([| 137uy; 80uy; 78uy; 71uy; 13uy; 10uy; 26uy; 10uy |], png[0..7])
+    Assert.Equal(64, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png[16..19]))
+    Assert.Equal(64, System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png[20..23]))

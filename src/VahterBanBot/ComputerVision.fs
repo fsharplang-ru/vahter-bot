@@ -34,9 +34,9 @@ type BotOcrComputerVision(botOcr: IBotOcr, tg: ITelegramApi, logger: ILogger<Bot
                         else
                             let filePath = afterBot.Substring(slashIdx + 1)
                             let! fileBytes = tg.DownloadFile filePath
-                            let bytes = ReadOnlyMemory<byte>(fileBytes)
+                            let bytes = ReadOnlyMemory<byte>(StickerOcr.prepareReadImage fileBytes)
                             return! botOcr.AnalyzeImageBytes(bytes)
                 with ex ->
-                    logger.LogError(ex, "Failed to download and OCR file from {Url}", url)
+                    logger.LogError("Failed to download or OCR Telegram file ({ErrorType})", ex.GetType().Name)
                     return (null: OcrAnalysis | null)
         }

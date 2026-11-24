@@ -16,8 +16,8 @@
     <!-- Azure OpenAI SDK (LLM triage; SDK-native retry honors Retry-After on 429) -->
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
 
-    <!-- Azure AI Vision (OCR via the Image Analysis "read" feature; SDK-native retry) -->
-    <PackageVersion Include="Azure.AI.Vision.ImageAnalysis" Version="1.0.0" />
+    <!-- Document Intelligence Read OCR -->
+    <PackageVersion Include="Azure.AI.DocumentIntelligence" Version="1.0.0" />
 
     <!-- Kubernetes (Fizruk: scale Deployments, read pods/nodes/logs) -->
     <PackageVersion Include="KubernetesClient" Version="19.0.2" />
@@ -53,6 +53,8 @@
     <PackageVersion Include="Microsoft.ML" Version="5.0.0" />
 
     <!-- Image processing -->
+    <PackageVersion Include="SkiaSharp" Version="4.157.0" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.157.0" />
     <PackageVersion Include="SixLabors.ImageSharp" Version="4.1.3" />
     <PackageVersion Include="SixLabors.ImageSharp.Drawing" Version="3.1.3" />
     <PackageVersion Include="ZXing.Net" Version="0.16.11" />
