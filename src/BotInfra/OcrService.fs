@@ -23,9 +23,14 @@ type IBotOcr =
 /// Configuration for the shared OCR service. Bots populate from their own config records.
 type BotOcrConfig =
     { OcrEnabled: bool
+      DeadlineSeconds: int
       OcrMaxFileSizeBytes: int64
       AzureOcrEndpoint: string
       AzureOcrKey: string }
+
+module BotOcrConfig =
+    [<Literal>]
+    let DefaultDeadlineSeconds = 5
 
 type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, transport: HttpPipelineTransport | null) =
     let mutable warnedDisabled = false
@@ -78,9 +83,10 @@ type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, 
                 else
                     // reset the once-flag so a later toggle back to disabled will warn again
                     warnedDisabled <- false
+                    let seconds = config.DeadlineSeconds
+                    use deadline = new CancellationTokenSource(TimeSpan.FromSeconds(float seconds))
                     try
                         let client = getClient config.AzureOcrEndpoint config.AzureOcrKey
-                        use deadline = new CancellationTokenSource(TimeSpan.FromSeconds 20.)
                         let! operation =
                             client.AnalyzeDocumentAsync(WaitUntil.Completed, "prebuilt-read", BinaryData.FromBytes(imageBytes), deadline.Token)
                         let content = operation.Value.Content
@@ -90,6 +96,9 @@ type AzureBotOcr(options: IOptions<BotOcrConfig>, logger: ILogger<AzureBotOcr>, 
                         let rawJson = operation.GetRawResponse().Content.ToString()
                         return { RawJson = rawJson; Text = text }
                     with
+                    | :? OperationCanceledException when deadline.IsCancellationRequested ->
+                        logger.LogWarning("Azure OCR exceeded its {DeadlineSeconds}-second deadline", seconds)
+                        return (null: OcrAnalysis | null)
                     | :? RequestFailedException as rfe when rfe.Status = 400 && hasInvalidDimensions rfe ->
                         match Activity.Current with
                         | null -> ()

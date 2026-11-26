@@ -455,6 +455,7 @@ type BotConfiguration =
       UpdateChatAdminsInterval: TimeSpan option
       UpdateChatAdmins: bool
       OcrEnabled: bool
+      OcrDeadlineSeconds: int
       OcrMaxFileSizeBytes: int64
       AzureOcrEndpoint: string
       AzureOcrKey: string
