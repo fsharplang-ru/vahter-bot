@@ -52,7 +52,7 @@ let buildBotConf settings =
         match Int32.TryParse(getSettingOr key fallback) with
         | true, value when value >= 1 && value <= 100 -> value
         | _ -> invalidArg key "Expected an integer from 1 to 100"
-    let historySeconds key fallback minimum maximum =
+    let boundedSeconds key fallback minimum maximum =
         match Int32.TryParse(getSettingOr key fallback) with
         | true, value when value >= minimum && value <= maximum -> value
         | _ -> invalidArg key $"Expected seconds from {minimum} to {maximum}"
@@ -71,8 +71,8 @@ let buildBotConf settings =
       DeleteJoinMessagesInChats = getSettingOr "DELETE_JOIN_MESSAGES_IN_CHATS" "[]" |> fromJson
       JoinDeleteBulkThreshold = joinLimit "JOIN_DELETE_BULK_THRESHOLD" "2"
       JoinDeleteMaxClaim = joinLimit "JOIN_DELETE_MAX_CLAIM" "100"
-      JoinHistoryRequestTimeoutSeconds = historySeconds "JOIN_HISTORY_REQUEST_TIMEOUT_SECONDS" "30" 1 120
-      JoinHistoryRetryMaxSeconds = historySeconds "JOIN_HISTORY_RETRY_MAX_SECONDS" "900" 60 3600
+      JoinHistoryRequestTimeoutSeconds = boundedSeconds "JOIN_HISTORY_REQUEST_TIMEOUT_SECONDS" "30" 1 120
+      JoinHistoryRetryMaxSeconds = boundedSeconds "JOIN_HISTORY_RETRY_MAX_SECONDS" "900" 60 3600
       AllowedUsers = getRequiredSetting "ALLOWED_USERS" |> fromJson
       IgnoreSideEffects = getEnvOr "IGNORE_SIDE_EFFECTS" "false" |> bool.Parse
       UsePolling = getEnvOr "USE_POLLING" "false" |> bool.Parse
@@ -91,6 +91,7 @@ let buildBotConf settings =
           | v -> int64 v |> TimeSpan.FromSeconds |> Some
       UpdateChatAdmins = getSettingOr "UPDATE_CHAT_ADMINS" "false" |> bool.Parse
       OcrEnabled = getSettingOr "OCR_ENABLED" "false" |> bool.Parse
+      OcrDeadlineSeconds = boundedSeconds "OCR_DEADLINE_SECONDS" (string BotOcrConfig.DefaultDeadlineSeconds) 1 BotOcrConfig.DefaultDeadlineSeconds
       OcrMaxFileSizeBytes = getSettingOr "OCR_MAX_FILE_SIZE_BYTES" (string (20L * 1024L * 1024L)) |> int64
       AzureOcrEndpoint = getSettingOr "DOCUMENT_INTELLIGENCE_ENDPOINT" (getEnvOr "DOCUMENT_INTELLIGENCE_ENDPOINT" "")
       AzureOcrKey = getEnvOr "DOCUMENT_INTELLIGENCE_KEY" ""
@@ -203,6 +204,7 @@ let buildBotConf settings =
 
 let ocrConfigOf (c: BotConfiguration) =
     { OcrEnabled          = c.OcrEnabled
+      DeadlineSeconds = c.OcrDeadlineSeconds
       OcrMaxFileSizeBytes = c.OcrMaxFileSizeBytes
       AzureOcrEndpoint    = c.AzureOcrEndpoint
       AzureOcrKey         = c.AzureOcrKey }
